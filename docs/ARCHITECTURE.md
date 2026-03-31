@@ -24,19 +24,21 @@ The GUI is still separate from the injector, but it is no longer disk-only. It c
 
 ## Input Capture
 
-Phantom scans `/dev/input/event*` on startup, classifies devices by capabilities, reopens matching keyboard and mouse devices in nonblocking mode, and applies `EVIOCGRAB`.
+Phantom scans `/dev/input/event*` on startup, classifies devices by capabilities, and reopens matching keyboard and mouse devices in nonblocking mode.
 
 Current behavior:
 
-- exclusive grab on startup
+- shared evdev reads on startup
 - edge-triggered `epoll`
 - key repeat filtered out
 - `SYN_DROPPED` buffered events discarded until the next `SYN_REPORT`
 - runtime grab control through IPC and `F8`
+- optional mouse-only release through `F1` while capture is active
 - no hotplug rescan for new devices
 
 Tradeoff:
 
+- hotkeys can still be observed before capture is enabled
 - compositor-independent on Wayland or X11
 - when capture is on, the grabbed devices do not control the desktop
 
@@ -79,16 +81,17 @@ Phantom creates a virtual direct-touch device through `/dev/uinput`.
 Key properties:
 
 - event types: `EV_ABS`, `EV_KEY`, `EV_SYN`
-- axes: `ABS_MT_SLOT`, `ABS_MT_TRACKING_ID`, `ABS_MT_POSITION_X`, `ABS_MT_POSITION_Y`
-- key bit: `BTN_TOUCH`
+- axes: `ABS_X`, `ABS_Y`, `ABS_PRESSURE`, `ABS_MT_TOUCH_MAJOR`, `ABS_MT_SLOT`, `ABS_MT_TRACKING_ID`, `ABS_MT_POSITION_X`, `ABS_MT_POSITION_Y`, `ABS_MT_PRESSURE`
+- key bits: `BTN_TOUCH`, `BTN_TOOL_FINGER`, `BTN_TOOL_DOUBLETAP`, `BTN_TOOL_TRIPLETAP`, `BTN_TOOL_QUADTAP`
 - property bit: `INPUT_PROP_DIRECT`
 - identity: `BUS_VIRTUAL`, stable vendor/product IDs, `"Phantom Virtual Touch"`
 
 Runtime touch model:
 
 - 10 slots, `0..9`
-- tracking ID equals slot number
-- `BTN_TOUCH` asserted on first touch and cleared on last release
+- tracking IDs are monotonic and independent from slot numbers
+- pointer-emulation state is updated alongside MT slot state
+- touch commands are batched into a single `SYN_REPORT`
 
 ## Resolution Handling
 

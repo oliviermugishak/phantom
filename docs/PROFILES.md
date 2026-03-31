@@ -173,7 +173,7 @@ Behavior:
 
 - first mouse movement -> finger goes down near the region center
 - every mouse delta -> touch move inside the region
-- the finger stays active until pause, profile reload, capture exit, or shutdown
+- if mouse movement stops, the synthetic finger is released shortly afterward
 
 Notes:
 

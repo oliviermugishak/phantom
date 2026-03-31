@@ -140,7 +140,7 @@ Resumes engine processing.
 
 Behavior:
 
-- re-enables `EVIOCGRAB`
+- enables exclusive `EVIOCGRAB` on keyboard and mouse devices
 - keeps the current profile and engine
 
 ### `exit_capture`
@@ -208,6 +208,7 @@ phantom shutdown
 
 These are handled directly by the daemon:
 
+- `F1` toggles mouse grab while capture is already active
 - `F8` toggles capture
 - `F9` toggles pause
 
@@ -216,3 +217,4 @@ These are handled directly by the daemon:
 - stale sockets are removed on daemon startup if they are not connectable
 - `~` expansion is supported for `load_profile`
 - `load_profile`, `load_profile_data`, `reload`, `pause`, and `exit_capture` all release active touches before changing runtime state
+- the daemon can still observe hotkeys before capture is enabled because evdev supports shared readers without `EVIOCGRAB`

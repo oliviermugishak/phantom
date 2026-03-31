@@ -6,6 +6,8 @@ use crate::inject::UinputDevice;
 use crate::input::{InputEvent, Key};
 use crate::profile::{LayerMode, MacroAction, Node, Profile};
 
+const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(40);
+
 #[derive(Debug, Clone)]
 pub enum TouchCommand {
     TouchDown { slot: u8, x: f64, y: f64 },
@@ -35,6 +37,7 @@ enum NodeState {
         finger_active: bool,
         current_x: f64,
         current_y: f64,
+        last_motion: Instant,
     },
     RepeatTap {
         active: bool,
@@ -103,6 +106,7 @@ impl KeymapEngine {
                 finger_active: false,
                 current_x: region.x + region.w / 2.0,
                 current_y: region.y + region.h / 2.0,
+                last_motion: Instant::now(),
             },
             Node::RepeatTap { .. } => NodeState::RepeatTap {
                 active: false,
@@ -167,6 +171,21 @@ impl KeymapEngine {
             let node = &self.profile.nodes[idx];
             if !self.is_node_active(node) {
                 continue;
+            }
+
+            if let Node::MouseCamera { slot, .. } = node {
+                if let NodeState::MouseCamera {
+                    finger_active,
+                    last_motion,
+                    ..
+                } = &self.states[idx]
+                {
+                    if *finger_active && now.duration_since(*last_motion) >= MOUSE_LOOK_IDLE_TIMEOUT
+                    {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                        self.states[idx] = Self::init_state(node);
+                    }
+                }
             }
 
             if let Node::RepeatTap { interval_ms, .. } = node {
@@ -649,6 +668,7 @@ impl KeymapEngine {
                     finger_active,
                     current_x,
                     current_y,
+                    ..
                 } = &self.states[idx]
                 {
                     let delta_x = dx as f64 * sensitivity * self.sensitivity;
@@ -658,16 +678,18 @@ impl KeymapEngine {
 
                     let scale = 1.0 / 500.0;
                     let fa = *finger_active;
-                    let mut cx = if fa {
+                    let start_x = if fa {
                         *current_x
                     } else {
                         region.x + region.w / 2.0
                     };
-                    let mut cy = if fa {
+                    let start_y = if fa {
                         *current_y
                     } else {
                         region.y + region.h / 2.0
                     };
+                    let mut cx = start_x;
+                    let mut cy = start_y;
 
                     cx = (cx + delta_x * scale).clamp(region.x, region.x + region.w);
                     cy = (cy + delta_y * scale).clamp(region.y, region.y + region.h);
@@ -675,8 +697,8 @@ impl KeymapEngine {
                     if !fa {
                         cmds.push(TouchCommand::TouchDown {
                             slot: *slot,
-                            x: cx,
-                            y: cy,
+                            x: start_x,
+                            y: start_y,
                         });
                     }
 
@@ -689,6 +711,7 @@ impl KeymapEngine {
                         finger_active: true,
                         current_x: cx,
                         current_y: cy,
+                        last_motion: Instant::now(),
                     };
                 }
             }
@@ -864,14 +887,7 @@ fn joystick_offset(up: bool, down: bool, left: bool, right: bool, radius: f64) -
 }
 
 pub fn execute_commands(device: &mut UinputDevice, cmds: &[TouchCommand]) -> Result<()> {
-    for cmd in cmds {
-        match cmd {
-            TouchCommand::TouchDown { slot, x, y } => device.touch_down(*slot, *x, *y)?,
-            TouchCommand::TouchMove { slot, x, y } => device.touch_move(*slot, *x, *y)?,
-            TouchCommand::TouchUp { slot } => device.touch_up(*slot)?,
-        }
-    }
-    Ok(())
+    device.apply_commands(cmds)
 }
 
 #[cfg(test)]

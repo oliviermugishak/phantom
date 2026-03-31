@@ -403,8 +403,7 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
 
     {
         let mut capture = lock_capture(state)?;
-        // Only grab mouse — keyboard stays free for system shortcuts
-        capture.set_grabbed_mouse_only(active)?;
+        capture.set_grabbed_all(active)?;
     }
     state.capture_active.store(active, Ordering::Release);
     Ok(())

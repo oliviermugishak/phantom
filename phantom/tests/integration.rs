@@ -191,6 +191,24 @@ fn mouse_camera_tracks_movement() {
     let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
     assert!(cmds.len() >= 2); // down + move
     assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+    match (&cmds[0], &cmds[1]) {
+        (
+            TouchCommand::TouchDown {
+                x: down_x,
+                y: down_y,
+                ..
+            },
+            TouchCommand::TouchMove {
+                x: move_x,
+                y: move_y,
+                ..
+            },
+        ) => {
+            assert_ne!(down_x, move_x);
+            assert_ne!(down_y, move_y);
+        }
+        _ => panic!("expected initial mouse look down+move sequence"),
+    }
 
     // Subsequent moves
     let cmds = engine.process(&InputEvent::MouseMove { dx: 50, dy: 0 });
@@ -201,6 +219,20 @@ fn mouse_camera_tracks_movement() {
     } else {
         panic!("expected TouchMove");
     }
+}
+
+#[test]
+fn mouse_camera_releases_after_idle() {
+    let mut engine = KeymapEngine::new(pubg_profile());
+
+    let cmds = engine.process(&InputEvent::MouseMove { dx: 20, dy: 0 });
+    assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let cmds = engine.tick();
+    assert!(cmds
+        .iter()
+        .any(|cmd| matches!(cmd, TouchCommand::TouchUp { slot: 1 })));
 }
 
 #[test]

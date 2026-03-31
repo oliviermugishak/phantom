@@ -423,8 +423,8 @@ pub struct InputCapture {
 
 impl InputCapture {
     /// Discover input devices and set up epoll for reading.
-    /// Does NOT grab — events still reach the compositor.
-    /// Use `set_grabbed_mouse_only(true)` to enter game mode.
+    /// Does NOT grab by default — events still reach the compositor until
+    /// runtime capture is enabled.
     pub fn discover() -> Result<Self> {
         let mut devices = Vec::new();
         let entries = fs::read_dir("/dev/input").map_err(|e| PhantomError::DeviceNotFound {
@@ -473,26 +473,12 @@ impl InputCapture {
         }
 
         tracing::info!("watching {} input devices", devices.len());
-        let mut capture = Self {
+        Ok(Self {
             devices,
             epoll_fd,
             mouse_grabbed: false,
             keyboard_grabbed: false,
-        };
-
-        // Grab keyboard so F1/F8/F9 shortcuts are always detectable.
-        // Non-fatal: if something else already has it grabbed, warn and continue.
-        match capture.set_grabbed_keyboard_only(true) {
-            Ok(()) => {}
-            Err(e) => {
-                tracing::warn!(
-                    "could not grab keyboard: {} (F1/F8/F9 shortcuts may not work)",
-                    e
-                );
-            }
-        }
-
-        Ok(capture)
+        })
     }
 
     fn probe_device_open(path: &str) -> Result<Option<DeviceInfo>> {
@@ -767,6 +753,23 @@ impl InputCapture {
 
     pub fn keyboard_grabbed(&self) -> bool {
         self.keyboard_grabbed
+    }
+
+    pub fn set_grabbed_all(&mut self, grabbed: bool) -> Result<()> {
+        if grabbed {
+            self.set_grabbed_keyboard_only(true)?;
+            if let Err(err) = self.set_grabbed_mouse_only(true) {
+                let _ = self.set_grabbed_keyboard_only(false);
+                return Err(err);
+            }
+        } else {
+            self.set_grabbed_mouse_only(false)?;
+            if let Err(err) = self.set_grabbed_keyboard_only(false) {
+                let _ = self.set_grabbed_mouse_only(true);
+                return Err(err);
+            }
+        }
+        Ok(())
     }
 
     /// Grab or release mouse devices. Keyboard state is unchanged.

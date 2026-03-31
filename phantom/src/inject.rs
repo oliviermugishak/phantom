@@ -21,19 +21,30 @@ const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_ABS: u16 = 0x03;
 
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
+const ABS_PRESSURE: u16 = 0x18;
+const ABS_MT_TOUCH_MAJOR: u16 = 0x30;
 const ABS_MT_SLOT: u16 = 0x2f;
 const ABS_MT_TRACKING_ID: u16 = 0x39;
 const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
+const ABS_MT_PRESSURE: u16 = 0x3a;
 
 const SYN_REPORT: u16 = 0x00;
+const BTN_TOOL_FINGER: u16 = 0x145;
 const BTN_TOUCH: u16 = 0x14a;
+const BTN_TOOL_DOUBLETAP: u16 = 0x14d;
+const BTN_TOOL_TRIPLETAP: u16 = 0x14e;
+const BTN_TOOL_QUADTAP: u16 = 0x14f;
 const INPUT_PROP_DIRECT: u16 = 0x01;
 const BUS_VIRTUAL: u16 = 0x06;
 
 const MAX_SLOTS: i32 = 9;
 const SLOT_COUNT: usize = (MAX_SLOTS as usize) + 1;
 const ABS_CNT: usize = 0x40;
+const PRESSURE_MAX: i32 = 255;
+const TOUCH_MAJOR_MAX: i32 = 15;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -104,7 +115,9 @@ pub struct UinputDevice {
     screen_width: i32,
     screen_height: i32,
     active_slots: [bool; SLOT_COUNT],
+    slot_positions: [Option<(i32, i32)>; SLOT_COUNT],
     active_touches: usize,
+    next_tracking_id: i32,
 }
 
 impl UinputDevice {
@@ -134,7 +147,9 @@ impl UinputDevice {
             screen_width: screen_width as i32,
             screen_height: screen_height as i32,
             active_slots: [false; SLOT_COUNT],
+            slot_positions: [None; SLOT_COUNT],
             active_touches: 0,
+            next_tracking_id: 1,
         })
     }
 
@@ -193,9 +208,27 @@ impl UinputDevice {
                 .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_MT_POSITION_X", e))?;
             ui_set_absbit(fd, ABS_MT_POSITION_Y as libc::c_ulong)
                 .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_MT_POSITION_Y", e))?;
+            ui_set_absbit(fd, ABS_MT_TOUCH_MAJOR as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_MT_TOUCH_MAJOR", e))?;
+            ui_set_absbit(fd, ABS_MT_PRESSURE as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_MT_PRESSURE", e))?;
+            ui_set_absbit(fd, ABS_X as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_X", e))?;
+            ui_set_absbit(fd, ABS_Y as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_Y", e))?;
+            ui_set_absbit(fd, ABS_PRESSURE as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_PRESSURE", e))?;
 
             ui_set_keybit(fd, BTN_TOUCH as libc::c_ulong)
                 .map_err(|e| ioctl_err("UI_SET_KEYBIT BTN_TOUCH", e))?;
+            ui_set_keybit(fd, BTN_TOOL_FINGER as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_KEYBIT BTN_TOOL_FINGER", e))?;
+            ui_set_keybit(fd, BTN_TOOL_DOUBLETAP as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_KEYBIT BTN_TOOL_DOUBLETAP", e))?;
+            ui_set_keybit(fd, BTN_TOOL_TRIPLETAP as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_KEYBIT BTN_TOOL_TRIPLETAP", e))?;
+            ui_set_keybit(fd, BTN_TOOL_QUADTAP as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_KEYBIT BTN_TOOL_QUADTAP", e))?;
             ui_set_propbit(fd, INPUT_PROP_DIRECT as libc::c_ulong)
                 .map_err(|e| ioctl_err("UI_SET_PROPBIT INPUT_PROP_DIRECT", e))?;
         }
@@ -212,6 +245,10 @@ impl UinputDevice {
         }
 
         for axis in [
+            axis_setup(ABS_X, 0, (screen_width as i32).saturating_sub(1)),
+            axis_setup(ABS_Y, 0, (screen_height as i32).saturating_sub(1)),
+            axis_setup(ABS_PRESSURE, 0, PRESSURE_MAX),
+            axis_setup(ABS_MT_TOUCH_MAJOR, 0, TOUCH_MAJOR_MAX),
             axis_setup(ABS_MT_SLOT, 0, MAX_SLOTS),
             axis_setup(ABS_MT_TRACKING_ID, 0, 65535),
             axis_setup(
@@ -224,6 +261,7 @@ impl UinputDevice {
                 0,
                 (screen_height as i32).saturating_sub(1),
             ),
+            axis_setup(ABS_MT_PRESSURE, 0, PRESSURE_MAX),
         ] {
             unsafe {
                 ui_abs_setup(fd, &axis as *const UinputAbsSetup)
@@ -256,10 +294,20 @@ impl UinputDevice {
         user_dev.absmax[ABS_MT_SLOT as usize] = MAX_SLOTS;
         user_dev.absmin[ABS_MT_TRACKING_ID as usize] = 0;
         user_dev.absmax[ABS_MT_TRACKING_ID as usize] = 65535;
+        user_dev.absmin[ABS_X as usize] = 0;
+        user_dev.absmax[ABS_X as usize] = (screen_width as i32).saturating_sub(1);
+        user_dev.absmin[ABS_Y as usize] = 0;
+        user_dev.absmax[ABS_Y as usize] = (screen_height as i32).saturating_sub(1);
+        user_dev.absmin[ABS_PRESSURE as usize] = 0;
+        user_dev.absmax[ABS_PRESSURE as usize] = PRESSURE_MAX;
+        user_dev.absmin[ABS_MT_TOUCH_MAJOR as usize] = 0;
+        user_dev.absmax[ABS_MT_TOUCH_MAJOR as usize] = TOUCH_MAJOR_MAX;
         user_dev.absmin[ABS_MT_POSITION_X as usize] = 0;
         user_dev.absmax[ABS_MT_POSITION_X as usize] = (screen_width as i32).saturating_sub(1);
         user_dev.absmin[ABS_MT_POSITION_Y as usize] = 0;
         user_dev.absmax[ABS_MT_POSITION_Y as usize] = (screen_height as i32).saturating_sub(1);
+        user_dev.absmin[ABS_MT_PRESSURE as usize] = 0;
+        user_dev.absmax[ABS_MT_PRESSURE as usize] = PRESSURE_MAX;
 
         write_struct(file, &user_dev).map_err(PhantomError::Io)
     }
@@ -276,70 +324,117 @@ impl UinputDevice {
     }
 
     pub fn touch_down(&mut self, slot: u8, x: f64, y: f64) -> Result<()> {
+        self.touch_down_inner(slot, x, y, true)
+    }
+
+    pub fn touch_move(&mut self, slot: u8, x: f64, y: f64) -> Result<()> {
+        self.touch_move_inner(slot, x, y, true)
+    }
+
+    pub fn touch_up(&mut self, slot: u8) -> Result<()> {
+        self.touch_up_inner(slot, true)
+    }
+
+    pub fn apply_commands(&mut self, cmds: &[crate::engine::TouchCommand]) -> Result<()> {
+        if cmds.is_empty() {
+            return Ok(());
+        }
+
+        for cmd in cmds {
+            match cmd {
+                crate::engine::TouchCommand::TouchDown { slot, x, y } => {
+                    self.touch_down_inner(*slot, *x, *y, false)?
+                }
+                crate::engine::TouchCommand::TouchMove { slot, x, y } => {
+                    self.touch_move_inner(*slot, *x, *y, false)?
+                }
+                crate::engine::TouchCommand::TouchUp { slot } => {
+                    self.touch_up_inner(*slot, false)?
+                }
+            }
+        }
+
+        self.sync_report()
+    }
+
+    fn touch_down_inner(&mut self, slot: u8, x: f64, y: f64, sync: bool) -> Result<()> {
         let slot_idx = self.slot_index(slot)?;
         if self.active_slots[slot_idx] {
             tracing::debug!(
                 "slot {} already active, treating touch_down as touch_move",
                 slot
             );
-            return self.touch_move(slot, x, y);
+            return self.touch_move_inner(slot, x, y, sync);
         }
 
         let (px, py) = self.scale_coords(x, y);
-        let had_any_active = self.active_touches > 0;
+        let tracking_id = self.alloc_tracking_id();
 
         self.write_event(EV_ABS, ABS_MT_SLOT, slot as i32)?;
-        self.write_event(EV_ABS, ABS_MT_TRACKING_ID, slot as i32)?;
+        self.write_event(EV_ABS, ABS_MT_TRACKING_ID, tracking_id)?;
         self.write_event(EV_ABS, ABS_MT_POSITION_X, px)?;
         self.write_event(EV_ABS, ABS_MT_POSITION_Y, py)?;
-        if !had_any_active {
-            self.write_event(EV_KEY, BTN_TOUCH, 1)?;
-        }
-        self.write_event(EV_SYN, SYN_REPORT, 0)?;
-
+        self.write_event(EV_ABS, ABS_MT_TOUCH_MAJOR, TOUCH_MAJOR_MAX)?;
+        self.write_event(EV_ABS, ABS_MT_PRESSURE, PRESSURE_MAX)?;
         self.active_slots[slot_idx] = true;
+        self.slot_positions[slot_idx] = Some((px, py));
         self.active_touches += 1;
+        self.update_pointer_emulation(Some(slot))?;
+        if sync {
+            self.sync_report()?;
+        }
         Ok(())
     }
 
-    pub fn touch_move(&mut self, slot: u8, x: f64, y: f64) -> Result<()> {
-        let _ = self.slot_index(slot)?;
+    fn touch_move_inner(&mut self, slot: u8, x: f64, y: f64, sync: bool) -> Result<()> {
+        let slot_idx = self.slot_index(slot)?;
+        if !self.active_slots[slot_idx] {
+            return Err(PhantomError::Profile(format!(
+                "touch_move on inactive slot {}",
+                slot
+            )));
+        }
+
         let (px, py) = self.scale_coords(x, y);
 
         self.write_event(EV_ABS, ABS_MT_SLOT, slot as i32)?;
         self.write_event(EV_ABS, ABS_MT_POSITION_X, px)?;
         self.write_event(EV_ABS, ABS_MT_POSITION_Y, py)?;
-        self.write_event(EV_SYN, SYN_REPORT, 0)?;
+        self.write_event(EV_ABS, ABS_MT_TOUCH_MAJOR, TOUCH_MAJOR_MAX)?;
+        self.write_event(EV_ABS, ABS_MT_PRESSURE, PRESSURE_MAX)?;
+        self.slot_positions[slot_idx] = Some((px, py));
+        self.update_pointer_emulation(Some(slot))?;
+        if sync {
+            self.sync_report()?;
+        }
         Ok(())
     }
 
-    pub fn touch_up(&mut self, slot: u8) -> Result<()> {
+    fn touch_up_inner(&mut self, slot: u8, sync: bool) -> Result<()> {
         let slot_idx = self.slot_index(slot)?;
         if !self.active_slots[slot_idx] {
             return Ok(());
         }
 
-        let will_clear_last_touch = self.active_touches == 1;
-
         self.write_event(EV_ABS, ABS_MT_SLOT, slot as i32)?;
         self.write_event(EV_ABS, ABS_MT_TRACKING_ID, -1)?;
-        if will_clear_last_touch {
-            self.write_event(EV_KEY, BTN_TOUCH, 0)?;
-        }
-        self.write_event(EV_SYN, SYN_REPORT, 0)?;
-
         self.active_slots[slot_idx] = false;
+        self.slot_positions[slot_idx] = None;
         self.active_touches = self.active_touches.saturating_sub(1);
+        self.update_pointer_emulation(None)?;
+        if sync {
+            self.sync_report()?;
+        }
         Ok(())
     }
 
     pub fn release_all(&mut self) -> Result<()> {
         for slot in 0..SLOT_COUNT as u8 {
             if self.active_slots[slot as usize] {
-                self.touch_up(slot)?;
+                self.touch_up_inner(slot, false)?;
             }
         }
-        Ok(())
+        self.sync_report()
     }
 
     pub fn screen_width(&self) -> i32 {
@@ -369,6 +464,68 @@ impl UinputDevice {
             )));
         }
         Ok(idx)
+    }
+
+    fn alloc_tracking_id(&mut self) -> i32 {
+        let id = self.next_tracking_id;
+        self.next_tracking_id = if self.next_tracking_id == i32::MAX {
+            1
+        } else {
+            self.next_tracking_id + 1
+        };
+        id
+    }
+
+    fn update_pointer_emulation(&mut self, prefer_slot: Option<u8>) -> Result<()> {
+        let primary = prefer_slot
+            .and_then(|slot| {
+                let idx = slot as usize;
+                self.slot_positions
+                    .get(idx)
+                    .and_then(|pos| pos.map(|(x, y)| (slot, x, y)))
+            })
+            .or_else(|| {
+                self.slot_positions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(idx, pos)| pos.map(|(x, y)| (idx as u8, x, y)))
+            });
+
+        self.write_event(
+            EV_KEY,
+            BTN_TOUCH,
+            if self.active_touches > 0 { 1 } else { 0 },
+        )?;
+        self.write_event(EV_KEY, BTN_TOOL_FINGER, i32::from(self.active_touches == 1))?;
+        self.write_event(
+            EV_KEY,
+            BTN_TOOL_DOUBLETAP,
+            i32::from(self.active_touches == 2),
+        )?;
+        self.write_event(
+            EV_KEY,
+            BTN_TOOL_TRIPLETAP,
+            i32::from(self.active_touches == 3),
+        )?;
+        self.write_event(
+            EV_KEY,
+            BTN_TOOL_QUADTAP,
+            i32::from(self.active_touches >= 4),
+        )?;
+
+        if let Some((_, x, y)) = primary {
+            self.write_event(EV_ABS, ABS_X, x)?;
+            self.write_event(EV_ABS, ABS_Y, y)?;
+            self.write_event(EV_ABS, ABS_PRESSURE, PRESSURE_MAX)?;
+        } else {
+            self.write_event(EV_ABS, ABS_PRESSURE, 0)?;
+        }
+
+        Ok(())
+    }
+
+    fn sync_report(&mut self) -> Result<()> {
+        self.write_event(EV_SYN, SYN_REPORT, 0)
     }
 }
 

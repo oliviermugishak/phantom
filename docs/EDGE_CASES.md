@@ -19,7 +19,7 @@ Phantom cannot force Waydroid hotplug behavior from inside this repo.
 
 ## Host Desktop Stops Receiving Keyboard And Mouse
 
-Expected behavior while Phantom is active.
+Expected behavior while capture is active.
 
 Reason:
 
@@ -74,7 +74,7 @@ Workaround:
 
 ## Mouse Camera Is Not Universal Pointer Emulation
 
-`mouse_camera` is a bounded swipe region with a persistent finger. In the GUI this is presented as `Mouse Look`. It is good for FPS or action-camera movement, but it is not a generic cursor replacement.
+`mouse_camera` is a bounded swipe region with a short-lived synthetic finger. In the GUI this is presented as `Mouse Look`. It is good for FPS or action-camera movement, but it is not a generic cursor replacement.
 
 Workaround:
 

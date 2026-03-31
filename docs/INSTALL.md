@@ -91,7 +91,8 @@ Every real profile should also carry a matching `screen` block. If the profile a
 1. Start Phantom.
 2. Start or restart the Waydroid session.
 3. Load the target profile if needed.
-4. Verify touch placement in Android.
+4. Enter capture when you are ready to play.
+5. Verify touch placement in Android.
 
 Commands:
 
@@ -100,6 +101,7 @@ Commands:
 waydroid session stop
 waydroid session start
 ./target/release/phantom load ~/.config/phantom/profiles/pubg.json
+./target/release/phantom enter-capture
 ```
 
 If Waydroid was already running when Phantom started and the touch device does not appear, restart the Waydroid session.
@@ -176,8 +178,16 @@ The GUI is now runtime-aware:
 
 Daemon hotkeys:
 
+- `F1` toggles mouse grab while capture is already active
 - `F8` toggles capture
 - `F9` toggles pause
+
+Recommended meaning:
+
+- daemon startup: Phantom observes evdev input without exclusive grab
+- `F8`: primary game-mode switch, enters or exits exclusive capture
+- `F1`: temporary mouse release for adjustments while keyboard capture stays active
+- `F9`: emergency pause for touch injection without leaving the running session
 
 CLI controls:
 

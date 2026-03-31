@@ -2,7 +2,7 @@
 
 Keyboard and mouse to virtual multitouch mapper for fullscreen Waydroid play.
 
-Phantom grabs host input through Linux `evdev`, maps it through a profile-driven state machine, and injects MT Protocol B touch events through `uinput` so Waydroid sees a direct-touch device.
+Phantom reads host input through Linux `evdev`, can enter exclusive capture on demand, maps it through a profile-driven state machine, and injects MT Protocol B touch events through `uinput` so Waydroid sees a direct-touch device.
 
 ## Product Shape
 
@@ -38,8 +38,9 @@ This covers the normal control patterns for PUBG-like, Genshin-like, and eFootba
 ## Runtime Features
 
 - strict profile `screen` matching
-- capture on startup
+- shared evdev observation on startup
 - `F8` toggles capture on or off inside the daemon
+- `F1` toggles mouse grab while capture is already active
 - `F9` toggles pause or resume inside the daemon
 - live profile push over IPC
 - profile reload from disk
@@ -124,6 +125,19 @@ waydroid session start
 ```bash
 ./target/release/phantom-gui
 ```
+
+8. Enter gameplay capture when you are ready to play:
+
+```bash
+./target/release/phantom enter-capture
+```
+
+Runtime workflow:
+
+- daemon start: Phantom observes keyboard and mouse but does not seize desktop input
+- `F8`: enter or leave exclusive gameplay capture
+- `F1`: temporarily release or re-grab only the mouse while staying in capture mode
+- `F9`: pause or resume touch injection without shutting the daemon down
 
 ## Common Commands
 
