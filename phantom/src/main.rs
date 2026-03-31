@@ -173,7 +173,7 @@ async fn run_daemon() -> Result<()> {
 
     tracing::info!("daemon ready, entering event loop (F1 mouse toggle, F8 capture, F9 pause)");
 
-    let mut input_interval = tokio::time::interval(Duration::from_millis(4));
+    let mut input_interval = tokio::time::interval(Duration::from_millis(1));
     input_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut tick_interval = tokio::time::interval(Duration::from_millis(16));
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
