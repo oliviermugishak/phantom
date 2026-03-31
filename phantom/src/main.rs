@@ -11,6 +11,7 @@ use phantom::inject::UinputDevice;
 use phantom::input::{InputCapture, InputEvent, Key};
 use phantom::ipc::{self, DaemonState, IpcRequest};
 use phantom::profile::Profile;
+use phantom::waydroid;
 
 const CAPTURE_TOGGLE_KEY: Key = Key::F8;
 const PAUSE_TOGGLE_KEY: Key = Key::F9;
@@ -33,6 +34,9 @@ USAGE:
     phantom toggle-capture            Toggle gameplay capture
     phantom sensitivity <value>       Set global sensitivity
     phantom list                      List available profiles
+    phantom waydroid-print-idc        Print the Phantom IDC and resolved Waydroid paths
+    phantom waydroid-install-idc      Install the Phantom IDC into the Waydroid overlay
+    phantom waydroid-diagnose         Show how Waydroid / Android sees the Phantom device
     phantom shutdown                  Graceful shutdown
 
 KEYS (while daemon running):
@@ -350,6 +354,35 @@ async fn handle_runtime_shortcut(state: &Arc<DaemonState>, event: &InputEvent) -
 
 async fn run_cli_command(args: &[String]) -> Result<()> {
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("status");
+    let config = config::load_config();
+    let waydroid_work_dir = waydroid::waydroid_work_dir(&config);
+
+    match cmd {
+        "waydroid-print-idc" => {
+            let paths = waydroid::phantom_paths(&waydroid_work_dir);
+            eprintln!("Waydroid work dir: {}", paths.work_dir.display());
+            eprintln!("Waydroid overlay dir: {}", paths.overlay_dir.display());
+            eprintln!(
+                "Vendor/product IDC path: {}",
+                paths.vendor_product_idc.display()
+            );
+            eprintln!("Device-name IDC path: {}", paths.device_name_idc.display());
+            eprintln!();
+            eprintln!("{}", waydroid::phantom_idc_text());
+            return Ok(());
+        }
+        "waydroid-install-idc" => {
+            let report = waydroid::install_phantom_idc(&waydroid_work_dir)?;
+            eprintln!("{}", waydroid::render_install_report(&report));
+            return Ok(());
+        }
+        "waydroid-diagnose" => {
+            let report = waydroid::diagnose_phantom_input(&waydroid_work_dir);
+            eprintln!("{}", waydroid::render_diagnosis(&report));
+            return Ok(());
+        }
+        _ => {}
+    }
 
     let request = match cmd {
         "load" => {

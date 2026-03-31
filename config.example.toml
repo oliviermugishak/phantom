@@ -9,3 +9,7 @@ log_level = "info"
 [screen]
 width = 1920
 height = 1080
+
+# Optional: override the Waydroid work directory if you do not use /var/lib/waydroid
+[waydroid]
+# work_dir = "/var/lib/waydroid"

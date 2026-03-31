@@ -164,6 +164,13 @@ Editor shortcuts:
 - `Delete`
 - `1` to `7` for Select, Tap, Hold, Toggle, Left Stick, Mouse Look, Rapid Tap
 
+Waydroid classification workflow:
+
+- `phantom waydroid-print-idc` shows the exact IDC Phantom expects and the resolved overlay paths
+- `sudo phantom waydroid-install-idc` installs the IDC into Waydroid's system overlay
+- `phantom waydroid-diagnose` prints the Waydroid overlay status plus `getevent -lp` and `dumpsys input` excerpts for `Phantom Virtual Touch`
+- restart the Waydroid session after installing or changing the IDC
+
 ## Common Commands
 
 ```bash
@@ -178,6 +185,9 @@ phantom exit-capture
 phantom toggle-capture
 phantom sensitivity <value>
 phantom list
+phantom waydroid-print-idc
+phantom waydroid-install-idc
+phantom waydroid-diagnose
 phantom shutdown
 ```
 

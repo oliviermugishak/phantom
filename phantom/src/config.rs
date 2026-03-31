@@ -7,6 +7,8 @@ pub struct Config {
     pub screen: ScreenConfig,
     #[serde(default)]
     pub log_level: String,
+    #[serde(default)]
+    pub waydroid: WaydroidConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -15,11 +17,17 @@ pub struct ScreenConfig {
     pub height: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WaydroidConfig {
+    pub work_dir: Option<PathBuf>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             screen: ScreenConfig::default(),
             log_level: "info".into(),
+            waydroid: WaydroidConfig::default(),
         }
     }
 }

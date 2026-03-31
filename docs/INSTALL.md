@@ -133,6 +133,15 @@ You should now see:
 waydroid shell getevent -lp | grep -A10 "Phantom"
 ```
 
+If Android still does not treat Phantom as a proper touchscreen, install the shipped IDC:
+
+```bash
+phantom waydroid-print-idc
+sudo phantom waydroid-install-idc
+waydroid session stop
+waydroid session start
+```
+
 ### 4. Confirm Android receives touches
 
 Enable Android `Show taps` in Developer Options, then press mapped keys.
@@ -206,6 +215,9 @@ phantom resume
 phantom enter-capture
 phantom exit-capture
 phantom toggle-capture
+phantom waydroid-print-idc
+phantom waydroid-install-idc
+phantom waydroid-diagnose
 ```
 
 ## Systemd
