@@ -483,3 +483,124 @@ fn all_ten_slots_independent() {
     let _engine = KeymapEngine::new(profile);
     // Should not panic — all slots are unique
 }
+
+#[test]
+fn simultaneous_tap_keys_both_register() {
+    // Two tap nodes on different slots
+    let profile = Profile {
+        name: "SimulTest".into(),
+        version: 1,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
+        global_sensitivity: 1.0,
+        nodes: vec![
+            Node::Tap {
+                id: "btn_a".into(),
+                layer: String::new(),
+                slot: 0,
+                pos: RelPos { x: 0.3, y: 0.5 },
+                key: "A".into(),
+            },
+            Node::Tap {
+                id: "btn_b".into(),
+                layer: String::new(),
+                slot: 1,
+                pos: RelPos { x: 0.7, y: 0.5 },
+                key: "B".into(),
+            },
+        ],
+    };
+    let mut engine = KeymapEngine::new(profile);
+
+    // Press A
+    let cmds_a = engine.process(&InputEvent::KeyPress(Key::A));
+    // Press B (same batch, as if simultaneous)
+    let cmds_b = engine.process(&InputEvent::KeyPress(Key::B));
+
+    // Both should produce TouchDown on different slots
+    assert_eq!(cmds_a.len(), 1);
+    assert_eq!(cmds_b.len(), 1);
+    assert!(matches!(
+        &cmds_a[0],
+        TouchCommand::TouchDown { slot: 0, .. }
+    ));
+    assert!(matches!(
+        &cmds_b[0],
+        TouchCommand::TouchDown { slot: 1, .. }
+    ));
+
+    // Release both
+    let cmds_a_up = engine.process(&InputEvent::KeyRelease(Key::A));
+    let cmds_b_up = engine.process(&InputEvent::KeyRelease(Key::B));
+    assert_eq!(cmds_a_up.len(), 1);
+    assert_eq!(cmds_b_up.len(), 1);
+    assert!(matches!(&cmds_a_up[0], TouchCommand::TouchUp { slot: 0 }));
+    assert!(matches!(&cmds_b_up[0], TouchCommand::TouchUp { slot: 1 }));
+}
+
+#[test]
+fn simultaneous_tap_and_joystick() {
+    let profile = Profile {
+        name: "MixedTest".into(),
+        version: 1,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
+        global_sensitivity: 1.0,
+        nodes: vec![
+            Node::Joystick {
+                id: "move".into(),
+                layer: String::new(),
+                slot: 0,
+                pos: RelPos { x: 0.2, y: 0.7 },
+                radius: 0.07,
+                keys: JoystickKeys {
+                    up: "W".into(),
+                    down: "S".into(),
+                    left: "A".into(),
+                    right: "D".into(),
+                },
+            },
+            Node::Tap {
+                id: "jump".into(),
+                layer: String::new(),
+                slot: 1,
+                pos: RelPos { x: 0.9, y: 0.8 },
+                key: "Space".into(),
+            },
+        ],
+    };
+    let mut engine = KeymapEngine::new(profile);
+
+    // Press W to move
+    let cmds_move = engine.process(&InputEvent::KeyPress(Key::W));
+    assert_eq!(cmds_move.len(), 2); // down + move on slot 0
+
+    // Press Space while W is held
+    let cmds_jump = engine.process(&InputEvent::KeyPress(Key::Space));
+    assert_eq!(cmds_jump.len(), 1); // down on slot 1
+    assert!(matches!(
+        &cmds_jump[0],
+        TouchCommand::TouchDown { slot: 1, .. }
+    ));
+
+    // Both slots are active simultaneously
+    // Release Space, movement continues
+    let cmds_jump_up = engine.process(&InputEvent::KeyRelease(Key::Space));
+    assert_eq!(cmds_jump_up.len(), 1);
+    assert!(matches!(
+        &cmds_jump_up[0],
+        TouchCommand::TouchUp { slot: 1 }
+    ));
+
+    // Movement still active on slot 0
+    let cmds_d = engine.process(&InputEvent::KeyPress(Key::D));
+    assert_eq!(cmds_d.len(), 1); // diagonal move
+    assert!(matches!(
+        &cmds_d[0],
+        TouchCommand::TouchMove { slot: 0, .. }
+    ));
+}
