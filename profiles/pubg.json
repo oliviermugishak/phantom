@@ -1,0 +1,65 @@
+{
+  "name": "PUBG Mobile",
+  "version": 1,
+  "global_sensitivity": 1.0,
+  "nodes": [
+    {
+      "id": "move",
+      "type": "joystick",
+      "slot": 0,
+      "pos": { "x": 0.18, "y": 0.72 },
+      "radius": 0.07,
+      "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
+    },
+    {
+      "id": "camera",
+      "type": "mouse_camera",
+      "slot": 1,
+      "region": { "x": 0.35, "y": 0.0, "w": 0.65, "h": 1.0 },
+      "sensitivity": 1.2,
+      "invert_y": false
+    },
+    {
+      "id": "fire",
+      "type": "hold_tap",
+      "slot": 2,
+      "pos": { "x": 0.88, "y": 0.62 },
+      "key": "MouseLeft"
+    },
+    {
+      "id": "ads",
+      "type": "hold_tap",
+      "slot": 3,
+      "pos": { "x": 0.78, "y": 0.55 },
+      "key": "MouseRight"
+    },
+    {
+      "id": "jump",
+      "type": "tap",
+      "slot": 4,
+      "pos": { "x": 0.92, "y": 0.82 },
+      "key": "Space"
+    },
+    {
+      "id": "crouch",
+      "type": "tap",
+      "slot": 5,
+      "pos": { "x": 0.85, "y": 0.90 },
+      "key": "C"
+    },
+    {
+      "id": "reload",
+      "type": "tap",
+      "slot": 6,
+      "pos": { "x": 0.78, "y": 0.88 },
+      "key": "R"
+    },
+    {
+      "id": "prone",
+      "type": "tap",
+      "slot": 7,
+      "pos": { "x": 0.80, "y": 0.95 },
+      "key": "Z"
+    }
+  ]
+}

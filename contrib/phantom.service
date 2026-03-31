@@ -1,0 +1,22 @@
+[Unit]
+Description=Phantom — Virtual touchscreen for Waydroid
+After=waydroid.service
+Wants=waydroid.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/phantom --daemon
+Restart=on-failure
+RestartSec=3
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=phantom
+
+# Security — needs raw device access
+NoNewPrivileges=false
+ProtectSystem=false
+
+[Install]
+WantedBy=multi-user.target

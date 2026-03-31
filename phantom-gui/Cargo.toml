@@ -1,0 +1,18 @@
+[package]
+name = "phantom-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Profile editor GUI for Phantom"
+
+[dependencies]
+phantom = { path = "../phantom" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
+eframe = "0.31"
+egui = "0.31"
+image = "0.25"
+rfd = "0.15"

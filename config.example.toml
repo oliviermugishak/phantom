@@ -1,0 +1,10 @@
+# Phantom configuration
+# Place at ~/.config/phantom/config.toml
+
+# Screen resolution override (auto-detected if omitted)
+[screen]
+# width = 1920
+# height = 1080
+
+# Log level: trace, debug, info, warn, error
+log_level = "info"

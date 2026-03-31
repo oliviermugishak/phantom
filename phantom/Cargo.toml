@@ -1,0 +1,18 @@
+[package]
+name = "phantom"
+version = "0.1.0"
+edition = "2021"
+description = "Virtual touchscreen mapper for Waydroid"
+
+[dependencies]
+tokio = { version = "1.43", features = ["full"] }
+nix = { version = "0.29", features = ["ioctl", "fs", "signal", "poll", "socket", "uio", "event"] }
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+toml.workspace = true
+dirs.workspace = true

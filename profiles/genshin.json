@@ -1,0 +1,58 @@
+{
+  "name": "Genshin Impact",
+  "version": 1,
+  "global_sensitivity": 0.8,
+  "nodes": [
+    {
+      "id": "move",
+      "type": "joystick",
+      "slot": 0,
+      "pos": { "x": 0.12, "y": 0.65 },
+      "radius": 0.08,
+      "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
+    },
+    {
+      "id": "camera",
+      "type": "mouse_camera",
+      "slot": 1,
+      "region": { "x": 0.30, "y": 0.0, "w": 0.70, "h": 1.0 },
+      "sensitivity": 1.0
+    },
+    {
+      "id": "attack",
+      "type": "repeat_tap",
+      "slot": 2,
+      "pos": { "x": 0.90, "y": 0.75 },
+      "key": "MouseLeft",
+      "interval_ms": 80
+    },
+    {
+      "id": "skill",
+      "type": "tap",
+      "slot": 3,
+      "pos": { "x": 0.85, "y": 0.65 },
+      "key": "E"
+    },
+    {
+      "id": "burst",
+      "type": "tap",
+      "slot": 4,
+      "pos": { "x": 0.92, "y": 0.55 },
+      "key": "Q"
+    },
+    {
+      "id": "jump",
+      "type": "tap",
+      "slot": 5,
+      "pos": { "x": 0.88, "y": 0.85 },
+      "key": "Space"
+    },
+    {
+      "id": "sprint",
+      "type": "hold_tap",
+      "slot": 6,
+      "pos": { "x": 0.82, "y": 0.90 },
+      "key": "LEFTSHIFT"
+    }
+  ]
+}

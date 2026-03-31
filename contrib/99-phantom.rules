@@ -1,0 +1,15 @@
+# Phantom — udev rules
+# Place at /etc/udev/rules.d/99-phantom.rules
+# Allows members of the 'input' group to access uinput and input devices
+
+# /dev/uinput — virtual device creation
+KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
+
+# /dev/input/event* — keyboard and mouse capture
+KERNEL=="event*", SUBSYSTEM=="input", MODE="0660", GROUP="input"
+
+# /dev/input/mouse* — mouse devices
+KERNEL=="mouse*", SUBSYSTEM=="input", MODE="0660", GROUP="input"
+
+# /dev/input/js* — joystick devices (if present)
+KERNEL=="js*", SUBSYSTEM=="input", MODE="0660", GROUP="input"
