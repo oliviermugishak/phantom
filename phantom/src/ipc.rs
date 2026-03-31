@@ -419,17 +419,23 @@ fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()>
 }
 
 pub fn lock_uinput(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, UinputDevice>> {
-    state
-        .uinput
-        .lock()
-        .map_err(|_| PhantomError::Internal("uinput device lock poisoned".into()))
+    match state.uinput.lock() {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::warn!("uinput device lock poisoned, recovering");
+            Ok(poisoned.into_inner())
+        }
+    }
 }
 
 pub fn lock_capture(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, InputCapture>> {
-    state
-        .capture
-        .lock()
-        .map_err(|_| PhantomError::Internal("input capture lock poisoned".into()))
+    match state.capture.lock() {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::warn!("input capture lock poisoned, recovering");
+            Ok(poisoned.into_inner())
+        }
+    }
 }
 
 fn error_response(error: String) -> IpcResponse {

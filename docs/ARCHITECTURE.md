@@ -31,7 +31,7 @@ Current behavior:
 - shared evdev reads on startup
 - edge-triggered `epoll`
 - key repeat filtered out
-- `SYN_DROPPED` buffered events discarded until the next `SYN_REPORT`
+- `SYN_DROPPED` buffered events discarded until the next `SYN_REPORT`, then key state is resynced with `EVIOCGKEY`
 - runtime grab control through IPC and `F8`
 - optional mouse-only release through `F1` while capture is active
 - no hotplug rescan for new devices

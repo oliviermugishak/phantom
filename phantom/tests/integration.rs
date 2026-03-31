@@ -83,6 +83,19 @@ fn repeat_tap_profile() -> Profile {
     }
 }
 
+fn empty_profile() -> Profile {
+    Profile {
+        name: "Empty".into(),
+        version: 1,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
+        global_sensitivity: 1.0,
+        nodes: vec![],
+    }
+}
+
 fn macro_profile() -> Profile {
     Profile {
         name: "MacroTest".into(),
@@ -181,6 +194,18 @@ fn full_pubg_move_and_shoot() {
     let cmds = engine.process(&InputEvent::KeyRelease(Key::D));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
+}
+
+#[test]
+fn empty_profile_is_idle() {
+    let mut engine = KeymapEngine::new(empty_profile());
+
+    assert!(engine.process(&InputEvent::KeyPress(Key::F12)).is_empty());
+    assert!(engine.process(&InputEvent::KeyRelease(Key::F12)).is_empty());
+    assert!(engine
+        .process(&InputEvent::MouseMove { dx: 50, dy: 20 })
+        .is_empty());
+    assert!(engine.tick().is_empty());
 }
 
 #[test]

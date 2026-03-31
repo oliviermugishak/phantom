@@ -133,12 +133,7 @@ async fn run_daemon() -> Result<()> {
                     height: screen_h,
                 }),
                 global_sensitivity: 1.0,
-                nodes: vec![phantom::profile::Node::LayerShift {
-                    id: "placeholder".into(),
-                    key: "F12".into(),
-                    layer_name: "placeholder".into(),
-                    mode: phantom::profile::LayerMode::Hold,
-                }],
+                nodes: vec![],
             })
         }
     };
@@ -190,9 +185,12 @@ async fn run_daemon() -> Result<()> {
                 break;
             }
             _ = input_interval.tick() => {
-                let raw_events = {
-                    let capture = ipc::lock_capture(&state)?;
-                    capture.poll_events(0)
+                let raw_events = match ipc::lock_capture(&state) {
+                    Ok(capture) => capture.poll_events(0),
+                    Err(e) => {
+                        tracing::warn!("input capture lock error: {}", e);
+                        continue;
+                    }
                 };
 
                 match raw_events {
@@ -201,15 +199,23 @@ async fn run_daemon() -> Result<()> {
                             continue;
                         }
 
-                        let input_events = {
-                            let capture = ipc::lock_capture(&state)?;
-                            capture.process_events(&raw_events)
+                        let input_events = match ipc::lock_capture(&state) {
+                            Ok(mut capture) => capture.process_events(&raw_events),
+                            Err(e) => {
+                                tracing::warn!("input capture lock error: {}", e);
+                                continue;
+                            }
                         };
 
                         let mut gameplay_events = Vec::new();
                         for event in input_events {
-                            if handle_runtime_shortcut(&state, &event).await? {
-                                continue;
+                            match handle_runtime_shortcut(&state, &event).await {
+                                Ok(true) => continue,
+                                Ok(false) => {}
+                                Err(e) => {
+                                    tracing::warn!("runtime shortcut error: {}", e);
+                                    continue;
+                                }
                             }
                             if state.capture_active.load(Ordering::Acquire) {
                                 gameplay_events.push(event);
@@ -225,7 +231,13 @@ async fn run_daemon() -> Result<()> {
                             drop(engine);
 
                             if !pending.is_empty() {
-                                let mut dev = ipc::lock_uinput(&state)?;
+                                let mut dev = match ipc::lock_uinput(&state) {
+                                    Ok(dev) => dev,
+                                    Err(e) => {
+                                        tracing::warn!("uinput lock error: {}", e);
+                                        continue;
+                                    }
+                                };
                                 if let Err(e) = engine::execute_commands(&mut dev, &pending) {
                                     tracing::warn!("inject error: {}", e);
                                 }
@@ -245,7 +257,13 @@ async fn run_daemon() -> Result<()> {
                 let cmds = engine.tick();
                 drop(engine);
                 if !cmds.is_empty() {
-                    let mut dev = ipc::lock_uinput(&state)?;
+                    let mut dev = match ipc::lock_uinput(&state) {
+                        Ok(dev) => dev,
+                        Err(e) => {
+                            tracing::warn!("uinput lock error: {}", e);
+                            continue;
+                        }
+                    };
                     if let Err(e) = engine::execute_commands(&mut dev, &cmds) {
                         tracing::warn!("inject error: {}", e);
                     }

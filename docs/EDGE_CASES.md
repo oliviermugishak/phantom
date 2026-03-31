@@ -81,17 +81,18 @@ Workaround:
 - keep the region on the camera side of the UI
 - use `tap` and `hold_tap` for buttons rather than trying to click through mouse movement
 
-## `SYN_DROPPED` Can Still Lose State
+## `SYN_DROPPED` Still Drops Motion Packets
 
-Phantom now drops buffered events until the next `SYN_REPORT` after `SYN_DROPPED`, which avoids feeding garbage into the engine.
+Phantom now drops buffered events until the next `SYN_REPORT` after `SYN_DROPPED` and resyncs key/button state with `EVIOCGKEY`.
 
 What it does not yet do:
 
-- kernel key-state resynchronization with `EVIOCGKEY`
+- recover lost relative mouse deltas during the overflow window
 
 Practical effect:
 
-- if input overflow happens, the engine may temporarily miss held-state transitions
+- if input overflow happens, held keys and mouse buttons recover cleanly
+- camera motion that happened during the overflow window is still lost
 
 Workaround:
 

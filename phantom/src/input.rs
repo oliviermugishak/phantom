@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -20,6 +20,8 @@ const REL_Y: u16 = 0x01;
 const REL_WHEEL: u16 = 0x08;
 
 const EVDEV_CAP_MAX: usize = 0x20;
+const EVDEV_KEY_MAX: usize = 0x2ff;
+const EVDEV_KEY_BUF_SIZE: usize = (EVDEV_KEY_MAX + 1).div_ceil(8);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -406,6 +408,8 @@ pub struct DeviceInfo {
     pub file: File,
     pub is_keyboard: bool,
     pub is_mouse: bool,
+    pressed_keys: HashSet<Key>,
+    desynced: bool,
 }
 
 impl DeviceInfo {
@@ -416,6 +420,7 @@ impl DeviceInfo {
 
 pub struct InputCapture {
     devices: Vec<DeviceInfo>,
+    fd_to_index: HashMap<RawFd, usize>,
     epoll_fd: RawFd,
     mouse_grabbed: bool,
     keyboard_grabbed: bool,
@@ -460,7 +465,9 @@ impl InputCapture {
             return Err(PhantomError::Io(std::io::Error::last_os_error()));
         }
 
-        for dev in &devices {
+        let mut fd_to_index = HashMap::with_capacity(devices.len());
+        for (idx, dev) in devices.iter().enumerate() {
+            fd_to_index.insert(dev.fd(), idx);
             let mut event = libc::epoll_event {
                 events: (libc::EPOLLIN | libc::EPOLLET) as u32,
                 u64: dev.fd() as u64,
@@ -475,6 +482,7 @@ impl InputCapture {
         tracing::info!("watching {} input devices", devices.len());
         Ok(Self {
             devices,
+            fd_to_index,
             epoll_fd,
             mouse_grabbed: false,
             keyboard_grabbed: false,
@@ -573,6 +581,8 @@ impl InputCapture {
             file,
             is_keyboard,
             is_mouse,
+            pressed_keys: HashSet::new(),
+            desynced: false,
         }))
     }
 
@@ -650,27 +660,37 @@ impl InputCapture {
         Ok(events)
     }
 
-    pub fn process_events(&self, raw: &[(RawFd, RawInputEvent)]) -> Vec<InputEvent> {
+    pub fn process_events(&mut self, raw: &[(RawFd, RawInputEvent)]) -> Vec<InputEvent> {
         let mut result = Vec::new();
-        let mut dropped_fds = HashSet::new();
 
         for (fd, event) in raw {
+            let Some(device) = self.device_for_fd_mut(*fd) else {
+                tracing::warn!("received input event for unknown fd {}", fd);
+                continue;
+            };
+
             if event.type_ == EV_SYN {
                 if event.code == SYN_DROPPED {
                     tracing::warn!(
-                        "SYN_DROPPED on fd {}, dropping buffered events until next SYN_REPORT",
+                        "SYN_DROPPED on fd {}, dropping buffered events until next SYN_REPORT and resyncing key state",
                         fd
                     );
-                    dropped_fds.insert(*fd);
+                    device.desynced = true;
                     continue;
                 }
-                if event.code == SYN_REPORT {
-                    dropped_fds.remove(fd);
+                if event.code == SYN_REPORT && device.desynced {
+                    device.desynced = false;
+                    match Self::resync_key_state(device) {
+                        Ok(events) => result.extend(events),
+                        Err(e) => {
+                            tracing::warn!("failed to resync key state for {}: {}", device.path, e)
+                        }
+                    }
                 }
                 continue;
             }
 
-            if dropped_fds.contains(fd) {
+            if device.desynced {
                 continue;
             }
 
@@ -681,8 +701,11 @@ impl InputCapture {
                 }
                 if let Some(key) = evdev_code_to_key(event.code) {
                     if event.value == 1 {
-                        result.push(InputEvent::KeyPress(key));
+                        if device.pressed_keys.insert(key) {
+                            result.push(InputEvent::KeyPress(key));
+                        }
                     } else if event.value == 0 {
+                        device.pressed_keys.remove(&key);
                         result.push(InputEvent::KeyRelease(key));
                     }
                 }
@@ -714,6 +737,45 @@ impl InputCapture {
 
         Self::merge_mouse_moves(&mut result);
         result
+    }
+
+    fn device_for_fd_mut(&mut self, fd: RawFd) -> Option<&mut DeviceInfo> {
+        let idx = *self.fd_to_index.get(&fd)?;
+        self.devices.get_mut(idx)
+    }
+
+    fn resync_key_state(device: &mut DeviceInfo) -> Result<Vec<InputEvent>> {
+        let mut key_bits = vec![0u8; EVDEV_KEY_BUF_SIZE];
+        let ret = unsafe {
+            libc::ioctl(
+                device.fd(),
+                eviocgkey_request(key_bits.len()),
+                key_bits.as_mut_ptr(),
+            )
+        };
+        if ret < 0 {
+            return Err(PhantomError::Io(std::io::Error::last_os_error()));
+        }
+
+        let mut pressed_now = HashSet::new();
+        for code in 0..=EVDEV_KEY_MAX as u16 {
+            if !test_bit(code, &key_bits) {
+                continue;
+            }
+            if let Some(key) = evdev_code_to_key(code) {
+                pressed_now.insert(key);
+            }
+        }
+
+        let mut events = Vec::new();
+        for key in pressed_now.difference(&device.pressed_keys) {
+            events.push(InputEvent::KeyPress(*key));
+        }
+        for key in device.pressed_keys.difference(&pressed_now) {
+            events.push(InputEvent::KeyRelease(*key));
+        }
+        device.pressed_keys = pressed_now;
+        Ok(events)
     }
 
     fn merge_mouse_moves(events: &mut Vec<InputEvent>) {
@@ -870,6 +932,10 @@ fn eviocgbit_request(ev: u16, len: usize) -> libc::c_ulong {
     nix::request_code_read!(b'E', 0x20 + ev as u8, len) as libc::c_ulong
 }
 
+fn eviocgkey_request(len: usize) -> libc::c_ulong {
+    nix::request_code_read!(b'E', 0x18, len) as libc::c_ulong
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,6 +944,7 @@ mod tests {
     fn ioctl_requests_match_kernel_headers_on_x86_64() {
         assert_eq!(eviocgname_request(256), 0x8100_4506);
         assert_eq!(eviocgbit_request(0, 4), 0x8004_4520);
+        assert_eq!(eviocgkey_request(EVDEV_KEY_BUF_SIZE), 0x8060_4518);
         assert_eq!(
             nix::request_code_write!(b'E', 0x90, std::mem::size_of::<libc::c_int>()),
             0x4004_4590
