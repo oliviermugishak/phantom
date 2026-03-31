@@ -1,39 +1,40 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::{AsRawFd, RawFd};
+use std::time::Duration;
+
+use nix::errno::Errno;
 
 use crate::error::{PhantomError, Result};
 
-// ioctl command numbers for /dev/uinput (Linux kernel interface)
-// These are the raw ioctl numbers from linux/uinput.h
-const UI_SET_EVBIT: libc::c_ulong = 0x40045564;
-const UI_SET_KEYBIT: libc::c_ulong = 0x40045565;
-const UI_SET_ABSBIT: libc::c_ulong = 0x40045567;
-const UI_SET_PROPBIT: libc::c_ulong = 0x40045569;
-const UI_DEV_CREATE: libc::c_ulong = 0x5501;
-const UI_DEV_DESTROY: libc::c_ulong = 0x5502;
-const UI_DEV_SETUP: libc::c_ulong = 0x405c5503;
-const UI_ABS_SETUP: libc::c_ulong = 0x401c55c4;
+nix::ioctl_write_int!(ui_set_evbit, b'U', 100);
+nix::ioctl_write_int!(ui_set_keybit, b'U', 101);
+nix::ioctl_write_int!(ui_set_absbit, b'U', 103);
+nix::ioctl_write_int!(ui_set_propbit, b'U', 110);
+nix::ioctl_none!(ui_dev_create, b'U', 1);
+nix::ioctl_none!(ui_dev_destroy, b'U', 2);
+nix::ioctl_write_ptr!(ui_dev_setup, b'U', 3, UinputSetup);
+nix::ioctl_write_ptr!(ui_abs_setup, b'U', 4, UinputAbsSetup);
 
-// Event types
 const EV_SYN: u16 = 0x00;
+const EV_KEY: u16 = 0x01;
 const EV_ABS: u16 = 0x03;
 
-// Absolute axes
 const ABS_MT_SLOT: u16 = 0x2f;
 const ABS_MT_TRACKING_ID: u16 = 0x39;
 const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
 
-// Sync
 const SYN_REPORT: u16 = 0x00;
-
-// Bus type
+const BTN_TOUCH: u16 = 0x14a;
+const INPUT_PROP_DIRECT: u16 = 0x01;
 const BUS_VIRTUAL: u16 = 0x06;
 
 const MAX_SLOTS: i32 = 9;
+const SLOT_COUNT: usize = (MAX_SLOTS as usize) + 1;
+const ABS_CNT: usize = 0x40;
 
-// Linux input_event struct (24 bytes on 64-bit)
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct InputEvent {
@@ -44,7 +45,6 @@ struct InputEvent {
     value: i32,
 }
 
-// input_absinfo struct
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct InputAbsInfo {
@@ -56,15 +56,6 @@ struct InputAbsInfo {
     resolution: i32,
 }
 
-// uinput_abs_setup struct for UI_ABS_SETUP ioctl
-#[repr(C)]
-struct UinputAbsSetup {
-    code: u16,
-    _padding: [u8; 6],
-    absinfo: InputAbsInfo,
-}
-
-// input_id struct
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct InputId {
@@ -74,193 +65,203 @@ struct InputId {
     version: u16,
 }
 
-// uinput_setup struct for UI_DEV_SETUP ioctl
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct UinputSetup {
     id: InputId,
     name: [u8; 80],
     ff_effects_max: u32,
 }
 
-/// Safe wrapper around libc::ioctl for setting an int value.
-unsafe fn ioctl_set_int(fd: i32, request: libc::c_ulong, value: i32) -> std::io::Result<()> {
-    let ret = libc::ioctl(fd, request, value);
-    if ret < 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UinputAbsSetup {
+    code: u16,
+    _reserved: u16,
+    absinfo: InputAbsInfo,
 }
 
-/// Safe wrapper around libc::ioctl for passing a pointer.
-unsafe fn ioctl_set_ptr<T>(fd: i32, request: libc::c_ulong, ptr: *const T) -> std::io::Result<()> {
-    let ret = libc::ioctl(fd, request, ptr);
-    if ret < 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UinputUserDev {
+    name: [u8; 80],
+    id: InputId,
+    ff_effects_max: u32,
+    absmax: [i32; ABS_CNT],
+    absmin: [i32; ABS_CNT],
+    absfuzz: [i32; ABS_CNT],
+    absflat: [i32; ABS_CNT],
 }
+
+const _: [(); 24] = [(); std::mem::size_of::<InputEvent>()];
+const _: [(); 24] = [(); std::mem::size_of::<InputAbsInfo>()];
+const _: [(); 8] = [(); std::mem::size_of::<InputId>()];
+const _: [(); 92] = [(); std::mem::size_of::<UinputSetup>()];
+const _: [(); 28] = [(); std::mem::size_of::<UinputAbsSetup>()];
 
 pub struct UinputDevice {
     file: File,
     screen_width: i32,
     screen_height: i32,
-    active_slots: [bool; 10],
+    active_slots: [bool; SLOT_COUNT],
+    active_touches: usize,
 }
 
 impl UinputDevice {
     pub fn new(screen_width: u32, screen_height: u32) -> Result<Self> {
-        let file = OpenOptions::new()
-            .write(true)
-            .open("/dev/uinput")
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    PhantomError::PermissionDenied {
-                        path: "/dev/uinput".into(),
-                        reason: "run as root or add user to 'input' group".into(),
-                    }
-                } else {
-                    PhantomError::Io(e)
-                }
-            })?;
-
+        let (file, used_legacy_api) = Self::create_device_file(screen_width, screen_height)?;
         let fd = file.as_raw_fd();
 
-        // Enable event types
-        unsafe {
-            ioctl_set_int(fd, UI_SET_EVBIT, EV_ABS as i32)
-                .map_err(|e| ioctl_err("UI_SET_EVBIT EV_ABS", e))?;
-            ioctl_set_int(fd, UI_SET_EVBIT, 0x01i32) // EV_KEY
-                .map_err(|e| ioctl_err("UI_SET_EVBIT EV_KEY", e))?;
-            ioctl_set_int(fd, UI_SET_EVBIT, EV_SYN as i32)
-                .map_err(|e| ioctl_err("UI_SET_EVBIT EV_SYN", e))?;
+        unsafe { ui_dev_create(fd).map_err(|e| ioctl_err("UI_DEV_CREATE", e))? };
 
-            // Enable absolute axes
-            ioctl_set_int(fd, UI_SET_ABSBIT, ABS_MT_SLOT as i32)
-                .map_err(|e| ioctl_err("UI_SET_ABSBIT MT_SLOT", e))?;
-            ioctl_set_int(fd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID as i32)
-                .map_err(|e| ioctl_err("UI_SET_ABSBIT MT_TRACKING_ID", e))?;
-            ioctl_set_int(fd, UI_SET_ABSBIT, ABS_MT_POSITION_X as i32)
-                .map_err(|e| ioctl_err("UI_SET_ABSBIT MT_POSITION_X", e))?;
-            ioctl_set_int(fd, UI_SET_ABSBIT, ABS_MT_POSITION_Y as i32)
-                .map_err(|e| ioctl_err("UI_SET_ABSBIT MT_POSITION_Y", e))?;
-
-            // Enable touch button (BTN_TOUCH = 0x14a)
-            ioctl_set_int(fd, UI_SET_KEYBIT, 0x14ai32)
-                .map_err(|e| ioctl_err("UI_SET_KEYBIT BTN_TOUCH", e))?;
-
-            // Set direct touch property (INPUT_PROP_DIRECT = 0x01)
-            ioctl_set_int(fd, UI_SET_PROPBIT, 0x01i32)
-                .map_err(|e| ioctl_err("UI_SET_PROPBIT INPUT_PROP_DIRECT", e))?;
-        }
-
-        // Configure axis ranges
-        // Try UI_ABS_SETUP first (newer kernels)
-        let use_new_api = Self::set_abs_axis_new(fd, ABS_MT_SLOT, 0, MAX_SLOTS).is_ok();
-        if !use_new_api {
-            tracing::info!("UI_ABS_SETUP not available, using fallback");
-        }
-
-        Self::set_abs_axis(fd, ABS_MT_SLOT, 0, MAX_SLOTS, use_new_api)?;
-        Self::set_abs_axis(fd, ABS_MT_TRACKING_ID, 0, 65535, use_new_api)?;
-        Self::set_abs_axis(
-            fd,
-            ABS_MT_POSITION_X,
-            0,
-            (screen_width as i32) - 1,
-            use_new_api,
-        )?;
-        Self::set_abs_axis(
-            fd,
-            ABS_MT_POSITION_Y,
-            0,
-            (screen_height as i32) - 1,
-            use_new_api,
-        )?;
-
-        // Set device identity
-        let mut setup = UinputSetup {
-            id: InputId {
-                bustype: BUS_VIRTUAL,
-                vendor: 0x1234,
-                product: 0x5678,
-                version: 1,
-            },
-            name: [0u8; 80],
-            ff_effects_max: 0,
-        };
-        let name_bytes = b"Phantom Virtual Touch";
-        setup.name[..name_bytes.len()].copy_from_slice(name_bytes);
-
-        unsafe {
-            let ret = libc::ioctl(fd, UI_DEV_SETUP, &setup as *const UinputSetup);
-            if ret < 0 {
-                tracing::warn!(
-                    "UI_DEV_SETUP failed: {}, device name may be generic",
-                    std::io::Error::last_os_error()
-                );
-            }
-        }
-
-        // Create device
-        unsafe {
-            ioctl_set_int(fd, UI_DEV_CREATE, 0).map_err(|e| PhantomError::IoctlFailed {
-                operation: "UI_DEV_CREATE".into(),
-                path: "/dev/uinput".into(),
-                reason: e.to_string(),
-            })?;
-        }
+        // Give downstream consumers a moment to notice the new device.
+        std::thread::sleep(Duration::from_millis(50));
 
         tracing::info!(
-            "uinput device created: {}x{}, {} slots",
+            "uinput device created: {}x{}, {} slots{}",
             screen_width,
             screen_height,
-            MAX_SLOTS + 1
+            SLOT_COUNT,
+            if used_legacy_api {
+                " (legacy setup)"
+            } else {
+                ""
+            }
         );
 
         Ok(Self {
             file,
             screen_width: screen_width as i32,
             screen_height: screen_height as i32,
-            active_slots: [false; 10],
+            active_slots: [false; SLOT_COUNT],
+            active_touches: 0,
         })
     }
 
-    fn set_abs_axis_new(fd: i32, code: u16, min: i32, max: i32) -> std::io::Result<()> {
-        let setup = UinputAbsSetup {
-            code,
-            _padding: [0; 6],
-            absinfo: InputAbsInfo {
-                value: 0,
-                minimum: min,
-                maximum: max,
-                fuzz: 0,
-                flat: 0,
-                resolution: 0,
-            },
-        };
-        unsafe { ioctl_set_ptr(fd, UI_ABS_SETUP, &setup as *const UinputAbsSetup) }
+    fn create_device_file(screen_width: u32, screen_height: u32) -> Result<(File, bool)> {
+        let file = Self::open_uinput()?;
+        let fd = file.as_raw_fd();
+        Self::configure_capabilities(fd)?;
+
+        match Self::configure_modern_device(fd, screen_width, screen_height) {
+            Ok(()) => Ok((file, false)),
+            Err(err) if is_unsupported_setup(&err) => {
+                tracing::info!("modern uinput setup unavailable, falling back to legacy API");
+
+                drop(file);
+                let mut legacy_file = Self::open_uinput()?;
+                let legacy_fd = legacy_file.as_raw_fd();
+                Self::configure_capabilities(legacy_fd)?;
+                Self::configure_legacy_device(&mut legacy_file, screen_width, screen_height)?;
+                Ok((legacy_file, true))
+            }
+            Err(err) => Err(err),
+        }
     }
 
-    fn set_abs_axis(fd: i32, code: u16, min: i32, max: i32, use_new: bool) -> Result<()> {
-        if use_new {
-            Self::set_abs_axis_new(fd, code, min, max).map_err(|e| PhantomError::IoctlFailed {
-                operation: format!("UI_ABS_SETUP axis={:#x}", code),
-                path: "/dev/uinput".into(),
-                reason: e.to_string(),
-            })?;
-        } else {
-            // Fallback: set each axis's min/max/fuzz/flat individually
-            // We just call ioctl with UI_SET_ABS_MIN_MAX equivalent
-            // Since this is a legacy path, use the new API which is well-supported on 5.x+
-            return Err(PhantomError::IoctlFailed {
-                operation: format!("UI_ABS_SETUP axis={:#x}", code),
-                path: "/dev/uinput".into(),
-                reason: "kernel does not support UI_ABS_SETUP (need Linux 5.1+)".into(),
-            });
+    fn open_uinput() -> Result<File> {
+        OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open("/dev/uinput")
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    PhantomError::PermissionDenied {
+                        path: "/dev/uinput".into(),
+                        reason: "run as root or grant write access to /dev/uinput".into(),
+                    }
+                } else {
+                    PhantomError::Io(e)
+                }
+            })
+    }
+
+    fn configure_capabilities(fd: RawFd) -> Result<()> {
+        unsafe {
+            ui_set_evbit(fd, EV_ABS as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_EVBIT EV_ABS", e))?;
+            ui_set_evbit(fd, EV_KEY as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_EVBIT EV_KEY", e))?;
+            ui_set_evbit(fd, EV_SYN as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_EVBIT EV_SYN", e))?;
+
+            ui_set_absbit(fd, ABS_MT_SLOT as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_MT_SLOT", e))?;
+            ui_set_absbit(fd, ABS_MT_TRACKING_ID as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_MT_TRACKING_ID", e))?;
+            ui_set_absbit(fd, ABS_MT_POSITION_X as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_MT_POSITION_X", e))?;
+            ui_set_absbit(fd, ABS_MT_POSITION_Y as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_ABSBIT ABS_MT_POSITION_Y", e))?;
+
+            ui_set_keybit(fd, BTN_TOUCH as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_KEYBIT BTN_TOUCH", e))?;
+            ui_set_propbit(fd, INPUT_PROP_DIRECT as libc::c_ulong)
+                .map_err(|e| ioctl_err("UI_SET_PROPBIT INPUT_PROP_DIRECT", e))?;
         }
+
         Ok(())
+    }
+
+    fn configure_modern_device(fd: RawFd, screen_width: u32, screen_height: u32) -> Result<()> {
+        let setup = build_setup();
+
+        unsafe {
+            ui_dev_setup(fd, &setup as *const UinputSetup)
+                .map_err(|e| ioctl_err("UI_DEV_SETUP", e))?;
+        }
+
+        for axis in [
+            axis_setup(ABS_MT_SLOT, 0, MAX_SLOTS),
+            axis_setup(ABS_MT_TRACKING_ID, 0, 65535),
+            axis_setup(
+                ABS_MT_POSITION_X,
+                0,
+                (screen_width as i32).saturating_sub(1),
+            ),
+            axis_setup(
+                ABS_MT_POSITION_Y,
+                0,
+                (screen_height as i32).saturating_sub(1),
+            ),
+        ] {
+            unsafe {
+                ui_abs_setup(fd, &axis as *const UinputAbsSetup)
+                    .map_err(|e| ioctl_err(&format!("UI_ABS_SETUP axis={:#x}", axis.code), e))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn configure_legacy_device(
+        file: &mut File,
+        screen_width: u32,
+        screen_height: u32,
+    ) -> Result<()> {
+        let mut user_dev = UinputUserDev {
+            name: [0; 80],
+            id: build_setup().id,
+            ff_effects_max: 0,
+            absmax: [0; ABS_CNT],
+            absmin: [0; ABS_CNT],
+            absfuzz: [0; ABS_CNT],
+            absflat: [0; ABS_CNT],
+        };
+
+        let name = b"Phantom Virtual Touch";
+        user_dev.name[..name.len()].copy_from_slice(name);
+
+        user_dev.absmin[ABS_MT_SLOT as usize] = 0;
+        user_dev.absmax[ABS_MT_SLOT as usize] = MAX_SLOTS;
+        user_dev.absmin[ABS_MT_TRACKING_ID as usize] = 0;
+        user_dev.absmax[ABS_MT_TRACKING_ID as usize] = 65535;
+        user_dev.absmin[ABS_MT_POSITION_X as usize] = 0;
+        user_dev.absmax[ABS_MT_POSITION_X as usize] = (screen_width as i32).saturating_sub(1);
+        user_dev.absmin[ABS_MT_POSITION_Y as usize] = 0;
+        user_dev.absmax[ABS_MT_POSITION_Y as usize] = (screen_height as i32).saturating_sub(1);
+
+        write_struct(file, &user_dev).map_err(PhantomError::Io)
     }
 
     fn write_event(&mut self, type_: u16, code: u16, value: i32) -> Result<()> {
@@ -271,42 +272,41 @@ impl UinputDevice {
             code,
             value,
         };
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                &event as *const InputEvent as *const u8,
-                std::mem::size_of::<InputEvent>(),
-            )
-        };
-        self.file.write_all(bytes).map_err(PhantomError::Io)
+        write_struct(&mut self.file, &event).map_err(PhantomError::Io)
     }
 
     pub fn touch_down(&mut self, slot: u8, x: f64, y: f64) -> Result<()> {
-        let slot = slot as i32;
-        let px = ((x.clamp(0.0, 1.0)) * (self.screen_width as f64)) as i32;
-        let py = ((y.clamp(0.0, 1.0)) * (self.screen_height as f64)) as i32;
-        let px = px.clamp(0, self.screen_width - 1);
-        let py = py.clamp(0, self.screen_height - 1);
+        let slot_idx = self.slot_index(slot)?;
+        if self.active_slots[slot_idx] {
+            tracing::debug!(
+                "slot {} already active, treating touch_down as touch_move",
+                slot
+            );
+            return self.touch_move(slot, x, y);
+        }
 
-        self.write_event(EV_ABS, ABS_MT_SLOT, slot)?;
-        self.write_event(EV_ABS, ABS_MT_TRACKING_ID, slot)?;
+        let (px, py) = self.scale_coords(x, y);
+        let had_any_active = self.active_touches > 0;
+
+        self.write_event(EV_ABS, ABS_MT_SLOT, slot as i32)?;
+        self.write_event(EV_ABS, ABS_MT_TRACKING_ID, slot as i32)?;
         self.write_event(EV_ABS, ABS_MT_POSITION_X, px)?;
         self.write_event(EV_ABS, ABS_MT_POSITION_Y, py)?;
+        if !had_any_active {
+            self.write_event(EV_KEY, BTN_TOUCH, 1)?;
+        }
         self.write_event(EV_SYN, SYN_REPORT, 0)?;
 
-        if (slot as usize) < self.active_slots.len() {
-            self.active_slots[slot as usize] = true;
-        }
+        self.active_slots[slot_idx] = true;
+        self.active_touches += 1;
         Ok(())
     }
 
     pub fn touch_move(&mut self, slot: u8, x: f64, y: f64) -> Result<()> {
-        let slot = slot as i32;
-        let px = ((x.clamp(0.0, 1.0)) * (self.screen_width as f64)) as i32;
-        let py = ((y.clamp(0.0, 1.0)) * (self.screen_height as f64)) as i32;
-        let px = px.clamp(0, self.screen_width - 1);
-        let py = py.clamp(0, self.screen_height - 1);
+        let _ = self.slot_index(slot)?;
+        let (px, py) = self.scale_coords(x, y);
 
-        self.write_event(EV_ABS, ABS_MT_SLOT, slot)?;
+        self.write_event(EV_ABS, ABS_MT_SLOT, slot as i32)?;
         self.write_event(EV_ABS, ABS_MT_POSITION_X, px)?;
         self.write_event(EV_ABS, ABS_MT_POSITION_Y, py)?;
         self.write_event(EV_SYN, SYN_REPORT, 0)?;
@@ -314,19 +314,27 @@ impl UinputDevice {
     }
 
     pub fn touch_up(&mut self, slot: u8) -> Result<()> {
-        let slot = slot as i32;
-        self.write_event(EV_ABS, ABS_MT_SLOT, slot)?;
+        let slot_idx = self.slot_index(slot)?;
+        if !self.active_slots[slot_idx] {
+            return Ok(());
+        }
+
+        let will_clear_last_touch = self.active_touches == 1;
+
+        self.write_event(EV_ABS, ABS_MT_SLOT, slot as i32)?;
         self.write_event(EV_ABS, ABS_MT_TRACKING_ID, -1)?;
+        if will_clear_last_touch {
+            self.write_event(EV_KEY, BTN_TOUCH, 0)?;
+        }
         self.write_event(EV_SYN, SYN_REPORT, 0)?;
 
-        if (slot as usize) < self.active_slots.len() {
-            self.active_slots[slot as usize] = false;
-        }
+        self.active_slots[slot_idx] = false;
+        self.active_touches = self.active_touches.saturating_sub(1);
         Ok(())
     }
 
     pub fn release_all(&mut self) -> Result<()> {
-        for slot in 0..10u8 {
+        for slot in 0..SLOT_COUNT as u8 {
             if self.active_slots[slot as usize] {
                 self.touch_up(slot)?;
             }
@@ -341,34 +349,127 @@ impl UinputDevice {
     pub fn screen_height(&self) -> i32 {
         self.screen_height
     }
+
+    fn scale_coords(&self, x: f64, y: f64) -> (i32, i32) {
+        let px = ((x.clamp(0.0, 1.0)) * (self.screen_width as f64)) as i32;
+        let py = ((y.clamp(0.0, 1.0)) * (self.screen_height as f64)) as i32;
+
+        (
+            px.clamp(0, self.screen_width.saturating_sub(1)),
+            py.clamp(0, self.screen_height.saturating_sub(1)),
+        )
+    }
+
+    fn slot_index(&self, slot: u8) -> Result<usize> {
+        let idx = slot as usize;
+        if idx >= self.active_slots.len() {
+            return Err(PhantomError::Profile(format!(
+                "slot {} out of range 0-{}",
+                slot, MAX_SLOTS
+            )));
+        }
+        Ok(idx)
+    }
 }
 
 impl Drop for UinputDevice {
     fn drop(&mut self) {
         let _ = self.release_all();
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
         unsafe {
-            let _ = libc::ioctl(self.file.as_raw_fd(), UI_DEV_DESTROY, 0);
+            let _ = ui_dev_destroy(self.file.as_raw_fd());
         }
         tracing::info!("uinput device destroyed");
     }
 }
 
-fn ioctl_err(op: &str, e: std::io::Error) -> PhantomError {
+fn build_setup() -> UinputSetup {
+    let mut setup = UinputSetup {
+        id: InputId {
+            bustype: BUS_VIRTUAL,
+            vendor: 0x1234,
+            product: 0x5678,
+            version: 1,
+        },
+        name: [0; 80],
+        ff_effects_max: 0,
+    };
+    let name = b"Phantom Virtual Touch";
+    setup.name[..name.len()].copy_from_slice(name);
+    setup
+}
+
+fn axis_setup(code: u16, minimum: i32, maximum: i32) -> UinputAbsSetup {
+    UinputAbsSetup {
+        code,
+        _reserved: 0,
+        absinfo: InputAbsInfo {
+            value: 0,
+            minimum,
+            maximum,
+            fuzz: 0,
+            flat: 0,
+            resolution: 0,
+        },
+    }
+}
+
+fn write_struct<T>(file: &mut File, value: &T) -> std::io::Result<()> {
+    let bytes = unsafe {
+        std::slice::from_raw_parts((value as *const T).cast::<u8>(), std::mem::size_of::<T>())
+    };
+    file.write_all(bytes)
+}
+
+fn is_unsupported_setup(err: &PhantomError) -> bool {
+    match err {
+        PhantomError::IoctlFailed { reason, .. } => {
+            reason.contains("Invalid argument")
+                || reason.contains("Not a typewriter")
+                || reason.contains("Function not implemented")
+                || reason.contains("Inappropriate ioctl")
+        }
+        _ => false,
+    }
+}
+
+fn ioctl_err(op: &str, errno: Errno) -> PhantomError {
     PhantomError::IoctlFailed {
         operation: op.into(),
         path: "/dev/uinput".into(),
-        reason: e.to_string(),
+        reason: std::io::Error::from_raw_os_error(errno as i32).to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    // These tests require /dev/uinput access (root or input group)
-    // Run with: cargo test -- --ignored
-
     use super::*;
 
+    #[test]
+    fn ioctl_numbers_match_kernel_headers_on_x86_64() {
+        assert_eq!(
+            nix::request_code_write!(b'U', 100, std::mem::size_of::<libc::c_int>()),
+            0x4004_5564
+        );
+        assert_eq!(
+            nix::request_code_write!(b'U', 110, std::mem::size_of::<libc::c_int>()),
+            0x4004_556e
+        );
+        assert_eq!(
+            nix::request_code_write!(b'U', 4, std::mem::size_of::<UinputAbsSetup>()),
+            0x401c_5504
+        );
+    }
+
+    #[test]
+    fn rust_layout_matches_kernel_layout() {
+        assert_eq!(std::mem::size_of::<InputEvent>(), 24);
+        assert_eq!(std::mem::size_of::<UinputAbsSetup>(), 28);
+        assert_eq!(std::mem::offset_of!(UinputAbsSetup, absinfo), 4);
+    }
+
+    // These tests require /dev/uinput access (root or a configured udev rule).
+    // Run with: cargo test -- --ignored
     #[test]
     #[ignore]
     fn create_and_destroy() {

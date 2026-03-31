@@ -9,19 +9,10 @@ pub struct Config {
     pub log_level: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ScreenConfig {
     pub width: Option<u32>,
     pub height: Option<u32>,
-}
-
-impl Default for ScreenConfig {
-    fn default() -> Self {
-        Self {
-            width: None,
-            height: None,
-        }
-    }
 }
 
 impl Default for Config {
@@ -35,7 +26,8 @@ impl Default for Config {
 
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .unwrap_or_else(|| PathBuf::from(".config"))
         .join("phantom")
 }
 
@@ -73,9 +65,16 @@ pub fn load_config() -> Config {
 }
 
 pub fn socket_path() -> PathBuf {
-    let runtime = std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
-    PathBuf::from(runtime).join("phantom.sock")
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .or_else(dirs::runtime_dir)
+        .filter(|path| path.is_dir());
+
+    if let Some(runtime) = runtime {
+        runtime.join("phantom.sock")
+    } else {
+        PathBuf::from(format!("/tmp/phantom-{}.sock", unsafe { libc::getuid() }))
+    }
 }
 
 pub fn default_profile_path() -> Option<PathBuf> {

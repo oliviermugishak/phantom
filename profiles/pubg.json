@@ -1,65 +1,110 @@
 {
   "name": "PUBG Mobile",
   "version": 1,
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
   "global_sensitivity": 1.0,
   "nodes": [
     {
-      "id": "move",
       "type": "joystick",
+      "id": "move",
       "slot": 0,
-      "pos": { "x": 0.18, "y": 0.72 },
+      "pos": {
+        "x": 0.18,
+        "y": 0.72
+      },
       "radius": 0.07,
-      "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
+      "keys": {
+        "up": "W",
+        "down": "S",
+        "left": "A",
+        "right": "D"
+      }
     },
     {
-      "id": "camera",
       "type": "mouse_camera",
+      "id": "camera",
       "slot": 1,
-      "region": { "x": 0.35, "y": 0.0, "w": 0.65, "h": 1.0 },
+      "region": {
+        "x": 0.2,
+        "y": 0.0,
+        "w": 0.5,
+        "h": 1.0
+      },
       "sensitivity": 1.2,
       "invert_y": false
     },
     {
-      "id": "fire",
       "type": "hold_tap",
+      "id": "fire",
       "slot": 2,
-      "pos": { "x": 0.88, "y": 0.62 },
+      "pos": {
+        "x": 0.88,
+        "y": 0.62
+      },
       "key": "MouseLeft"
     },
     {
-      "id": "ads",
       "type": "hold_tap",
+      "id": "ads",
       "slot": 3,
-      "pos": { "x": 0.78, "y": 0.55 },
+      "pos": {
+        "x": 0.759,
+        "y": 0.617
+      },
       "key": "MouseRight"
     },
     {
-      "id": "jump",
       "type": "tap",
+      "id": "jump",
       "slot": 4,
-      "pos": { "x": 0.92, "y": 0.82 },
+      "pos": {
+        "x": 0.92,
+        "y": 0.82
+      },
       "key": "Space"
     },
     {
-      "id": "crouch",
       "type": "tap",
+      "id": "crouch",
       "slot": 5,
-      "pos": { "x": 0.85, "y": 0.90 },
+      "pos": {
+        "x": 0.85,
+        "y": 0.9
+      },
       "key": "C"
     },
     {
-      "id": "reload",
       "type": "tap",
+      "id": "reload",
       "slot": 6,
-      "pos": { "x": 0.78, "y": 0.88 },
+      "pos": {
+        "x": 0.78,
+        "y": 0.88
+      },
       "key": "R"
     },
     {
-      "id": "prone",
       "type": "tap",
+      "id": "prone",
       "slot": 7,
-      "pos": { "x": 0.80, "y": 0.95 },
+      "pos": {
+        "x": 0.8,
+        "y": 0.95
+      },
       "key": "Z"
+    },
+    {
+      "type": "tap",
+      "id": "tap_8",
+      "slot": 8,
+      "pos": {
+        "x": 0.802,
+        "y": 0.345
+      },
+      "key": "H"
     }
   ]
 }

@@ -1,15 +1,19 @@
-use std::fs::{self, OpenOptions};
+use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::str::FromStr;
 
 use crate::error::{PhantomError, Result};
 
-const EVIOCGRAB: u64 = 0x40044590;
-const EVIOCGNAME: u64 = 0x80004506;
-const EVIOCGBIT: u64 = 0x80004520;
+nix::ioctl_write_int!(eviocgrab, b'E', 0x90);
 
+const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
+
+const SYN_REPORT: u16 = 0x00;
+const SYN_DROPPED: u16 = 0x03;
 
 const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
@@ -26,6 +30,8 @@ pub struct RawInputEvent {
     pub code: u16,
     pub value: i32,
 }
+
+const _: [(); 24] = [(); std::mem::size_of::<RawInputEvent>()];
 
 #[derive(Debug, Clone)]
 pub enum InputEvent {
@@ -144,7 +150,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub fn from_str(s: &str) -> Option<Key> {
+    pub fn parse_name(s: &str) -> Option<Key> {
         let upper = s.to_uppercase();
         match upper.as_str() {
             // Aliases
@@ -264,6 +270,14 @@ impl Key {
             "KP9" => Some(Key::KP9),
             _ => None,
         }
+    }
+}
+
+impl FromStr for Key {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::parse_name(s).ok_or("unknown key")
     }
 }
 
@@ -389,14 +403,21 @@ fn evdev_code_to_key(code: u16) -> Option<Key> {
 pub struct DeviceInfo {
     pub path: String,
     pub name: String,
-    pub fd: RawFd,
+    pub file: File,
     pub is_keyboard: bool,
     pub is_mouse: bool,
+}
+
+impl DeviceInfo {
+    fn fd(&self) -> RawFd {
+        self.file.as_raw_fd()
+    }
 }
 
 pub struct InputCapture {
     devices: Vec<DeviceInfo>,
     epoll_fd: RawFd,
+    grabbed: bool,
 }
 
 impl InputCapture {
@@ -438,16 +459,21 @@ impl InputCapture {
         for dev in &devices {
             let mut event = libc::epoll_event {
                 events: (libc::EPOLLIN | libc::EPOLLET) as u32,
-                u64: dev.fd as u64,
+                u64: dev.fd() as u64,
             };
-            let ret = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, dev.fd, &mut event) };
+            let ret =
+                unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, dev.fd(), &mut event) };
             if ret < 0 {
                 return Err(PhantomError::Io(std::io::Error::last_os_error()));
             }
         }
 
         tracing::info!("captured {} input devices", devices.len());
-        Ok(Self { devices, epoll_fd })
+        Ok(Self {
+            devices,
+            epoll_fd,
+            grabbed: true,
+        })
     }
 
     fn probe_device(path: &str) -> Result<Option<DeviceInfo>> {
@@ -460,7 +486,13 @@ impl InputCapture {
 
         // Read device name
         let mut name_buf = [0u8; 256];
-        let name_len = unsafe { libc::ioctl(fd, EVIOCGNAME, name_buf.as_mut_ptr()) };
+        let name_len = unsafe {
+            libc::ioctl(
+                fd,
+                eviocgname_request(name_buf.len()),
+                name_buf.as_mut_ptr(),
+            )
+        };
         let device_name = if name_len > 0 {
             String::from_utf8_lossy(&name_buf[..name_len as usize])
                 .trim_end_matches('\0')
@@ -475,8 +507,14 @@ impl InputCapture {
         }
 
         // Check event type capabilities
-        let mut ev_bits = [0u8; (EVDEV_CAP_MAX + 7) / 8];
-        let ret = unsafe { libc::ioctl(fd, EVIOCGBIT, ev_bits.as_mut_ptr(), ev_bits.len()) };
+        let mut ev_bits = [0u8; EVDEV_CAP_MAX.div_ceil(8)];
+        let ret = unsafe {
+            libc::ioctl(
+                fd,
+                eviocgbit_request(0, ev_bits.len()),
+                ev_bits.as_mut_ptr(),
+            )
+        };
         if ret < 0 {
             return Ok(None);
         }
@@ -489,26 +527,24 @@ impl InputCapture {
         }
 
         // Check specific key capabilities for keyboard detection
-        let key_buf_size = ((0x114 + 1) + 7) / 8; // enough for all keys including mouse
+        let key_buf_size = (0x114usize + 1).div_ceil(8); // enough for all keys including mouse
         let mut key_bits = vec![0u8; key_buf_size];
         let ret = unsafe {
             libc::ioctl(
                 fd,
-                EVIOCGBIT + EV_KEY as u64,
+                eviocgbit_request(EV_KEY, key_bits.len()),
                 key_bits.as_mut_ptr(),
-                key_bits.len(),
             )
         };
         let is_keyboard = ret >= 0 && test_bit(30 /* KEY_A */, &key_bits);
 
         // Check relative axis capabilities for mouse detection
-        let mut rel_bits = [0u8; ((REL_Y as usize + 1) + 7) / 8];
+        let mut rel_bits = [0u8; (REL_Y as usize + 1).div_ceil(8)];
         let ret = unsafe {
             libc::ioctl(
                 fd,
-                EVIOCGBIT + EV_REL as u64,
+                eviocgbit_request(EV_REL, rel_bits.len()),
                 rel_bits.as_mut_ptr(),
-                rel_bits.len(),
             )
         };
         let is_mouse =
@@ -528,22 +564,18 @@ impl InputCapture {
         let fd = file.as_raw_fd();
 
         // Grab exclusive
-        let ret = unsafe { libc::ioctl(fd, EVIOCGRAB, 1) };
-        if ret < 0 {
+        if let Err(err) = unsafe { eviocgrab(fd, 1) } {
             return Err(PhantomError::IoctlFailed {
                 operation: "EVIOCGRAB".into(),
                 path: path.into(),
-                reason: std::io::Error::last_os_error().to_string(),
+                reason: std::io::Error::from_raw_os_error(err as i32).to_string(),
             });
         }
-
-        // Leak file to keep fd alive (cleaned up in Drop)
-        std::mem::forget(file);
 
         Ok(Some(DeviceInfo {
             path: path.to_string(),
             name: device_name,
-            fd,
+            file,
             is_keyboard,
             is_mouse,
         }))
@@ -568,8 +600,11 @@ impl InputCapture {
         }
 
         let mut events = Vec::new();
-        for i in 0..nfds as usize {
-            let fd = epoll_events[i].u64 as RawFd;
+        for epoll_event in epoll_events.iter().take(nfds as usize) {
+            let fd = epoll_event.u64 as RawFd;
+            if epoll_event.events & (libc::EPOLLERR as u32 | libc::EPOLLHUP as u32) != 0 {
+                tracing::warn!("input fd {} reported EPOLLERR/EPOLLHUP", fd);
+            }
             events.extend(Self::read_events(fd)?);
         }
         Ok(events)
@@ -578,18 +613,43 @@ impl InputCapture {
     fn read_events(fd: RawFd) -> Result<Vec<(RawFd, RawInputEvent)>> {
         let mut events = Vec::new();
         let event_size = std::mem::size_of::<RawInputEvent>();
-        let mut buf = [0u8; 256 * std::mem::size_of::<RawInputEvent>()];
+        let mut buf = [RawInputEvent {
+            tv_sec: 0,
+            tv_usec: 0,
+            type_: 0,
+            code: 0,
+            value: 0,
+        }; 256];
 
         loop {
-            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-            if n <= 0 {
+            let n = unsafe {
+                libc::read(
+                    fd,
+                    buf.as_mut_ptr().cast::<libc::c_void>(),
+                    std::mem::size_of_val(&buf),
+                )
+            };
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if matches!(err.raw_os_error(), Some(libc::EAGAIN)) {
+                    break;
+                }
+                if matches!(err.raw_os_error(), Some(libc::ENODEV)) {
+                    tracing::warn!("input device fd {} disappeared", fd);
+                    break;
+                }
+                return Err(PhantomError::Io(err));
+            }
+            if n == 0 {
+                break;
+            }
+            if !(n as usize).is_multiple_of(event_size) {
+                tracing::warn!("discarding short read from fd {}: {} bytes", fd, n);
                 break;
             }
             let count = n as usize / event_size;
-            for i in 0..count {
-                let offset = i * event_size;
-                let event = unsafe { *(buf.as_ptr().add(offset) as *const RawInputEvent) };
-                events.push((fd, event));
+            for event in buf.iter().take(count) {
+                events.push((fd, *event));
             }
         }
         Ok(events)
@@ -597,8 +657,28 @@ impl InputCapture {
 
     pub fn process_events(&self, raw: &[(RawFd, RawInputEvent)]) -> Vec<InputEvent> {
         let mut result = Vec::new();
+        let mut dropped_fds = HashSet::new();
 
-        for (_fd, event) in raw {
+        for (fd, event) in raw {
+            if event.type_ == EV_SYN {
+                if event.code == SYN_DROPPED {
+                    tracing::warn!(
+                        "SYN_DROPPED on fd {}, dropping buffered events until next SYN_REPORT",
+                        fd
+                    );
+                    dropped_fds.insert(*fd);
+                    continue;
+                }
+                if event.code == SYN_REPORT {
+                    dropped_fds.remove(fd);
+                }
+                continue;
+            }
+
+            if dropped_fds.contains(fd) {
+                continue;
+            }
+
             if event.type_ == EV_KEY {
                 // Filter repeat events (value == 2)
                 if event.value == 2 {
@@ -607,7 +687,7 @@ impl InputCapture {
                 if let Some(key) = evdev_code_to_key(event.code) {
                     if event.value == 1 {
                         result.push(InputEvent::KeyPress(key));
-                    } else {
+                    } else if event.value == 0 {
                         result.push(InputEvent::KeyRelease(key));
                     }
                 }
@@ -624,13 +704,15 @@ impl InputCapture {
                     });
                 } else if event.code == REL_WHEEL {
                     // Map scroll wheel to key press+release
-                    let key = if event.value > 0 {
-                        Key::WheelUp
-                    } else {
-                        Key::WheelDown
-                    };
-                    result.push(InputEvent::KeyPress(key));
-                    result.push(InputEvent::KeyRelease(key));
+                    if event.value != 0 {
+                        let key = if event.value > 0 {
+                            Key::WheelUp
+                        } else {
+                            Key::WheelDown
+                        };
+                        result.push(InputEvent::KeyPress(key));
+                        result.push(InputEvent::KeyRelease(key));
+                    }
                 }
             }
         }
@@ -669,16 +751,46 @@ impl InputCapture {
     pub fn has_keyboard(&self) -> bool {
         self.devices.iter().any(|d| d.is_keyboard)
     }
+
+    pub fn is_grabbed(&self) -> bool {
+        self.grabbed
+    }
+
+    pub fn set_grabbed(&mut self, grabbed: bool) -> Result<()> {
+        if self.grabbed == grabbed {
+            return Ok(());
+        }
+
+        for dev in &self.devices {
+            let value = if grabbed { 1 } else { 0 };
+            if let Err(err) = unsafe { eviocgrab(dev.fd(), value) } {
+                return Err(PhantomError::IoctlFailed {
+                    operation: "EVIOCGRAB".into(),
+                    path: dev.path.clone(),
+                    reason: std::io::Error::from_raw_os_error(err as i32).to_string(),
+                });
+            }
+        }
+
+        self.grabbed = grabbed;
+        tracing::info!(
+            "{} exclusive capture for {} devices",
+            if grabbed { "enabled" } else { "disabled" },
+            self.devices.len()
+        );
+        Ok(())
+    }
 }
 
 impl Drop for InputCapture {
     fn drop(&mut self) {
-        for dev in &self.devices {
-            unsafe {
-                libc::ioctl(dev.fd, EVIOCGRAB, 0);
-                libc::close(dev.fd);
+        if self.grabbed {
+            for dev in &self.devices {
+                unsafe {
+                    let _ = eviocgrab(dev.fd(), 0);
+                }
+                tracing::info!("released: {}", dev.path);
             }
-            tracing::info!("released: {}", dev.path);
         }
         unsafe {
             libc::close(self.epoll_fd);
@@ -693,4 +805,43 @@ fn test_bit(bit: u16, bits: &[u8]) -> bool {
         return false;
     }
     (bits[idx] >> off) & 1 != 0
+}
+
+fn eviocgname_request(len: usize) -> libc::c_ulong {
+    nix::request_code_read!(b'E', 0x06, len) as libc::c_ulong
+}
+
+fn eviocgbit_request(ev: u16, len: usize) -> libc::c_ulong {
+    nix::request_code_read!(b'E', 0x20 + ev as u8, len) as libc::c_ulong
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ioctl_requests_match_kernel_headers_on_x86_64() {
+        assert_eq!(eviocgname_request(256), 0x8100_4506);
+        assert_eq!(eviocgbit_request(0, 4), 0x8004_4520);
+        assert_eq!(
+            nix::request_code_write!(b'E', 0x90, std::mem::size_of::<libc::c_int>()),
+            0x4004_4590
+        );
+    }
+
+    #[test]
+    fn merge_mouse_moves_only_merges_adjacent_moves() {
+        let mut events = vec![
+            InputEvent::MouseMove { dx: 1, dy: 0 },
+            InputEvent::MouseMove { dx: 0, dy: 2 },
+            InputEvent::KeyPress(Key::A),
+            InputEvent::MouseMove { dx: 3, dy: 4 },
+        ];
+        InputCapture::merge_mouse_moves(&mut events);
+
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], InputEvent::MouseMove { dx: 1, dy: 2 }));
+        assert!(matches!(events[1], InputEvent::KeyPress(Key::A)));
+        assert!(matches!(events[2], InputEvent::MouseMove { dx: 3, dy: 4 }));
+    }
 }

@@ -1,6 +1,10 @@
 {
   "name": "Genshin Impact",
   "version": 1,
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
   "global_sensitivity": 0.8,
   "nodes": [
     {

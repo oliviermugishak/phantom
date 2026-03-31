@@ -1,26 +1,36 @@
+use std::io::{BufRead, BufReader as StdBufReader, Write};
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::config;
+use crate::engine::{self, KeymapEngine, TouchCommand};
 use crate::error::{PhantomError, Result};
-use crate::engine::KeymapEngine;
+use crate::inject::UinputDevice;
+use crate::input::InputCapture;
 use crate::profile::Profile;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum IpcRequest {
     LoadProfile { path: String },
+    LoadProfileData { profile: Profile },
     Reload,
     Status,
     SetSensitivity { value: f64 },
     ListProfiles,
     Pause,
     Resume,
+    EnterCapture,
+    ExitCapture,
+    ToggleCapture,
     Shutdown,
 }
 
@@ -42,7 +52,13 @@ pub struct IpcResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sensitivity: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<ProfileEntry>>,
 }
@@ -53,37 +69,51 @@ pub struct ProfileEntry {
     pub path: String,
 }
 
-/// Shared state between daemon and IPC handler.
 pub struct DaemonState {
     pub engine: RwLock<KeymapEngine>,
     pub profile_path: RwLock<Option<PathBuf>>,
-    pub paused: RwLock<bool>,
+    pub uinput: Mutex<UinputDevice>,
+    pub capture: Mutex<InputCapture>,
     pub screen_width: u32,
     pub screen_height: u32,
+    pub capture_active: AtomicBool,
     pub shutdown_tx: broadcast::Sender<()>,
 }
 
 impl DaemonState {
-    pub fn new(engine: KeymapEngine, width: u32, height: u32) -> (Arc<Self>, broadcast::Receiver<()>) {
+    pub fn new(
+        engine: KeymapEngine,
+        uinput: UinputDevice,
+        capture: InputCapture,
+        width: u32,
+        height: u32,
+    ) -> (Arc<Self>, broadcast::Receiver<()>) {
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         let state = Arc::new(Self {
             engine: RwLock::new(engine),
             profile_path: RwLock::new(None),
-            paused: RwLock::new(false),
+            uinput: Mutex::new(uinput),
+            capture: Mutex::new(capture),
             screen_width: width,
             screen_height: height,
+            capture_active: AtomicBool::new(true),
             shutdown_tx,
         });
         (state, shutdown_rx)
     }
 }
 
+const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const IPC_MAX_LINE_BYTES: usize = 64 * 1024;
+
 pub async fn run_ipc_server(state: Arc<DaemonState>) -> Result<()> {
     let socket_path = config::socket_path();
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| PhantomError::Ipc(format!("cannot create {}: {}", parent.display(), e)))?;
+    }
 
-    // Clean up stale socket
     if socket_path.exists() {
-        // Try connecting to see if another daemon is running
         match tokio::net::UnixStream::connect(&socket_path).await {
             Ok(_) => {
                 return Err(PhantomError::DaemonAlreadyRunning(
@@ -97,11 +127,9 @@ pub async fn run_ipc_server(state: Arc<DaemonState>) -> Result<()> {
         }
     }
 
-    let listener = UnixListener::bind(&socket_path).map_err(|e| {
-        PhantomError::Ipc(format!("cannot bind {}: {}", socket_path.display(), e))
-    })?;
+    let listener = UnixListener::bind(&socket_path)
+        .map_err(|e| PhantomError::Ipc(format!("cannot bind {}: {}", socket_path.display(), e)))?;
 
-    // Set permissions to 0600
     let _ = std::fs::set_permissions(
         &socket_path,
         std::os::unix::fs::PermissionsExt::from_mode(0o600),
@@ -127,40 +155,23 @@ pub async fn run_ipc_server(state: Arc<DaemonState>) -> Result<()> {
     }
 }
 
-async fn handle_connection(
-    stream: tokio::net::UnixStream,
-    state: Arc<DaemonState>,
-) -> Result<()> {
+async fn handle_connection(stream: tokio::net::UnixStream, state: Arc<DaemonState>) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    let mut line = String::new();
 
-    // Read request (one line)
-    let n = reader.read_line(&mut line).await.map_err(|e| {
-        PhantomError::Ipc(format!("read error: {}", e))
-    })?;
-    if n == 0 {
+    let Some(line) = read_line_limited(&mut reader, "request").await? else {
         return Ok(());
-    }
+    };
 
-    // Parse request
-    let request: IpcRequest = serde_json::from_str(line.trim()).map_err(|e| {
-        PhantomError::Ipc(format!("invalid JSON: {}", e))
-    })?;
+    let request: IpcRequest = serde_json::from_str(line.trim())
+        .map_err(|e| PhantomError::Ipc(format!("invalid JSON: {}", e)))?;
 
-    // Process request
     let response = handle_request(request, &state).await;
 
-    // Write response
-    let json = serde_json::to_string(&response).map_err(|e| {
-        PhantomError::Ipc(format!("serialize error: {}", e))
-    })?;
-    writer.write_all(json.as_bytes()).await.map_err(|e| {
-        PhantomError::Ipc(format!("write error: {}", e))
-    })?;
-    writer.write_all(b"\n").await.map_err(|e| {
-        PhantomError::Ipc(format!("write error: {}", e))
-    })?;
+    let json = serde_json::to_string(&response)
+        .map_err(|e| PhantomError::Ipc(format!("serialize error: {}", e)))?;
+    write_line_with_timeout(&mut writer, json.as_bytes(), "response").await?;
+    write_line_with_timeout(&mut writer, b"\n", "response").await?;
 
     Ok(())
 }
@@ -171,40 +182,21 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
             let path = shellexpand(&path);
             match Profile::load(std::path::Path::new(&path)) {
                 Ok(profile) => {
-                    let name = profile.name.clone();
-                    let slots: Vec<u8> = profile.nodes.iter().filter_map(|n| n.slot()).collect();
-                    let nodes = profile.nodes.len();
-                    let new_engine = KeymapEngine::new(profile);
-                    *state.engine.write().await = new_engine;
-                    *state.profile_path.write().await = Some(std::path::PathBuf::from(&path));
-                    tracing::info!("loaded profile: {}", name);
-                    IpcResponse {
-                        ok: true,
-                        error: None,
-                        message: Some("profile loaded".into()),
-                        profile: Some(name),
-                        profile_path: Some(path),
-                        nodes: Some(nodes),
-                        slots: Some(slots),
-                        paused: None,
-                        sensitivity: None,
-                        profiles: None,
+                    match load_profile_into_state(state, profile, Some(path.clone())).await {
+                        Ok(response) => response,
+                        Err(e) => error_response(e.to_string()),
                     }
                 }
-                Err(e) => IpcResponse {
-                    ok: false,
-                    error: Some(e.to_string()),
-                    message: None,
-                    profile: None,
-                    profile_path: None,
-                    nodes: None,
-                    slots: None,
-                    paused: None,
-                    sensitivity: None,
-                    profiles: None,
-                },
+                Err(e) => error_response(e.to_string()),
             }
         }
+        IpcRequest::LoadProfileData { profile } => match profile.validate() {
+            Ok(()) => match load_profile_into_state(state, profile, None).await {
+                Ok(response) => response,
+                Err(e) => error_response(e.to_string()),
+            },
+            Err(e) => error_response(e.to_string()),
+        },
         IpcRequest::Reload => {
             let path = state.profile_path.read().await.clone();
             match path {
@@ -213,64 +205,40 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                     let request = IpcRequest::LoadProfile { path: path_str };
                     Box::pin(handle_request(request, state)).await
                 }
-                None => IpcResponse {
-                    ok: false,
-                    error: Some("no profile loaded".into()),
-                    message: None,
-                    profile: None,
-                    profile_path: None,
-                    nodes: None,
-                    slots: None,
-                    paused: None,
-                    sensitivity: None,
-                    profiles: None,
-                },
+                None => error_response("no profile loaded".into()),
             }
         }
         IpcRequest::Status => {
             let engine = state.engine.read().await;
-            let paused = *state.paused.read().await;
             IpcResponse {
                 ok: true,
                 error: None,
                 message: None,
                 profile: Some(engine.profile_name().to_string()),
-                profile_path: state.profile_path.read().await.as_ref().map(|p| p.display().to_string()),
+                profile_path: state
+                    .profile_path
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
                 nodes: None,
                 slots: None,
-                paused: Some(paused),
+                paused: Some(engine.is_paused()),
+                capture_active: Some(state.capture_active.load(Ordering::Acquire)),
                 sensitivity: None,
+                screen_width: Some(state.screen_width),
+                screen_height: Some(state.screen_height),
                 profiles: None,
             }
         }
         IpcRequest::SetSensitivity { value } => {
             if value <= 0.0 || value > 10.0 {
-                return IpcResponse {
-                    ok: false,
-                    error: Some("sensitivity must be in (0, 10]".into()),
-                    message: None,
-                    profile: None,
-                    profile_path: None,
-                    nodes: None,
-                    slots: None,
-                    paused: None,
-                    sensitivity: None,
-                    profiles: None,
-                };
+                return error_response("sensitivity must be in (0, 10]".into());
             }
             state.engine.write().await.set_sensitivity(value);
-            IpcResponse {
-                ok: true,
-                error: None,
-                message: None,
-                profile: None,
-                profile_path: None,
-                nodes: None,
-                slots: None,
-                paused: None,
-                sensitivity: Some(value),
-                profiles: None,
-            }
+            ok_response()
+                .with_sensitivity(value)
+                .with_capture_active(state.capture_active.load(Ordering::Acquire))
         }
         IpcRequest::ListProfiles => {
             let dir = config::profiles_dir();
@@ -278,10 +246,11 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().map_or(false, |e| e == "json") {
+                    if path.extension().is_some_and(|e| e == "json") {
                         if let Ok(content) = std::fs::read_to_string(&path) {
                             if let Ok(p) = serde_json::from_str::<serde_json::Value>(&content) {
-                                let name = p.get("name")
+                                let name = p
+                                    .get("name")
                                     .and_then(|n| n.as_str())
                                     .unwrap_or("unknown")
                                     .to_string();
@@ -303,92 +272,349 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 nodes: None,
                 slots: None,
                 paused: None,
+                capture_active: Some(state.capture_active.load(Ordering::Acquire)),
                 sensitivity: None,
+                screen_width: None,
+                screen_height: None,
                 profiles: Some(profiles),
             }
         }
         IpcRequest::Pause => {
-            let mut engine = state.engine.write().await;
-            let _cmds = engine.pause();
-            *state.paused.write().await = true;
-            IpcResponse {
-                ok: true,
-                error: None,
-                message: Some("paused".into()),
-                profile: None,
-                profile_path: None,
-                nodes: None,
-                slots: None,
-                paused: Some(true),
-                sensitivity: None,
-                profiles: None,
+            let cmds = {
+                let mut engine = state.engine.write().await;
+                engine.pause()
+            };
+            if let Err(e) = apply_commands(state, &cmds) {
+                return error_response(e.to_string());
             }
+            ok_response()
+                .with_message("paused")
+                .with_paused(true)
+                .with_capture_active(state.capture_active.load(Ordering::Acquire))
         }
         IpcRequest::Resume => {
             state.engine.write().await.resume();
-            *state.paused.write().await = false;
-            IpcResponse {
-                ok: true,
-                error: None,
-                message: Some("resumed".into()),
-                profile: None,
-                profile_path: None,
-                nodes: None,
-                slots: None,
-                paused: Some(false),
-                sensitivity: None,
-                profiles: None,
+            ok_response()
+                .with_message("resumed")
+                .with_paused(false)
+                .with_capture_active(state.capture_active.load(Ordering::Acquire))
+        }
+        IpcRequest::EnterCapture => match set_capture_active(state, true).await {
+            Ok(()) => ok_response()
+                .with_message("capture enabled")
+                .with_capture_active(true),
+            Err(e) => error_response(e.to_string()),
+        },
+        IpcRequest::ExitCapture => match set_capture_active(state, false).await {
+            Ok(()) => ok_response()
+                .with_message("capture disabled")
+                .with_capture_active(false),
+            Err(e) => error_response(e.to_string()),
+        },
+        IpcRequest::ToggleCapture => {
+            let next = !state.capture_active.load(Ordering::Acquire);
+            match set_capture_active(state, next).await {
+                Ok(()) => ok_response()
+                    .with_message(if next {
+                        "capture enabled"
+                    } else {
+                        "capture disabled"
+                    })
+                    .with_capture_active(next),
+                Err(e) => error_response(e.to_string()),
             }
         }
         IpcRequest::Shutdown => {
             let _ = state.shutdown_tx.send(());
-            IpcResponse {
-                ok: true,
-                error: None,
-                message: Some("shutting down".into()),
-                profile: None,
-                profile_path: None,
-                nodes: None,
-                slots: None,
-                paused: None,
-                sensitivity: None,
-                profiles: None,
-            }
+            ok_response().with_message("shutting down")
         }
     }
 }
 
+async fn load_profile_into_state(
+    state: &Arc<DaemonState>,
+    profile: Profile,
+    path: Option<String>,
+) -> Result<IpcResponse> {
+    let screen = profile
+        .screen
+        .as_ref()
+        .ok_or_else(|| PhantomError::ProfileValidation {
+            field: "screen".into(),
+            message: "profile screen is required".into(),
+        })?;
+    if screen.width != state.screen_width || screen.height != state.screen_height {
+        return Err(PhantomError::Ipc(format!(
+            "profile screen {}x{} does not match daemon touchscreen {}x{}",
+            screen.width, screen.height, state.screen_width, state.screen_height
+        )));
+    }
+
+    let name = profile.name.clone();
+    let slots: Vec<u8> = profile.nodes.iter().filter_map(|n| n.slot()).collect();
+    let nodes = profile.nodes.len();
+
+    let (was_paused, release_cmds) = {
+        let mut engine = state.engine.write().await;
+        let paused = engine.is_paused();
+        let cmds = engine.release_all();
+        (paused, cmds)
+    };
+    apply_commands(state, &release_cmds)?;
+
+    let mut new_engine = KeymapEngine::new(profile);
+    if was_paused {
+        let _ = new_engine.pause();
+    }
+    *state.engine.write().await = new_engine;
+    if let Some(path) = &path {
+        *state.profile_path.write().await = Some(std::path::PathBuf::from(path));
+    }
+
+    Ok(IpcResponse {
+        ok: true,
+        error: None,
+        message: Some("profile loaded".into()),
+        profile: Some(name),
+        profile_path: path,
+        nodes: Some(nodes),
+        slots: Some(slots),
+        paused: Some(was_paused),
+        capture_active: Some(state.capture_active.load(Ordering::Acquire)),
+        sensitivity: None,
+        screen_width: Some(state.screen_width),
+        screen_height: Some(state.screen_height),
+        profiles: None,
+    })
+}
+
+pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Result<()> {
+    if state.capture_active.load(Ordering::Acquire) == active {
+        return Ok(());
+    }
+
+    if !active {
+        let cmds = {
+            let mut engine = state.engine.write().await;
+            engine.release_all()
+        };
+        apply_commands(state, &cmds)?;
+    }
+
+    {
+        let mut capture = lock_capture(state)?;
+        capture.set_grabbed(active)?;
+    }
+    state.capture_active.store(active, Ordering::Release);
+    Ok(())
+}
+
+fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()> {
+    if cmds.is_empty() {
+        return Ok(());
+    }
+
+    let mut device = lock_uinput(state)?;
+    engine::execute_commands(&mut device, cmds)
+}
+
+pub fn lock_uinput(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, UinputDevice>> {
+    state
+        .uinput
+        .lock()
+        .map_err(|_| PhantomError::Internal("uinput device lock poisoned".into()))
+}
+
+pub fn lock_capture(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, InputCapture>> {
+    state
+        .capture
+        .lock()
+        .map_err(|_| PhantomError::Internal("input capture lock poisoned".into()))
+}
+
+fn error_response(error: String) -> IpcResponse {
+    IpcResponse {
+        ok: false,
+        error: Some(error),
+        message: None,
+        profile: None,
+        profile_path: None,
+        nodes: None,
+        slots: None,
+        paused: None,
+        capture_active: None,
+        sensitivity: None,
+        screen_width: None,
+        screen_height: None,
+        profiles: None,
+    }
+}
+
+fn ok_response() -> IpcResponse {
+    IpcResponse {
+        ok: true,
+        error: None,
+        message: None,
+        profile: None,
+        profile_path: None,
+        nodes: None,
+        slots: None,
+        paused: None,
+        capture_active: None,
+        sensitivity: None,
+        screen_width: None,
+        screen_height: None,
+        profiles: None,
+    }
+}
+
+impl IpcResponse {
+    fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    fn with_paused(mut self, paused: bool) -> Self {
+        self.paused = Some(paused);
+        self
+    }
+
+    fn with_capture_active(mut self, capture_active: bool) -> Self {
+        self.capture_active = Some(capture_active);
+        self
+    }
+
+    fn with_sensitivity(mut self, sensitivity: f64) -> Self {
+        self.sensitivity = Some(sensitivity);
+        self
+    }
+}
+
 fn shellexpand(s: &str) -> String {
-    if s.starts_with("~/") {
+    if let Some(rest) = s.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(&s[2..]).display().to_string();
+            return home.join(rest).display().to_string();
         }
     }
     s.to_string()
 }
 
-/// Send a command to the running daemon via IPC.
 pub async fn send_command(request: &IpcRequest) -> Result<IpcResponse> {
     let socket_path = config::socket_path();
-    let mut stream = tokio::net::UnixStream::connect(&socket_path).await.map_err(|e| {
-        PhantomError::Ipc(format!("cannot connect to daemon: {}", e))
-    })?;
+    let mut stream = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .map_err(|e| PhantomError::Ipc(format!("cannot connect to daemon: {}", e)))?;
 
     let json = serde_json::to_string(request)?;
-    stream.write_all(json.as_bytes()).await.map_err(|e| {
-        PhantomError::Ipc(format!("write error: {}", e))
-    })?;
-    stream.write_all(b"\n").await.map_err(|e| {
-        PhantomError::Ipc(format!("write error: {}", e))
-    })?;
+    write_line_with_timeout(&mut stream, json.as_bytes(), "request").await?;
+    write_line_with_timeout(&mut stream, b"\n", "request").await?;
 
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.map_err(|e| {
-        PhantomError::Ipc(format!("read error: {}", e))
-    })?;
+    let line = read_line_limited(&mut reader, "response")
+        .await?
+        .ok_or_else(|| PhantomError::Ipc("daemon closed connection without a response".into()))?;
 
-    serde_json::from_str(line.trim()).map_err(|e| {
-        PhantomError::Ipc(format!("invalid response: {}", e)).into()
-    })
+    serde_json::from_str(line.trim())
+        .map_err(|e| PhantomError::Ipc(format!("invalid response: {}", e)))
+}
+
+pub fn send_command_blocking(request: &IpcRequest) -> Result<IpcResponse> {
+    let socket_path = config::socket_path();
+    let mut stream = StdUnixStream::connect(&socket_path)
+        .map_err(|e| PhantomError::Ipc(format!("cannot connect to daemon: {}", e)))?;
+    stream
+        .set_read_timeout(Some(IPC_IO_TIMEOUT))
+        .map_err(PhantomError::Io)?;
+    stream
+        .set_write_timeout(Some(IPC_IO_TIMEOUT))
+        .map_err(PhantomError::Io)?;
+
+    let json = serde_json::to_string(request)?;
+    stream
+        .write_all(json.as_bytes())
+        .map_err(PhantomError::Io)?;
+    stream.write_all(b"\n").map_err(PhantomError::Io)?;
+    stream.flush().map_err(PhantomError::Io)?;
+
+    let mut reader = StdBufReader::new(stream);
+    let line = read_line_limited_blocking(&mut reader, "response")?
+        .ok_or_else(|| PhantomError::Ipc("daemon closed connection without a response".into()))?;
+    serde_json::from_str(line.trim())
+        .map_err(|e| PhantomError::Ipc(format!("invalid response: {}", e)))
+}
+
+async fn read_line_limited<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    label: &str,
+) -> Result<Option<String>> {
+    let mut buf = Vec::new();
+
+    loop {
+        let (consumed, has_newline) = {
+            let chunk = tokio::time::timeout(IPC_IO_TIMEOUT, reader.fill_buf())
+                .await
+                .map_err(|_| PhantomError::Ipc(format!("{} read timed out", label)))?
+                .map_err(|e| PhantomError::Ipc(format!("{} read error: {}", label, e)))?;
+
+            if chunk.is_empty() {
+                if buf.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+
+            let consumed = chunk
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .map_or(chunk.len(), |idx| idx + 1);
+            if buf.len() + consumed > IPC_MAX_LINE_BYTES {
+                return Err(PhantomError::Ipc(format!(
+                    "{} exceeds {} bytes",
+                    label, IPC_MAX_LINE_BYTES
+                )));
+            }
+
+            buf.extend_from_slice(&chunk[..consumed]);
+            (consumed, chunk[..consumed].last() == Some(&b'\n'))
+        };
+
+        reader.consume(consumed);
+        if has_newline {
+            break;
+        }
+    }
+
+    let line = std::str::from_utf8(&buf)
+        .map_err(|e| PhantomError::Ipc(format!("{} is not valid UTF-8: {}", label, e)))?;
+    Ok(Some(line.trim_end_matches(&['\r', '\n'][..]).to_string()))
+}
+
+fn read_line_limited_blocking<R: BufRead>(reader: &mut R, label: &str) -> Result<Option<String>> {
+    let mut buf = Vec::new();
+    let consumed = reader
+        .read_until(b'\n', &mut buf)
+        .map_err(PhantomError::Io)?;
+    if consumed == 0 {
+        return Ok(None);
+    }
+    if buf.len() > IPC_MAX_LINE_BYTES {
+        return Err(PhantomError::Ipc(format!(
+            "{} exceeds {} bytes",
+            label, IPC_MAX_LINE_BYTES
+        )));
+    }
+    let line = std::str::from_utf8(&buf)
+        .map_err(|e| PhantomError::Ipc(format!("{} is not valid UTF-8: {}", label, e)))?;
+    Ok(Some(line.trim_end_matches(&['\r', '\n'][..]).to_string()))
+}
+
+async fn write_line_with_timeout<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    bytes: &[u8],
+    label: &str,
+) -> Result<()> {
+    tokio::time::timeout(IPC_IO_TIMEOUT, writer.write_all(bytes))
+        .await
+        .map_err(|_| PhantomError::Ipc(format!("{} write timed out", label)))?
+        .map_err(|e| PhantomError::Ipc(format!("{} write error: {}", label, e)))
 }

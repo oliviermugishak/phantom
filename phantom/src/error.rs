@@ -33,6 +33,9 @@ pub enum PhantomError {
     #[error("no input devices found")]
     NoInputDevices,
 
+    #[error("internal error: {0}")]
+    Internal(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

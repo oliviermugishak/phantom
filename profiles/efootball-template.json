@@ -1,0 +1,54 @@
+{
+  "name": "eFootball Mobile (Template)",
+  "version": 1,
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
+  "global_sensitivity": 1.0,
+  "nodes": [
+    {
+      "id": "move",
+      "type": "joystick",
+      "slot": 0,
+      "pos": { "x": 0.16, "y": 0.78 },
+      "radius": 0.08,
+      "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
+    },
+    {
+      "id": "through_pass",
+      "type": "tap",
+      "slot": 1,
+      "pos": { "x": 0.83, "y": 0.66 },
+      "key": "I"
+    },
+    {
+      "id": "pass",
+      "type": "tap",
+      "slot": 2,
+      "pos": { "x": 0.78, "y": 0.81 },
+      "key": "J"
+    },
+    {
+      "id": "shoot",
+      "type": "tap",
+      "slot": 3,
+      "pos": { "x": 0.92, "y": 0.82 },
+      "key": "K"
+    },
+    {
+      "id": "sprint",
+      "type": "hold_tap",
+      "slot": 4,
+      "pos": { "x": 0.70, "y": 0.74 },
+      "key": "LeftShift"
+    },
+    {
+      "id": "switch",
+      "type": "tap",
+      "slot": 5,
+      "pos": { "x": 0.84, "y": 0.92 },
+      "key": "L"
+    }
+  ]
+}

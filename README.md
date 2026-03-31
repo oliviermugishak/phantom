@@ -1,234 +1,173 @@
 # Phantom
 
-Virtual touchscreen mapper for Waydroid. Maps keyboard and mouse input to multitouch events via the Linux kernel's `uinput` subsystem — no ADB, no emulation detection, zero overhead.
+Keyboard and mouse to virtual multitouch mapper for fullscreen Waydroid play.
 
-```
-┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────────────┐
-│  Keyboard   │     │   Phantom    │     │   uinput     │     │  Waydroid   │
-│  Mouse      │────▶│   daemon     │────▶│   kernel     │────▶│  Android    │
-│  evdev grab │     │   engine     │     │   virtual    │     │  sees real  │
-│             │     │              │     │   touch      │     │  hardware   │
-└─────────────┘     └──────────────┘     └──────────────┘     └─────────────┘
-```
+Phantom grabs host input through Linux `evdev`, maps it through a profile-driven state machine, and injects MT Protocol B touch events through `uinput` so Waydroid sees a direct-touch device.
 
-## Why
+## Product Shape
 
-Waydroid runs as an LXC container on your Linux kernel. It shares the same `/dev/input` subsystem. Phantom creates a virtual multitouch device that Waydroid's Android sees as real hardware — identical to plugging in a touchscreen. No ADB spawning, no JVM overhead, no emulation detection.
+Phantom is intentionally narrow:
 
-## Install
+- one Linux device
+- one fullscreen Waydroid surface
+- one fixed touch resolution
+- manual per-game profiles
 
-### Requirements
+That is the supported path. The daemon now treats the touch resolution as a first-class contract instead of guessing.
 
-- Linux kernel 5.1+ (for `UI_ABS_SETUP` ioctl)
-- Hyprland, Sway, or any wlroots-based compositor (or X11)
-- Waydroid running as LXC container
-- Root access or `input` group membership
+## Supported Control Types
 
-### Build
+- `tap`
+- `hold_tap`
+- `toggle_tap`
+- `joystick`
+- `mouse_camera` in JSON, shown as `Mouse Look` in the UI
+- `repeat_tap`
+- `macro`
+- `layer_shift`
+
+This covers the normal control patterns for PUBG-like, Genshin-like, and eFootball-like games:
+
+- WASD movement
+- locked mouse look
+- mouse or keyboard bound taps and holds
+- repeated clicks
+- toggle-style holds
+- alternate layers or modes
+
+## Runtime Features
+
+- strict profile `screen` matching
+- capture on startup
+- `F8` toggles capture on or off inside the daemon
+- `F9` toggles pause or resume inside the daemon
+- live profile push over IPC
+- profile reload from disk
+- layer switching and toggle nodes
+
+## GUI Features
+
+`phantom-gui` is now a native mapper, not just a raw JSON editor.
+
+It supports:
+
+- screenshot-first canvas editing
+- direct placement tools
+- drag editing for points
+- drag and resize handles for mouse-look regions
+- on-the-fly key capture
+- inline rename
+- macro step editing
+- layer switch editing
+- live daemon status
+- one-click `Push Live`
+- runtime buttons for capture and pause control
+
+## Quick Start
+
+1. Build:
 
 ```bash
-git clone <repo>
-cd ttplayer
 cargo build --release
 ```
 
-### Setup
+2. Enable `uinput` and input-device access:
 
 ```bash
-# Option A: Run as root
-sudo ./target/release/phantom --daemon
+sudo modprobe uinput
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf
 
-# Option B: Set up udev rules (run as regular user)
 sudo cp contrib/99-phantom.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger
-sudo usermod -aG input $USER
-# Log out and back in
-./target/release/phantom --daemon
+sudo usermod -aG input "$USER"
 ```
 
-### Load a profile
+Log out and back in after changing groups.
+
+3. Install config and profiles:
 
 ```bash
-# In another terminal
-./target/release/phantom load profiles/pubg.json
-./target/release/phantom status
+mkdir -p ~/.config/phantom/profiles
+cp config.example.toml ~/.config/phantom/config.toml
+cp profiles/*.json ~/.config/phantom/profiles/
+cp profiles/pubg.json ~/.config/phantom/profiles/default.json
 ```
 
-## Usage
-
-### Daemon
-
-```bash
-phantom --daemon              # Start the daemon (needs root or input group)
-```
-
-### CLI commands
-
-```bash
-phantom load <profile.json>   # Load a profile
-phantom status                # Show daemon state
-phantom pause                 # Pause input processing
-phantom resume                # Resume input processing
-phantom reload                # Reload current profile from disk
-phantom sensitivity <value>   # Set global sensitivity (0.1 - 10.0)
-phantom list                  # List available profiles
-phantom shutdown              # Clean shutdown
-```
-
-### GUI
-
-```bash
-./target/release/phantom-gui   # Open profile editor
-```
-
-The GUI lets you drag node positions on a canvas, edit key bindings, adjust sensitivity, and save profiles.
-
-## How it works
-
-### Input capture
-
-Phantom opens `/dev/input/event*` devices (keyboards and mice) and calls `EVIOCGRAB` to exclusively capture them. No events reach the compositor. Raw evdev events are parsed directly — key presses, releases, and mouse deltas.
-
-### Keymap engine
-
-A pure state machine receives raw input events and maps them to touch commands based on the loaded JSON profile. Six node types:
-
-| Type | Use | Example |
-|---|---|---|
-| `tap` | Key down = touch, key up = lift | Jump, reload, crouch |
-| `hold_tap` | Hold key = hold finger | Fire, aim, sprint |
-| `joystick` | 4 keys map to directional movement | WASD movement |
-| `mouse_camera` | Mouse delta = swipe on screen | Camera/aim control |
-| `repeat_tap` | Hold key = rapid taps | Auto-fire, rapid loot |
-| `macro` | One key = timed sequence | Combos, emotes |
-
-Each node gets a fixed MT Protocol B slot (0–9). Up to 10 simultaneous touches.
-
-### Touch injection
-
-Phantom writes raw `input_event` structs to `/dev/uinput`. Every touch is a structured sequence:
-
-```
-EV_ABS  ABS_MT_SLOT         <slot_id>
-EV_ABS  ABS_MT_TRACKING_ID  <id or -1 to lift>
-EV_ABS  ABS_MT_POSITION_X   <x pixels>
-EV_ABS  ABS_MT_POSITION_Y   <y pixels>
-EV_SYN  SYN_REPORT          0
-```
-
-This is exactly what a real touchscreen driver does. Android cannot distinguish it from hardware.
-
-## Profile format
-
-Profiles are JSON files in `~/.config/phantom/profiles/`. Coordinates are relative (0.0–1.0), so profiles work at any resolution.
-
-```json
-{
-  "name": "PUBG Mobile",
-  "version": 1,
-  "global_sensitivity": 1.0,
-  "nodes": [
-    {
-      "id": "move",
-      "type": "joystick",
-      "slot": 0,
-      "pos": { "x": 0.18, "y": 0.72 },
-      "radius": 0.07,
-      "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
-    },
-    {
-      "id": "camera",
-      "type": "mouse_camera",
-      "slot": 1,
-      "region": { "x": 0.35, "y": 0.0, "w": 0.65, "h": 1.0 },
-      "sensitivity": 1.2
-    },
-    {
-      "id": "fire",
-      "type": "hold_tap",
-      "slot": 2,
-      "pos": { "x": 0.88, "y": 0.62 },
-      "key": "MouseLeft"
-    },
-    {
-      "id": "jump",
-      "type": "tap",
-      "slot": 3,
-      "pos": { "x": 0.92, "y": 0.82 },
-      "key": "Space"
-    }
-  ]
-}
-```
-
-See [docs/PROFILES.md](docs/PROFILES.md) for the full specification of all node types.
-
-## Configuration
-
-`~/.config/phantom/config.toml`:
+4. Set the real fullscreen Waydroid resolution in `~/.config/phantom/config.toml`:
 
 ```toml
-[screen]
-# Override screen resolution (auto-detected if omitted)
-# width = 1920
-# height = 1080
-
-# Log level: trace, debug, info, warn, error
 log_level = "info"
+
+[screen]
+width = 1920
+height = 1080
 ```
 
-## Project structure
+5. Start Phantom, then restart Waydroid if it is already running:
 
+```bash
+./target/release/phantom --daemon
+waydroid session stop
+waydroid session start
 ```
-phantom/
-├── Cargo.toml                  # Workspace root
-├── phantom/                    # Daemon crate
-│   ├── src/
-│   │   ├── main.rs             # Entry point, CLI, daemon loop
-│   │   ├── engine.rs           # Keymap state machine (6 node types)
-│   │   ├── input.rs            # evdev capture, device discovery
-│   │   ├── inject.rs           # uinput virtual touch device
-│   │   ├── ipc.rs              # Unix socket IPC server
-│   │   ├── profile.rs          # JSON profile parsing + validation
-│   │   ├── config.rs           # Config file loading
-│   │   └── error.rs            # Error types
-│   └── tests/
-│       └── integration.rs      # Integration tests
-├── phantom-gui/                # GUI crate
-│   └── src/main.rs             # egui profile editor
-├── profiles/                   # Example profiles
-│   ├── pubg.json               # PUBG Mobile
-│   └── genshin.json            # Genshin Impact
-├── docs/                       # Detailed documentation
-│   ├── ARCHITECTURE.md         # System design
-│   ├── PROTOCOL.md             # uinput MT Protocol B details
-│   ├── PROFILES.md             # Profile format specification
-│   ├── IPC.md                  # Daemon communication protocol
-│   ├── EDGE_CASES.md           # Edge cases and solutions
-│   └── BUILD.md                # Build phases and roadmap
-└── contrib/
-    └── 99-phantom.rules        # udev rules for non-root access
+
+6. Check status or load another profile:
+
+```bash
+./target/release/phantom status
+./target/release/phantom load ~/.config/phantom/profiles/pubg.json
 ```
+
+7. Open the GUI:
+
+```bash
+./target/release/phantom-gui
+```
+
+## Common Commands
+
+```bash
+phantom --daemon
+phantom load <profile.json>
+phantom reload
+phantom status
+phantom pause
+phantom resume
+phantom enter-capture
+phantom exit-capture
+phantom toggle-capture
+phantom sensitivity <value>
+phantom list
+phantom shutdown
+```
+
+## Example Profiles
+
+- `profiles/pubg.json`
+- `profiles/genshin.json`
+- `profiles/efootball-template.json`
+
+The eFootball profile is still a starter layout. Expect to tune it in the GUI for your device.
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full system architecture, component breakdown, data flow
-- [docs/PROTOCOL.md](docs/PROTOCOL.md) — Exact ioctl sequences for uinput device creation and event injection
-- [docs/PROFILES.md](docs/PROFILES.md) — JSON profile format, all node types, validation rules, key names
-- [docs/IPC.md](docs/IPC.md) — Unix socket protocol, all CLI commands, response format
-- [docs/EDGE_CASES.md](docs/EDGE_CASES.md) — 25 edge cases with documented solutions
-- [docs/BUILD.md](docs/BUILD.md) — 9-phase implementation roadmap with verification steps
+- [docs/INSTALL.md](docs/INSTALL.md)
+- [docs/PROFILES.md](docs/PROFILES.md)
+- [docs/IPC.md](docs/IPC.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/PROTOCOL.md](docs/PROTOCOL.md)
+- [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
+- [TOTAL_SCOPE.md](TOTAL_SCOPE.md)
 
-## Tests
+## Testing
 
 ```bash
-cargo test                          # Run all tests
-cargo test -p phantom               # Daemon tests only
-cargo test -- --ignored             # Include hardware tests (needs /dev/uinput)
+cargo test
+cargo clippy --workspace --all-targets
 ```
 
-34 tests: 15 unit (profile validation, engine state machine) + 19 integration (full scenarios, edge cases).
+Ignored tests still require a real `/dev/uinput`.
 
 ## License
 

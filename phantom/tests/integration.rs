@@ -6,11 +6,15 @@ fn pubg_profile() -> Profile {
     Profile {
         name: "PUBG Test".into(),
         version: 1,
-        screen: None,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
         global_sensitivity: 1.0,
         nodes: vec![
             Node::Joystick {
                 id: "move".into(),
+                layer: String::new(),
                 slot: 0,
                 pos: RelPos { x: 0.18, y: 0.72 },
                 radius: 0.07,
@@ -23,6 +27,7 @@ fn pubg_profile() -> Profile {
             },
             Node::MouseCamera {
                 id: "camera".into(),
+                layer: String::new(),
                 slot: 1,
                 region: Region {
                     x: 0.35,
@@ -35,18 +40,21 @@ fn pubg_profile() -> Profile {
             },
             Node::HoldTap {
                 id: "fire".into(),
+                layer: String::new(),
                 slot: 2,
                 pos: RelPos { x: 0.88, y: 0.62 },
                 key: "MouseLeft".into(),
             },
             Node::Tap {
                 id: "jump".into(),
+                layer: String::new(),
                 slot: 3,
                 pos: RelPos { x: 0.92, y: 0.82 },
                 key: "Space".into(),
             },
             Node::Tap {
                 id: "reload".into(),
+                layer: String::new(),
                 slot: 4,
                 pos: RelPos { x: 0.78, y: 0.88 },
                 key: "R".into(),
@@ -59,10 +67,14 @@ fn repeat_tap_profile() -> Profile {
     Profile {
         name: "RepeatTest".into(),
         version: 1,
-        screen: None,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
         global_sensitivity: 1.0,
         nodes: vec![Node::RepeatTap {
             id: "auto_fire".into(),
+            layer: String::new(),
             slot: 0,
             pos: RelPos { x: 0.5, y: 0.5 },
             key: "F".into(),
@@ -75,10 +87,14 @@ fn macro_profile() -> Profile {
     Profile {
         name: "MacroTest".into(),
         version: 1,
-        screen: None,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
         global_sensitivity: 1.0,
         nodes: vec![Node::Macro {
             id: "combo".into(),
+            layer: String::new(),
             key: "G".into(),
             sequence: vec![
                 MacroStep {
@@ -292,7 +308,7 @@ fn load_pubg_profile_from_file() {
     if path.exists() {
         let profile = Profile::load(&path).expect("failed to load pubg.json");
         assert_eq!(profile.name, "PUBG Mobile");
-        assert_eq!(profile.nodes.len(), 8);
+        assert_eq!(profile.nodes.len(), 9);
     }
 }
 
@@ -314,29 +330,29 @@ fn load_genshin_profile_from_file() {
 #[test]
 fn key_from_str_all_letters() {
     for c in 'A'..='Z' {
-        let key = Key::from_str(&c.to_string());
+        let key = c.to_string().parse::<Key>().ok();
         assert!(key.is_some(), "failed to parse key '{}'", c);
     }
 }
 
 #[test]
 fn key_from_str_case_insensitive() {
-    assert_eq!(Key::from_str("a"), Key::from_str("A"));
-    assert_eq!(Key::from_str("z"), Key::from_str("Z"));
-    assert_eq!(Key::from_str("space"), Key::from_str("SPACE"));
+    assert_eq!("a".parse::<Key>().ok(), "A".parse::<Key>().ok());
+    assert_eq!("z".parse::<Key>().ok(), "Z".parse::<Key>().ok());
+    assert_eq!("space".parse::<Key>().ok(), "SPACE".parse::<Key>().ok());
 }
 
 #[test]
 fn key_from_str_mouse_buttons() {
-    assert_eq!(Key::from_str("MouseLeft"), Some(Key::MouseLeft));
-    assert_eq!(Key::from_str("MouseRight"), Some(Key::MouseRight));
-    assert_eq!(Key::from_str("MOUSELEFT"), Some(Key::MouseLeft));
+    assert_eq!("MouseLeft".parse::<Key>().ok(), Some(Key::MouseLeft));
+    assert_eq!("MouseRight".parse::<Key>().ok(), Some(Key::MouseRight));
+    assert_eq!("MOUSELEFT".parse::<Key>().ok(), Some(Key::MouseLeft));
 }
 
 #[test]
 fn key_from_str_invalid() {
-    assert_eq!(Key::from_str("INVALID_KEY_12345"), None);
-    assert_eq!(Key::from_str(""), None);
+    assert_eq!("INVALID_KEY_12345".parse::<Key>().ok(), None);
+    assert_eq!("".parse::<Key>().ok(), None);
 }
 
 // ===== Coordinate edge cases =====
@@ -361,17 +377,22 @@ fn tap_at_screen_edges() {
     let profile = Profile {
         name: "EdgeTest".into(),
         version: 1,
-        screen: None,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
         global_sensitivity: 1.0,
         nodes: vec![
             Node::Tap {
                 id: "top_left".into(),
+                layer: String::new(),
                 slot: 0,
                 pos: RelPos { x: 0.0, y: 0.0 },
                 key: "A".into(),
             },
             Node::Tap {
                 id: "bottom_right".into(),
+                layer: String::new(),
                 slot: 1,
                 pos: RelPos { x: 1.0, y: 1.0 },
                 key: "B".into(),
@@ -440,13 +461,17 @@ fn all_ten_slots_independent() {
     let mut profile = Profile {
         name: "TenSlot".into(),
         version: 1,
-        screen: None,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
         global_sensitivity: 1.0,
         nodes: vec![],
     };
     for i in 0..10u8 {
         profile.nodes.push(Node::Tap {
             id: format!("slot_{}", i),
+            layer: String::new(),
             slot: i,
             pos: RelPos {
                 x: 0.1 * i as f64,

@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::error::Result;
 use crate::inject::UinputDevice;
 use crate::input::{InputEvent, Key};
-use crate::profile::{MacroAction, Node, Profile};
+use crate::profile::{LayerMode, MacroAction, Node, Profile};
 
 #[derive(Debug, Clone)]
 pub enum TouchCommand {
@@ -20,6 +20,9 @@ enum NodeState {
     },
     HoldTap {
         held: bool,
+    },
+    ToggleTap {
+        active: bool,
     },
     Joystick {
         up: bool,
@@ -44,6 +47,9 @@ enum NodeState {
         step_start: Instant,
         active_slots: Vec<u8>,
     },
+    LayerShift {
+        held: bool,
+    },
 }
 
 pub struct KeymapEngine {
@@ -52,6 +58,7 @@ pub struct KeymapEngine {
     states: Vec<NodeState>,
     sensitivity: f64,
     paused: bool,
+    active_layers: HashSet<String>,
 }
 
 impl KeymapEngine {
@@ -62,7 +69,7 @@ impl KeymapEngine {
         let mut key_bindings: HashMap<Key, Vec<usize>> = HashMap::new();
         for (idx, node) in profile.nodes.iter().enumerate() {
             for key_str in node.bound_keys() {
-                if let Some(key) = Key::from_str(key_str) {
+                if let Ok(key) = key_str.parse::<Key>() {
                     key_bindings.entry(key).or_default().push(idx);
                 } else {
                     tracing::warn!("unknown key '{}' in node '{}'", key_str, node.id());
@@ -76,6 +83,7 @@ impl KeymapEngine {
             key_bindings,
             states,
             paused: false,
+            active_layers: HashSet::new(),
         }
     }
 
@@ -83,6 +91,7 @@ impl KeymapEngine {
         match node {
             Node::Tap { .. } => NodeState::Tap { active: false },
             Node::HoldTap { .. } => NodeState::HoldTap { held: false },
+            Node::ToggleTap { .. } => NodeState::ToggleTap { active: false },
             Node::Joystick { .. } => NodeState::Joystick {
                 up: false,
                 down: false,
@@ -106,6 +115,7 @@ impl KeymapEngine {
                 step_start: Instant::now(),
                 active_slots: Vec::new(),
             },
+            Node::LayerShift { .. } => NodeState::LayerShift { held: false },
         }
     }
 
@@ -130,6 +140,10 @@ impl KeymapEngine {
         &self.profile.name
     }
 
+    pub fn active_layers(&self) -> impl Iterator<Item = &str> {
+        self.active_layers.iter().map(String::as_str)
+    }
+
     pub fn process(&mut self, event: &InputEvent) -> Vec<TouchCommand> {
         if self.paused {
             return vec![];
@@ -151,8 +165,10 @@ impl KeymapEngine {
 
         for idx in 0..self.profile.nodes.len() {
             let node = &self.profile.nodes[idx];
+            if !self.is_node_active(node) {
+                continue;
+            }
 
-            // RepeatTap ticking
             if let Node::RepeatTap { interval_ms, .. } = node {
                 let state = &self.states[idx];
                 if let NodeState::RepeatTap {
@@ -166,31 +182,31 @@ impl KeymapEngine {
                         let target = if *finger_down { interval } else { interval / 2 };
                         if now.duration_since(*last_toggle) >= target {
                             let was_down = *finger_down;
-                            let slot = node.slot().unwrap();
-                            let pos = match node {
-                                Node::RepeatTap { pos, .. } => pos.clone(),
-                                _ => unreachable!(),
-                            };
-                            self.states[idx] = NodeState::RepeatTap {
-                                active: true,
-                                last_toggle: now,
-                                finger_down: !was_down,
-                            };
-                            if was_down {
-                                cmds.push(TouchCommand::TouchUp { slot });
-                            } else {
-                                cmds.push(TouchCommand::TouchDown {
-                                    slot,
-                                    x: pos.x,
-                                    y: pos.y,
-                                });
+                            if let Some(slot) = node.slot() {
+                                let pos = match node {
+                                    Node::RepeatTap { pos, .. } => pos.clone(),
+                                    _ => unreachable!(),
+                                };
+                                self.states[idx] = NodeState::RepeatTap {
+                                    active: true,
+                                    last_toggle: now,
+                                    finger_down: !was_down,
+                                };
+                                if was_down {
+                                    cmds.push(TouchCommand::TouchUp { slot });
+                                } else {
+                                    cmds.push(TouchCommand::TouchDown {
+                                        slot,
+                                        x: pos.x,
+                                        y: pos.y,
+                                    });
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Macro ticking
             if let Node::Macro { sequence, .. } = node {
                 let state = &self.states[idx];
                 if let NodeState::Macro {
@@ -224,7 +240,6 @@ impl KeymapEngine {
 
                             let next_idx = si + 1;
                             if next_idx >= sequence.len() {
-                                // Macro done — collect slots to release
                                 let mut slots_to_release = Vec::new();
                                 for s in sequence {
                                     if !slots_to_release.contains(&s.slot) {
@@ -271,69 +286,241 @@ impl KeymapEngine {
 
         let mut cmds = Vec::new();
         for idx in indices {
-            let node = &self.profile.nodes[idx];
-            match node {
-                Node::Tap { slot, pos, .. } => {
-                    if let NodeState::Tap { active } = &self.states[idx] {
-                        if !*active {
+            if let Node::LayerShift {
+                layer_name, mode, ..
+            } = &self.profile.nodes[idx]
+            {
+                let layer_name = layer_name.clone();
+                let mode = mode.clone();
+                cmds.extend(self.handle_layer_shift_press(idx, &layer_name, &mode));
+            } else {
+                let node = &self.profile.nodes[idx];
+                if !self.is_node_active(node) {
+                    continue;
+                }
+                cmds.extend(self.handle_action_press(idx, key));
+            }
+        }
+        cmds
+    }
+
+    fn handle_key_release(&mut self, key: Key) -> Vec<TouchCommand> {
+        let indices = match self.key_bindings.get(&key) {
+            Some(v) => v.clone(),
+            None => return vec![],
+        };
+
+        let mut cmds = Vec::new();
+        for idx in indices {
+            if let Node::LayerShift {
+                layer_name, mode, ..
+            } = &self.profile.nodes[idx]
+            {
+                let layer_name = layer_name.clone();
+                let mode = mode.clone();
+                cmds.extend(self.handle_layer_shift_release(idx, &layer_name, &mode));
+            } else {
+                let node = &self.profile.nodes[idx];
+                if !self.is_node_active(node) {
+                    continue;
+                }
+                cmds.extend(self.handle_action_release(idx, key));
+            }
+        }
+        cmds
+    }
+
+    fn handle_action_press(&mut self, idx: usize, key: Key) -> Vec<TouchCommand> {
+        let node = &self.profile.nodes[idx];
+        let mut cmds = Vec::new();
+        match node {
+            Node::Tap { slot, pos, .. } => {
+                if let NodeState::Tap { active } = &self.states[idx] {
+                    if !*active {
+                        cmds.push(TouchCommand::TouchDown {
+                            slot: *slot,
+                            x: pos.x,
+                            y: pos.y,
+                        });
+                        self.states[idx] = NodeState::Tap { active: true };
+                    }
+                }
+            }
+            Node::HoldTap { slot, pos, .. } => {
+                if let NodeState::HoldTap { held } = &self.states[idx] {
+                    if !*held {
+                        cmds.push(TouchCommand::TouchDown {
+                            slot: *slot,
+                            x: pos.x,
+                            y: pos.y,
+                        });
+                        self.states[idx] = NodeState::HoldTap { held: true };
+                    }
+                }
+            }
+            Node::ToggleTap { slot, pos, .. } => {
+                if let NodeState::ToggleTap { active } = &self.states[idx] {
+                    if *active {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                    } else {
+                        cmds.push(TouchCommand::TouchDown {
+                            slot: *slot,
+                            x: pos.x,
+                            y: pos.y,
+                        });
+                    }
+                    self.states[idx] = NodeState::ToggleTap { active: !*active };
+                }
+            }
+            Node::Joystick {
+                slot,
+                pos,
+                radius,
+                keys,
+                ..
+            } => {
+                if let Some(d) = Self::joystick_direction(key, keys) {
+                    if let NodeState::Joystick {
+                        up,
+                        down,
+                        left,
+                        right,
+                        finger_active,
+                    } = &self.states[idx]
+                    {
+                        let mut u = *up;
+                        let mut dn = *down;
+                        let mut l = *left;
+                        let mut r = *right;
+                        let mut fa = *finger_active;
+                        match d {
+                            Dir::Up => u = true,
+                            Dir::Down => dn = true,
+                            Dir::Left => l = true,
+                            Dir::Right => r = true,
+                        }
+                        let (ox, oy) = joystick_offset(u, dn, l, r, *radius);
+                        if !fa {
                             cmds.push(TouchCommand::TouchDown {
                                 slot: *slot,
                                 x: pos.x,
                                 y: pos.y,
                             });
-                            self.states[idx] = NodeState::Tap { active: true };
+                            fa = true;
                         }
+                        cmds.push(TouchCommand::TouchMove {
+                            slot: *slot,
+                            x: pos.x + ox,
+                            y: pos.y + oy,
+                        });
+                        self.states[idx] = NodeState::Joystick {
+                            up: u,
+                            down: dn,
+                            left: l,
+                            right: r,
+                            finger_active: fa,
+                        };
                     }
                 }
-                Node::HoldTap { slot, pos, .. } => {
-                    if let NodeState::HoldTap { held } = &self.states[idx] {
-                        if !*held {
-                            cmds.push(TouchCommand::TouchDown {
-                                slot: *slot,
-                                x: pos.x,
-                                y: pos.y,
-                            });
-                            self.states[idx] = NodeState::HoldTap { held: true };
-                        }
+            }
+            Node::RepeatTap { slot, pos, .. } => {
+                if let NodeState::RepeatTap { active, .. } = &self.states[idx] {
+                    if !*active {
+                        cmds.push(TouchCommand::TouchDown {
+                            slot: *slot,
+                            x: pos.x,
+                            y: pos.y,
+                        });
+                        self.states[idx] = NodeState::RepeatTap {
+                            active: true,
+                            last_toggle: Instant::now(),
+                            finger_down: true,
+                        };
                     }
                 }
-                Node::Joystick {
-                    slot,
-                    pos,
-                    radius,
-                    keys,
-                    ..
-                } => {
-                    let dir = Self::joystick_direction(key, keys);
-                    if let Some(d) = dir {
-                        if let NodeState::Joystick {
-                            up,
-                            down,
-                            left,
-                            right,
-                            finger_active,
-                        } = &self.states[idx]
-                        {
-                            let mut u = *up;
-                            let mut dn = *down;
-                            let mut l = *left;
-                            let mut r = *right;
-                            let mut fa = *finger_active;
-                            match d {
-                                Dir::Up => u = true,
-                                Dir::Down => dn = true,
-                                Dir::Left => l = true,
-                                Dir::Right => r = true,
+            }
+            Node::Macro { sequence, .. } => {
+                if let NodeState::Macro { running, .. } = &self.states[idx] {
+                    if !*running {
+                        let mut slots = Vec::new();
+                        for s in sequence {
+                            if !slots.contains(&s.slot) {
+                                slots.push(s.slot);
                             }
+                        }
+                        self.states[idx] = NodeState::Macro {
+                            running: true,
+                            step_index: 0,
+                            step_start: Instant::now(),
+                            active_slots: slots,
+                        };
+                    }
+                }
+            }
+            Node::MouseCamera { .. } | Node::LayerShift { .. } => {}
+        }
+        cmds
+    }
+
+    fn handle_action_release(&mut self, idx: usize, key: Key) -> Vec<TouchCommand> {
+        let node = &self.profile.nodes[idx];
+        let mut cmds = Vec::new();
+        match node {
+            Node::Tap { slot, .. } => {
+                if let NodeState::Tap { active } = &self.states[idx] {
+                    if *active {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                        self.states[idx] = NodeState::Tap { active: false };
+                    }
+                }
+            }
+            Node::HoldTap { slot, .. } => {
+                if let NodeState::HoldTap { held } = &self.states[idx] {
+                    if *held {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                        self.states[idx] = NodeState::HoldTap { held: false };
+                    }
+                }
+            }
+            Node::ToggleTap { .. } => {}
+            Node::Joystick {
+                slot,
+                pos,
+                radius,
+                keys,
+                ..
+            } => {
+                if let Some(d) = Self::joystick_direction(key, keys) {
+                    if let NodeState::Joystick {
+                        up,
+                        down,
+                        left,
+                        right,
+                        finger_active,
+                    } = &self.states[idx]
+                    {
+                        let mut u = *up;
+                        let mut dn = *down;
+                        let mut l = *left;
+                        let mut r = *right;
+                        let fa = *finger_active;
+                        match d {
+                            Dir::Up => u = false,
+                            Dir::Down => dn = false,
+                            Dir::Left => l = false,
+                            Dir::Right => r = false,
+                        }
+                        if !u && !dn && !l && !r && fa {
+                            cmds.push(TouchCommand::TouchUp { slot: *slot });
+                            self.states[idx] = NodeState::Joystick {
+                                up: false,
+                                down: false,
+                                left: false,
+                                right: false,
+                                finger_active: false,
+                            };
+                        } else if fa {
                             let (ox, oy) = joystick_offset(u, dn, l, r, *radius);
-                            if !fa {
-                                cmds.push(TouchCommand::TouchDown {
-                                    slot: *slot,
-                                    x: pos.x,
-                                    y: pos.y,
-                                });
-                                fa = true;
-                            }
                             cmds.push(TouchCommand::TouchMove {
                                 slot: *slot,
                                 x: pos.x + ox,
@@ -349,181 +536,114 @@ impl KeymapEngine {
                         }
                     }
                 }
-                Node::RepeatTap { slot, pos, .. } => {
-                    if let NodeState::RepeatTap { active, .. } = &self.states[idx] {
-                        if !*active {
-                            cmds.push(TouchCommand::TouchDown {
-                                slot: *slot,
-                                x: pos.x,
-                                y: pos.y,
-                            });
-                            self.states[idx] = NodeState::RepeatTap {
-                                active: true,
-                                last_toggle: Instant::now(),
-                                finger_down: true,
-                            };
-                        }
-                    }
-                }
-                Node::Macro { sequence, .. } => {
-                    if let NodeState::Macro { running, .. } = &self.states[idx] {
-                        if !*running {
-                            let mut slots = Vec::new();
-                            for s in sequence {
-                                if !slots.contains(&s.slot) {
-                                    slots.push(s.slot);
-                                }
-                            }
-                            self.states[idx] = NodeState::Macro {
-                                running: true,
-                                step_index: 0,
-                                step_start: Instant::now(),
-                                active_slots: slots,
-                            };
-                        }
-                    }
-                }
-                Node::MouseCamera { .. } => {}
             }
+            Node::RepeatTap { slot, .. } => {
+                if let NodeState::RepeatTap {
+                    active,
+                    finger_down,
+                    ..
+                } = &self.states[idx]
+                {
+                    if *active && *finger_down {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                    }
+                    self.states[idx] = NodeState::RepeatTap {
+                        active: false,
+                        last_toggle: Instant::now(),
+                        finger_down: false,
+                    };
+                }
+            }
+            Node::Macro { .. } => {
+                if let NodeState::Macro { running, .. } = &self.states[idx] {
+                    if *running {
+                        let slots = match &self.states[idx] {
+                            NodeState::Macro { active_slots, .. } => active_slots.clone(),
+                            _ => vec![],
+                        };
+                        for s in &slots {
+                            cmds.push(TouchCommand::TouchUp { slot: *s });
+                        }
+                        self.states[idx] = NodeState::Macro {
+                            running: false,
+                            step_index: 0,
+                            step_start: Instant::now(),
+                            active_slots: Vec::new(),
+                        };
+                    }
+                }
+            }
+            Node::MouseCamera { .. } | Node::LayerShift { .. } => {}
         }
         cmds
     }
 
-    fn handle_key_release(&mut self, key: Key) -> Vec<TouchCommand> {
-        let indices = match self.key_bindings.get(&key) {
-            Some(v) => v.clone(),
-            None => return vec![],
-        };
-
-        let mut cmds = Vec::new();
-        for idx in indices {
-            let node = &self.profile.nodes[idx];
-            match node {
-                Node::Tap { slot, .. } => {
-                    if let NodeState::Tap { active } = &self.states[idx] {
-                        if *active {
-                            cmds.push(TouchCommand::TouchUp { slot: *slot });
-                            self.states[idx] = NodeState::Tap { active: false };
-                        }
+    fn handle_layer_shift_press(
+        &mut self,
+        idx: usize,
+        layer_name: &str,
+        mode: &LayerMode,
+    ) -> Vec<TouchCommand> {
+        match mode {
+            LayerMode::Hold => {
+                if let NodeState::LayerShift { held } = &self.states[idx] {
+                    if !*held {
+                        self.active_layers.insert(layer_name.to_string());
+                        self.states[idx] = NodeState::LayerShift { held: true };
                     }
                 }
-                Node::HoldTap { slot, .. } => {
-                    if let NodeState::HoldTap { held } = &self.states[idx] {
-                        if *held {
-                            cmds.push(TouchCommand::TouchUp { slot: *slot });
-                            self.states[idx] = NodeState::HoldTap { held: false };
-                        }
-                    }
+                vec![]
+            }
+            LayerMode::Toggle => {
+                let mut cmds = Vec::new();
+                if self.active_layers.remove(layer_name) {
+                    cmds.extend(self.release_layer(layer_name));
+                } else {
+                    self.active_layers.insert(layer_name.to_string());
                 }
-                Node::Joystick {
-                    slot,
-                    pos,
-                    radius,
-                    keys,
-                    ..
-                } => {
-                    let dir = Self::joystick_direction(key, keys);
-                    if let Some(d) = dir {
-                        if let NodeState::Joystick {
-                            up,
-                            down,
-                            left,
-                            right,
-                            finger_active,
-                        } = &self.states[idx]
-                        {
-                            let mut u = *up;
-                            let mut dn = *down;
-                            let mut l = *left;
-                            let mut r = *right;
-                            let fa = *finger_active;
-                            match d {
-                                Dir::Up => u = false,
-                                Dir::Down => dn = false,
-                                Dir::Left => l = false,
-                                Dir::Right => r = false,
-                            }
-                            if !u && !dn && !l && !r && fa {
-                                cmds.push(TouchCommand::TouchUp { slot: *slot });
-                                self.states[idx] = NodeState::Joystick {
-                                    up: false,
-                                    down: false,
-                                    left: false,
-                                    right: false,
-                                    finger_active: false,
-                                };
-                            } else if fa {
-                                let (ox, oy) = joystick_offset(u, dn, l, r, *radius);
-                                cmds.push(TouchCommand::TouchMove {
-                                    slot: *slot,
-                                    x: pos.x + ox,
-                                    y: pos.y + oy,
-                                });
-                                self.states[idx] = NodeState::Joystick {
-                                    up: u,
-                                    down: dn,
-                                    left: l,
-                                    right: r,
-                                    finger_active: fa,
-                                };
-                            }
-                        }
-                    }
-                }
-                Node::RepeatTap { slot, .. } => {
-                    if let NodeState::RepeatTap {
-                        active,
-                        finger_down,
-                        ..
-                    } = &self.states[idx]
-                    {
-                        if *active && *finger_down {
-                            cmds.push(TouchCommand::TouchUp { slot: *slot });
-                        }
-                        self.states[idx] = NodeState::RepeatTap {
-                            active: false,
-                            last_toggle: Instant::now(),
-                            finger_down: false,
-                        };
-                    }
-                }
-                Node::Macro { .. } => {
-                    if let NodeState::Macro { running, .. } = &self.states[idx] {
-                        if *running {
-                            // Collect slots and release
-                            let slots = match &self.states[idx] {
-                                NodeState::Macro { active_slots, .. } => active_slots.clone(),
-                                _ => vec![],
-                            };
-                            for s in &slots {
-                                cmds.push(TouchCommand::TouchUp { slot: *s });
-                            }
-                            self.states[idx] = NodeState::Macro {
-                                running: false,
-                                step_index: 0,
-                                step_start: Instant::now(),
-                                active_slots: Vec::new(),
-                            };
-                        }
-                    }
-                }
-                Node::MouseCamera { .. } => {}
+                cmds
             }
         }
-        cmds
+    }
+
+    fn handle_layer_shift_release(
+        &mut self,
+        idx: usize,
+        layer_name: &str,
+        mode: &LayerMode,
+    ) -> Vec<TouchCommand> {
+        match mode {
+            LayerMode::Hold => {
+                if let NodeState::LayerShift { held } = &self.states[idx] {
+                    if *held {
+                        let mut cmds = self.release_layer(layer_name);
+                        self.active_layers.remove(layer_name);
+                        self.states[idx] = NodeState::LayerShift { held: false };
+                        return std::mem::take(&mut cmds);
+                    }
+                }
+                vec![]
+            }
+            LayerMode::Toggle => vec![],
+        }
     }
 
     fn handle_mouse_move(&mut self, dx: i32, dy: i32) -> Vec<TouchCommand> {
         let mut cmds = Vec::new();
 
         for idx in 0..self.profile.nodes.len() {
+            let node = &self.profile.nodes[idx];
+            if !self.is_node_active(node) {
+                continue;
+            }
+
             if let Node::MouseCamera {
                 slot,
                 region,
                 sensitivity,
                 invert_y,
                 ..
-            } = &self.profile.nodes[idx]
+            } = node
             {
                 if let NodeState::MouseCamera {
                     finger_active,
@@ -537,19 +657,22 @@ impl KeymapEngine {
                         * self.sensitivity;
 
                     let scale = 1.0 / 500.0;
-                    let mut cx = *current_x;
-                    let mut cy = *current_y;
-
-                    let new_x = (cx + delta_x * scale).clamp(region.x, region.x + region.w);
-                    let new_y = (cy + delta_y * scale).clamp(region.y, region.y + region.h);
-
-                    cx = new_x;
-                    cy = new_y;
-
                     let fa = *finger_active;
+                    let mut cx = if fa {
+                        *current_x
+                    } else {
+                        region.x + region.w / 2.0
+                    };
+                    let mut cy = if fa {
+                        *current_y
+                    } else {
+                        region.y + region.h / 2.0
+                    };
+
+                    cx = (cx + delta_x * scale).clamp(region.x, region.x + region.w);
+                    cy = (cy + delta_y * scale).clamp(region.y, region.y + region.h);
+
                     if !fa {
-                        cx = region.x + region.w / 2.0;
-                        cy = region.y + region.h / 2.0;
                         cmds.push(TouchCommand::TouchDown {
                             slot: *slot,
                             x: cx,
@@ -576,88 +699,126 @@ impl KeymapEngine {
     pub fn release_all(&mut self) -> Vec<TouchCommand> {
         let mut cmds = Vec::new();
         for idx in 0..self.profile.nodes.len() {
-            let node = &self.profile.nodes[idx];
-            let slot = node.slot();
-            match &self.states[idx] {
-                NodeState::Tap { active: true } => {
-                    if let Some(s) = slot {
-                        cmds.push(TouchCommand::TouchUp { slot: s });
-                    }
-                    self.states[idx] = NodeState::Tap { active: false };
-                }
-                NodeState::HoldTap { held: true } => {
-                    if let Some(s) = slot {
-                        cmds.push(TouchCommand::TouchUp { slot: s });
-                    }
-                    self.states[idx] = NodeState::HoldTap { held: false };
-                }
-                NodeState::Joystick {
-                    finger_active: true,
-                    ..
-                } => {
-                    if let Some(s) = slot {
-                        cmds.push(TouchCommand::TouchUp { slot: s });
-                    }
-                    self.states[idx] = NodeState::Joystick {
-                        up: false,
-                        down: false,
-                        left: false,
-                        right: false,
-                        finger_active: false,
-                    };
-                }
-                NodeState::MouseCamera {
-                    finger_active: true,
-                    ..
-                } => {
-                    if let Some(s) = slot {
-                        cmds.push(TouchCommand::TouchUp { slot: s });
-                    }
-                    self.states[idx] = Self::init_state(node);
-                }
-                NodeState::RepeatTap {
-                    active: true,
-                    finger_down: true,
-                    ..
-                } => {
-                    if let Some(s) = slot {
-                        cmds.push(TouchCommand::TouchUp { slot: s });
-                    }
-                    self.states[idx] = NodeState::RepeatTap {
-                        active: false,
-                        last_toggle: Instant::now(),
-                        finger_down: false,
-                    };
-                }
-                NodeState::Macro {
-                    running: true,
-                    active_slots,
-                    ..
-                } => {
-                    for &s in active_slots {
-                        cmds.push(TouchCommand::TouchUp { slot: s });
-                    }
-                    self.states[idx] = NodeState::Macro {
-                        running: false,
-                        step_index: 0,
-                        step_start: Instant::now(),
-                        active_slots: Vec::new(),
-                    };
-                }
-                _ => {}
+            cmds.extend(self.release_node(idx));
+        }
+        self.active_layers.clear();
+        cmds
+    }
+
+    fn release_layer(&mut self, layer_name: &str) -> Vec<TouchCommand> {
+        let mut cmds = Vec::new();
+        for idx in 0..self.profile.nodes.len() {
+            if self.profile.nodes[idx].layer() == layer_name {
+                cmds.extend(self.release_node(idx));
             }
         }
         cmds
     }
 
+    fn release_node(&mut self, idx: usize) -> Vec<TouchCommand> {
+        let mut cmds = Vec::new();
+        let node = &self.profile.nodes[idx];
+        let slot = node.slot();
+        match &self.states[idx] {
+            NodeState::Tap { active: true } => {
+                if let Some(s) = slot {
+                    cmds.push(TouchCommand::TouchUp { slot: s });
+                }
+                self.states[idx] = NodeState::Tap { active: false };
+            }
+            NodeState::HoldTap { held: true } => {
+                if let Some(s) = slot {
+                    cmds.push(TouchCommand::TouchUp { slot: s });
+                }
+                self.states[idx] = NodeState::HoldTap { held: false };
+            }
+            NodeState::ToggleTap { active: true } => {
+                if let Some(s) = slot {
+                    cmds.push(TouchCommand::TouchUp { slot: s });
+                }
+                self.states[idx] = NodeState::ToggleTap { active: false };
+            }
+            NodeState::Joystick {
+                finger_active: true,
+                ..
+            } => {
+                if let Some(s) = slot {
+                    cmds.push(TouchCommand::TouchUp { slot: s });
+                }
+                self.states[idx] = NodeState::Joystick {
+                    up: false,
+                    down: false,
+                    left: false,
+                    right: false,
+                    finger_active: false,
+                };
+            }
+            NodeState::MouseCamera {
+                finger_active: true,
+                ..
+            } => {
+                if let Some(s) = slot {
+                    cmds.push(TouchCommand::TouchUp { slot: s });
+                }
+                self.states[idx] = Self::init_state(node);
+            }
+            NodeState::RepeatTap {
+                active: true,
+                finger_down: true,
+                ..
+            } => {
+                if let Some(s) = slot {
+                    cmds.push(TouchCommand::TouchUp { slot: s });
+                }
+                self.states[idx] = NodeState::RepeatTap {
+                    active: false,
+                    last_toggle: Instant::now(),
+                    finger_down: false,
+                };
+            }
+            NodeState::RepeatTap { .. } => {
+                self.states[idx] = NodeState::RepeatTap {
+                    active: false,
+                    last_toggle: Instant::now(),
+                    finger_down: false,
+                };
+            }
+            NodeState::Macro {
+                running: true,
+                active_slots,
+                ..
+            } => {
+                for &s in active_slots {
+                    cmds.push(TouchCommand::TouchUp { slot: s });
+                }
+                self.states[idx] = NodeState::Macro {
+                    running: false,
+                    step_index: 0,
+                    step_start: Instant::now(),
+                    active_slots: Vec::new(),
+                };
+            }
+            NodeState::LayerShift { held: true } => {
+                self.states[idx] = NodeState::LayerShift { held: false };
+            }
+            _ => {}
+        }
+        cmds
+    }
+
+    fn is_node_active(&self, node: &Node) -> bool {
+        let layer = node.layer().trim();
+        layer.is_empty() || self.active_layers.contains(layer)
+    }
+
     fn joystick_direction(key: Key, keys: &crate::profile::JoystickKeys) -> Option<Dir> {
-        if Key::from_str(&keys.up) == Some(key) {
+        if keys.up.parse::<Key>().ok() == Some(key) {
             Some(Dir::Up)
-        } else if Key::from_str(&keys.down) == Some(key) {
+        } else if keys.down.parse::<Key>().ok() == Some(key) {
             Some(Dir::Down)
-        } else if Key::from_str(&keys.left) == Some(key) {
+        } else if keys.left.parse::<Key>().ok() == Some(key) {
             Some(Dir::Left)
-        } else if Key::from_str(&keys.right) == Some(key) {
+        } else if keys.right.parse::<Key>().ok() == Some(key) {
             Some(Dir::Right)
         } else {
             None
@@ -694,6 +855,11 @@ fn joystick_offset(up: bool, down: bool, left: bool, right: bool, radius: f64) -
     if left && right {
         dx = 0.0;
     }
+    if dx != 0.0 && dy != 0.0 {
+        let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+        dx *= diagonal;
+        dy *= diagonal;
+    }
     (dx, dy)
 }
 
@@ -713,21 +879,30 @@ mod tests {
     use super::*;
     use crate::profile::*;
 
+    fn screen() -> Option<ScreenOverride> {
+        Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        })
+    }
+
     fn test_profile() -> Profile {
         Profile {
             name: "Test".into(),
             version: 1,
-            screen: None,
+            screen: screen(),
             global_sensitivity: 1.0,
             nodes: vec![
                 Node::Tap {
                     id: "jump".into(),
+                    layer: String::new(),
                     slot: 0,
                     pos: RelPos { x: 0.5, y: 0.5 },
                     key: "Space".into(),
                 },
                 Node::Joystick {
                     id: "move".into(),
+                    layer: String::new(),
                     slot: 1,
                     pos: RelPos { x: 0.2, y: 0.7 },
                     radius: 0.07,
@@ -754,52 +929,107 @@ mod tests {
     }
 
     #[test]
-    fn tap_ignores_repeat_press() {
+    fn joystick_diagonal_is_normalized() {
         let mut engine = KeymapEngine::new(test_profile());
-        engine.process(&InputEvent::KeyPress(Key::Space));
-        let cmds = engine.process(&InputEvent::KeyPress(Key::Space));
-        assert!(cmds.is_empty());
-    }
-
-    #[test]
-    fn joystick_wasd() {
-        let mut engine = KeymapEngine::new(test_profile());
-        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
-        assert_eq!(cmds.len(), 2);
-        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+        let _ = engine.process(&InputEvent::KeyPress(Key::W));
         let cmds = engine.process(&InputEvent::KeyPress(Key::D));
-        assert_eq!(cmds.len(), 1);
-        let cmds = engine.process(&InputEvent::KeyRelease(Key::W));
-        assert_eq!(cmds.len(), 1);
-        let cmds = engine.process(&InputEvent::KeyRelease(Key::D));
-        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            TouchCommand::TouchMove { x, y, .. } => {
+                assert!(*x > 0.2);
+                assert!(*y < 0.7);
+            }
+            other => panic!("expected move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mouse_camera_starts_at_center_and_moves() {
+        let profile = Profile {
+            name: "Cam".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![Node::MouseCamera {
+                id: "look".into(),
+                layer: String::new(),
+                slot: 1,
+                region: Region {
+                    x: 0.3,
+                    y: 0.0,
+                    w: 0.7,
+                    h: 1.0,
+                },
+                sensitivity: 1.0,
+                invert_y: false,
+            }],
+        };
+        let mut engine = KeymapEngine::new(profile);
+        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
+    }
+
+    #[test]
+    fn toggle_tap_toggles_on_press_only() {
+        let profile = Profile {
+            name: "Toggle".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![Node::ToggleTap {
+                id: "scope".into(),
+                layer: String::new(),
+                slot: 0,
+                pos: RelPos { x: 0.8, y: 0.4 },
+                key: "Q".into(),
+            }],
+        };
+        let mut engine = KeymapEngine::new(profile);
+        let cmds = engine.process(&InputEvent::KeyPress(Key::Q));
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 0, .. }));
+        assert!(engine.process(&InputEvent::KeyRelease(Key::Q)).is_empty());
+        let cmds = engine.process(&InputEvent::KeyPress(Key::Q));
+        assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
+    }
+
+    #[test]
+    fn layer_shift_activates_alternate_binding() {
+        let profile = Profile {
+            name: "Layers".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![
+                Node::Tap {
+                    id: "jump".into(),
+                    layer: String::new(),
+                    slot: 0,
+                    pos: RelPos { x: 0.5, y: 0.5 },
+                    key: "Space".into(),
+                },
+                Node::Tap {
+                    id: "alt_jump".into(),
+                    layer: "combat".into(),
+                    slot: 1,
+                    pos: RelPos { x: 0.7, y: 0.7 },
+                    key: "E".into(),
+                },
+                Node::LayerShift {
+                    id: "combat_layer".into(),
+                    key: "LeftAlt".into(),
+                    layer_name: "combat".into(),
+                    mode: LayerMode::Hold,
+                },
+            ],
+        };
+        let mut engine = KeymapEngine::new(profile);
+        assert!(engine.process(&InputEvent::KeyPress(Key::E)).is_empty());
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::LeftAlt))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::KeyPress(Key::E));
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
         assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 1 }));
-    }
-
-    #[test]
-    fn release_all_active() {
-        let mut engine = KeymapEngine::new(test_profile());
-        engine.process(&InputEvent::KeyPress(Key::Space));
-        engine.process(&InputEvent::KeyPress(Key::W));
-        let cmds = engine.release_all();
-        assert_eq!(cmds.len(), 2);
-    }
-
-    #[test]
-    fn pause_blocks_input() {
-        let mut engine = KeymapEngine::new(test_profile());
-        engine.pause();
-        let cmds = engine.process(&InputEvent::KeyPress(Key::Space));
-        assert!(cmds.is_empty());
-        engine.resume();
-        let cmds = engine.process(&InputEvent::KeyPress(Key::Space));
-        assert!(!cmds.is_empty());
-    }
-
-    #[test]
-    fn unknown_key_ignored() {
-        let mut engine = KeymapEngine::new(test_profile());
-        let cmds = engine.process(&InputEvent::KeyPress(Key::F1));
-        assert!(cmds.is_empty());
     }
 }

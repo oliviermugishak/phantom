@@ -1,211 +1,218 @@
-# IPC Protocol — Daemon Communication
+# IPC Protocol
 
-Phantom daemon exposes a Unix domain socket for external control. The GUI and CLI tools use this to manage profiles and query state.
+Phantom exposes a Unix domain socket for CLI and GUI control.
 
----
+## Socket Location
 
-## Socket
+Path selection:
 
-**Path:** `$XDG_RUNTIME_DIR/phantom.sock` (typically `/run/user/1000/phantom.sock`)
+1. `$XDG_RUNTIME_DIR/phantom.sock`
+2. `dirs::runtime_dir()/phantom.sock`
+3. `/tmp/phantom-<uid>.sock`
 
-**Permissions:** `0600` (owner read/write only)
+Socket permissions are `0600`.
 
-**Protocol:** Newline-delimited JSON (NDJSON). One JSON object per line. Each connection sends exactly one request and receives exactly one response, then the connection closes.
+## Transport
 
----
+- newline-delimited JSON
+- one request per connection
+- one response per connection
+- 5 second read timeout
+- 5 second write timeout
+- 64 KiB maximum request or response line
 
-## Request Format
+## Response Shape
+
+Success:
 
 ```json
-{"cmd": "<command>", ...params}
+{"ok": true, ...}
 ```
 
-Every request must have a `cmd` field. Additional fields depend on the command.
-
-## Response Format
+Failure:
 
 ```json
-{"ok": true, ...data}
-{"ok": false, "error": "<error message>"}
+{"ok": false, "error": "human readable message"}
 ```
 
-Every response has `ok: bool`. On success, additional fields provide the result. On failure, `error` contains a human-readable description.
+Status-style responses may also include:
 
----
+- `profile`
+- `profile_path`
+- `paused`
+- `capture_active`
+- `screen_width`
+- `screen_height`
 
 ## Commands
 
-### load_profile
+### `load_profile`
 
-Load a profile from disk. Replaces the currently active profile.
-
-**Request:**
 ```json
-{"cmd": "load_profile", "path": "~/.config/phantom/profiles/pubg.json"}
+{"cmd":"load_profile","path":"~/.config/phantom/profiles/pubg.json"}
 ```
 
-**Success:**
+Loads a profile from disk and installs it into the running engine.
+
+Current behavior:
+
+- active touches are released before the swap
+- the profile `screen` must match the daemon `screen`
+- the remembered `profile_path` is updated
+
+### `load_profile_data`
+
 ```json
-{"ok": true, "profile": "PUBG Mobile", "nodes": 8, "slots": [0,1,2,3,4,5,6,7]}
+{
+  "cmd": "load_profile_data",
+  "profile": {
+    "name": "PUBG Mobile",
+    "version": 1,
+    "screen": { "width": 1920, "height": 1080 },
+    "global_sensitivity": 1.0,
+    "nodes": []
+  }
+}
 ```
 
-**Errors:**
-- File not found
-- JSON parse error (with line/column)
-- Validation error (with specific field)
+This is the GUI live-edit path.
 
-### reload
+Behavior:
 
-Reload the current profile from disk. Useful after editing the JSON file externally.
+- validates the in-memory profile
+- releases active touches
+- swaps the running engine
+- does not need the profile to exist on disk
 
-**Request:**
+### `reload`
+
 ```json
-{"cmd": "reload"}
+{"cmd":"reload"}
 ```
 
-**Success:**
+Reloads the currently remembered on-disk profile.
+
+### `status`
+
 ```json
-{"ok": true, "profile": "PUBG Mobile", "reloaded": true}
+{"cmd":"status"}
 ```
 
-### status
+Example:
 
-Query daemon state.
-
-**Request:**
-```json
-{"cmd": "status"}
-```
-
-**Success:**
 ```json
 {
   "ok": true,
-  "running": true,
   "profile": "PUBG Mobile",
   "profile_path": "/home/user/.config/phantom/profiles/pubg.json",
-  "active_slots": [0, 1, 2],
-  "devices_grabbed": ["event3", "event5"],
-  "screen": { "width": 1920, "height": 1080 },
-  "uptime_seconds": 3420
+  "paused": false,
+  "capture_active": true,
+  "screen_width": 1920,
+  "screen_height": 1080
 }
 ```
 
-### pause
+### `pause`
 
-Temporarily stop processing input events. All active touches are lifted. Devices remain grabbed.
-
-**Request:**
 ```json
-{"cmd": "pause"}
+{"cmd":"pause"}
 ```
 
-**Success:**
+Behavior:
+
+- releases active touches
+- keeps the daemon alive
+- does not automatically disable capture
+
+### `resume`
+
 ```json
-{"ok": true, "paused": true}
+{"cmd":"resume"}
 ```
 
-### resume
+Resumes engine processing.
 
-Resume input processing after pause.
+### `enter_capture`
 
-**Request:**
 ```json
-{"cmd": "resume"}
+{"cmd":"enter_capture"}
 ```
 
-**Success:**
+Behavior:
+
+- re-enables `EVIOCGRAB`
+- keeps the current profile and engine
+
+### `exit_capture`
+
 ```json
-{"ok": true, "paused": false}
+{"cmd":"exit_capture"}
 ```
 
-### set_sensitivity
+Behavior:
 
-Override the global sensitivity multiplier without reloading the profile.
+- releases active touches
+- releases exclusive grabs
+- lets the desktop receive input again
 
-**Request:**
+### `toggle_capture`
+
 ```json
-{"cmd": "set_sensitivity", "value": 1.5}
+{"cmd":"toggle_capture"}
 ```
 
-**Success:**
+Toggles between exclusive gameplay capture and released desktop control.
+
+### `set_sensitivity`
+
 ```json
-{"ok": true, "sensitivity": 1.5}
+{"cmd":"set_sensitivity","value":1.25}
 ```
 
-**Errors:**
-- Value out of range (must be 0.1–10.0)
+Allowed range is `(0, 10]`.
 
-### list_profiles
+### `list_profiles`
 
-List available profiles in the profiles directory.
-
-**Request:**
 ```json
-{"cmd": "list_profiles"}
+{"cmd":"list_profiles"}
 ```
 
-**Success:**
+Scans `~/.config/phantom/profiles` and returns profile names with paths.
+
+### `shutdown`
+
 ```json
-{
-  "ok": true,
-  "profiles": [
-    {"name": "PUBG Mobile", "path": "/home/user/.config/phantom/profiles/pubg.json"},
-    {"name": "Genshin Impact", "path": "/home/user/.config/phantom/profiles/genshin.json"}
-  ]
-}
+{"cmd":"shutdown"}
 ```
 
-### shutdown
+Gracefully stops the daemon.
 
-Graceful daemon shutdown. Lifts all touches, destroys uinput device, releases grabs.
-
-**Request:**
-```json
-{"cmd": "shutdown"}
-```
-
-**Success:**
-```json
-{"ok": true, "shutting_down": true}
-```
-
----
-
-## CLI Usage
-
-The `phantom` binary acts as both daemon (with `--daemon` flag) and CLI client.
+## CLI Mapping
 
 ```bash
-# Start daemon
-sudo phantom --daemon
-
-# Load a profile
-phantom load ~/.config/phantom/profiles/pubg.json
-
-# Check status
+phantom --daemon
+phantom load <profile.json>
+phantom reload
 phantom status
-
-# Pause/resume
 phantom pause
 phantom resume
-
-# Reload current profile
-phantom reload
-
-# Shutdown daemon
+phantom enter-capture
+phantom exit-capture
+phantom toggle-capture
+phantom sensitivity <value>
+phantom list
 phantom shutdown
 ```
 
-Without `--daemon`, the binary connects to the existing daemon's socket and sends the command.
+## Runtime Hotkeys
 
----
+These are handled directly by the daemon:
 
-## Connection Handling
+- `F8` toggles capture
+- `F9` toggles pause
 
-- Server uses `tokio::net::UnixListener`
-- Each connection is handled in a separate task
-- Read until newline, parse JSON, execute command, write response + newline, close
-- Timeout: 5 seconds for read, 5 seconds for write. Kill connection on timeout.
-- Maximum request size: 64KB (reject larger with error)
-- If socket already exists on daemon start, attempt to connect. If successful, another daemon is running — exit with error. If connection fails (stale socket), delete and re-create.
+## Behavior Notes
+
+- stale sockets are removed on daemon startup if they are not connectable
+- `~` expansion is supported for `load_profile`
+- `load_profile`, `load_profile_data`, `reload`, `pause`, and `exit_capture` all release active touches before changing runtime state
