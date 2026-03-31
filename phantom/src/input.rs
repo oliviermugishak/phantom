@@ -417,11 +417,15 @@ impl DeviceInfo {
 pub struct InputCapture {
     devices: Vec<DeviceInfo>,
     epoll_fd: RawFd,
-    grabbed: bool,
+    mouse_grabbed: bool,
+    keyboard_grabbed: bool,
 }
 
 impl InputCapture {
-    pub fn discover_and_grab() -> Result<Self> {
+    /// Discover input devices and set up epoll for reading.
+    /// Does NOT grab — events still reach the compositor.
+    /// Use `set_grabbed_mouse_only(true)` to enter game mode.
+    pub fn discover() -> Result<Self> {
         let mut devices = Vec::new();
         let entries = fs::read_dir("/dev/input").map_err(|e| PhantomError::DeviceNotFound {
             path: format!("/dev/input: {}", e),
@@ -435,9 +439,9 @@ impl InputCapture {
                 continue;
             }
 
-            match Self::probe_device(&path_str) {
+            match Self::probe_device_open(&path_str) {
                 Ok(Some(info)) => {
-                    tracing::info!("grabbed: {} ({})", path_str, info.name);
+                    tracing::info!("watching: {} ({})", path_str, info.name);
                     devices.push(info);
                 }
                 Ok(None) => {}
@@ -468,15 +472,30 @@ impl InputCapture {
             }
         }
 
-        tracing::info!("captured {} input devices", devices.len());
-        Ok(Self {
+        tracing::info!("watching {} input devices", devices.len());
+        let mut capture = Self {
             devices,
             epoll_fd,
-            grabbed: true,
-        })
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        // Grab keyboard so F1/F8/F9 shortcuts are always detectable.
+        // Non-fatal: if something else already has it grabbed, warn and continue.
+        match capture.set_grabbed_keyboard_only(true) {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(
+                    "could not grab keyboard: {} (F1/F8/F9 shortcuts may not work)",
+                    e
+                );
+            }
+        }
+
+        Ok(capture)
     }
 
-    fn probe_device(path: &str) -> Result<Option<DeviceInfo>> {
+    fn probe_device_open(path: &str) -> Result<Option<DeviceInfo>> {
         let file = OpenOptions::new()
             .read(true)
             .open(path)
@@ -554,23 +573,13 @@ impl InputCapture {
             return Ok(None);
         }
 
-        // Re-open non-blocking for epoll
+        // Re-open non-blocking for epoll (NO GRAB)
         drop(file);
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(path)
             .map_err(PhantomError::Io)?;
-        let fd = file.as_raw_fd();
-
-        // Grab exclusive
-        if let Err(err) = unsafe { eviocgrab(fd, 1) } {
-            return Err(PhantomError::IoctlFailed {
-                operation: "EVIOCGRAB".into(),
-                path: path.into(),
-                reason: std::io::Error::from_raw_os_error(err as i32).to_string(),
-            });
-        }
 
         Ok(Some(DeviceInfo {
             path: path.to_string(),
@@ -752,16 +761,24 @@ impl InputCapture {
         self.devices.iter().any(|d| d.is_keyboard)
     }
 
-    pub fn is_grabbed(&self) -> bool {
-        self.grabbed
+    pub fn mouse_grabbed(&self) -> bool {
+        self.mouse_grabbed
     }
 
-    pub fn set_grabbed(&mut self, grabbed: bool) -> Result<()> {
-        if self.grabbed == grabbed {
+    pub fn keyboard_grabbed(&self) -> bool {
+        self.keyboard_grabbed
+    }
+
+    /// Grab or release mouse devices. Keyboard state is unchanged.
+    pub fn set_grabbed_mouse_only(&mut self, grabbed: bool) -> Result<()> {
+        if self.mouse_grabbed == grabbed {
             return Ok(());
         }
 
         for dev in &self.devices {
+            if !dev.is_mouse {
+                continue;
+            }
             let value = if grabbed { 1 } else { 0 };
             if let Err(err) = unsafe { eviocgrab(dev.fd(), value) } {
                 return Err(PhantomError::IoctlFailed {
@@ -772,24 +789,59 @@ impl InputCapture {
             }
         }
 
-        self.grabbed = grabbed;
+        self.mouse_grabbed = grabbed;
         tracing::info!(
-            "{} exclusive capture for {} devices",
-            if grabbed { "enabled" } else { "disabled" },
-            self.devices.len()
+            "mouse grab {}",
+            if grabbed { "enabled" } else { "disabled" }
         );
         Ok(())
+    }
+
+    /// Grab or release keyboard devices. Mouse state is unchanged.
+    pub fn set_grabbed_keyboard_only(&mut self, grabbed: bool) -> Result<()> {
+        if self.keyboard_grabbed == grabbed {
+            return Ok(());
+        }
+
+        for dev in &self.devices {
+            if !dev.is_keyboard {
+                continue;
+            }
+            let value = if grabbed { 1 } else { 0 };
+            if let Err(err) = unsafe { eviocgrab(dev.fd(), value) } {
+                return Err(PhantomError::IoctlFailed {
+                    operation: "EVIOCGRAB".into(),
+                    path: dev.path.clone(),
+                    reason: std::io::Error::from_raw_os_error(err as i32).to_string(),
+                });
+            }
+        }
+
+        self.keyboard_grabbed = grabbed;
+        tracing::info!(
+            "keyboard grab {}",
+            if grabbed { "enabled" } else { "disabled" }
+        );
+        Ok(())
+    }
+
+    /// Release all grabs unconditionally. Used during shutdown.
+    pub fn force_release_all(&mut self) {
+        for dev in &self.devices {
+            unsafe {
+                let _ = eviocgrab(dev.fd(), 0);
+            }
+        }
+        self.mouse_grabbed = false;
+        self.keyboard_grabbed = false;
     }
 }
 
 impl Drop for InputCapture {
     fn drop(&mut self) {
-        if self.grabbed {
-            for dev in &self.devices {
-                unsafe {
-                    let _ = eviocgrab(dev.fd(), 0);
-                }
-                tracing::info!("released: {}", dev.path);
+        for dev in &self.devices {
+            unsafe {
+                let _ = eviocgrab(dev.fd(), 0);
             }
         }
         unsafe {

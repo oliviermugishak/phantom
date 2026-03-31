@@ -96,7 +96,7 @@ impl DaemonState {
             capture: Mutex::new(capture),
             screen_width: width,
             screen_height: height,
-            capture_active: AtomicBool::new(true),
+            capture_active: AtomicBool::new(false),
             shutdown_tx,
         });
         (state, shutdown_rx)
@@ -403,7 +403,8 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
 
     {
         let mut capture = lock_capture(state)?;
-        capture.set_grabbed(active)?;
+        // Only grab mouse — keyboard stays free for system shortcuts
+        capture.set_grabbed_mouse_only(active)?;
     }
     state.capture_active.store(active, Ordering::Release);
     Ok(())

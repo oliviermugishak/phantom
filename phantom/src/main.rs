@@ -14,6 +14,8 @@ use phantom::profile::Profile;
 
 const CAPTURE_TOGGLE_KEY: Key = Key::F8;
 const PAUSE_TOGGLE_KEY: Key = Key::F9;
+const MOUSE_TOGGLE_KEY: Key = Key::F1;
+const RELEASE_ALL_KEY: Key = Key::F2;
 
 fn print_help() {
     eprintln!(
@@ -32,6 +34,12 @@ USAGE:
     phantom sensitivity <value>       Set global sensitivity
     phantom list                      List available profiles
     phantom shutdown                  Graceful shutdown
+
+KEYS (while daemon running):
+    F2   Shutdown daemon (kills everything, restart to play again)
+    F1   Toggle mouse grab (free mouse for desktop)
+    F8   Toggle capture mode (game mode on/off)
+    F9   Toggle pause (freeze touch injection)
 
 FLAGS:
     --daemon      Run as daemon (requires root)
@@ -105,7 +113,7 @@ async fn run_daemon() -> Result<()> {
 
     let (screen_w, screen_h) = detect_resolution(&config, default_profile.as_ref())?;
     let uinput = UinputDevice::new(screen_w, screen_h)?;
-    let capture = InputCapture::discover_and_grab()?;
+    let capture = InputCapture::discover()?;
     tracing::info!(
         devices = capture.device_count(),
         mouse = capture.has_mouse(),
@@ -163,7 +171,7 @@ async fn run_daemon() -> Result<()> {
         flag.store(true, Ordering::Release);
     });
 
-    tracing::info!("daemon ready, entering event loop (F8 toggles capture, F9 toggles pause)");
+    tracing::info!("daemon ready, entering event loop (F1 mouse toggle, F8 capture, F9 pause)");
 
     let mut input_interval = tokio::time::interval(Duration::from_millis(4));
     input_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -258,7 +266,7 @@ async fn run_daemon() -> Result<()> {
 
     {
         let mut capture = ipc::lock_capture(&state)?;
-        let _ = capture.set_grabbed(false);
+        capture.force_release_all();
     }
 
     let socket_path = config::socket_path();
@@ -294,6 +302,28 @@ async fn handle_runtime_shortcut(state: &Arc<DaemonState>, event: &InputEvent) -
                 let mut dev = ipc::lock_uinput(state)?;
                 let _ = engine::execute_commands(&mut dev, &cmds);
             }
+            Ok(true)
+        }
+        InputEvent::KeyPress(key) if *key == MOUSE_TOGGLE_KEY => {
+            if !state.capture_active.load(Ordering::Acquire) {
+                tracing::info!("F1 mouse toggle ignored (not in capture mode)");
+                return Ok(true);
+            }
+            let mut capture = ipc::lock_capture(state)?;
+            let currently_grabbed = capture.mouse_grabbed();
+            if currently_grabbed {
+                capture.set_grabbed_mouse_only(false)?;
+                tracing::info!("mouse released to desktop (F1)");
+            } else {
+                capture.set_grabbed_mouse_only(true)?;
+                tracing::info!("mouse grabbed for gameplay (F1)");
+            }
+            Ok(true)
+        }
+        InputEvent::KeyPress(key) if *key == RELEASE_ALL_KEY => {
+            tracing::info!("F2: shutting down daemon");
+            // Signal shutdown — cleanup happens in the main loop
+            state.shutdown_tx.send(()).ok();
             Ok(true)
         }
         _ => Ok(false),
