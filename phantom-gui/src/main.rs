@@ -21,6 +21,19 @@ const COLOR_LAYER: Color32 = Color32::from_rgb(158, 158, 158);
 const CANVAS_BG: Color32 = Color32::from_rgb(19, 21, 26);
 const CONTENT_BG: Color32 = Color32::from_rgb(26, 29, 36);
 const HANDLE_SIZE: f32 = 10.0;
+const MAX_HISTORY: usize = 128;
+const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const REPAINT_INTERVAL: Duration = Duration::from_millis(50);
+const MIN_CANVAS_ZOOM: f32 = 0.75;
+const MAX_CANVAS_ZOOM: f32 = 3.0;
+const SNAP_GRID_STEP: f64 = 0.05;
+const SNAP_THRESHOLD: f64 = 0.012;
+const TOOLBAR_HEIGHT: f32 = 126.0;
+const TEMPLATE_FILES: &[(&str, &str)] = &[
+    ("PUBG", "pubg.json"),
+    ("Genshin", "genshin.json"),
+    ("eFootball", "efootball-template.json"),
+];
 
 const BINDABLE_KEYS: &[&str] = &[
     "A",
@@ -147,6 +160,10 @@ enum DragState {
     Point {
         idx: usize,
     },
+    Pan {
+        origin_pan: Vec2,
+        start_mouse: Pos2,
+    },
     RegionMove {
         idx: usize,
         origin: Region,
@@ -167,6 +184,7 @@ struct RuntimeState {
     paused: bool,
     capture_active: bool,
     screen: Option<(u32, u32)>,
+    active_layers: Vec<String>,
     last_error: Option<String>,
     last_checked: Option<Instant>,
 }
@@ -174,6 +192,13 @@ struct RuntimeState {
 struct Banner {
     text: String,
     is_error: bool,
+}
+
+#[derive(Clone, PartialEq)]
+struct EditorSnapshot {
+    profile: Option<Profile>,
+    profile_path: Option<PathBuf>,
+    selected: Option<usize>,
 }
 
 pub struct PhantomGui {
@@ -191,6 +216,12 @@ pub struct PhantomGui {
     dirty: bool,
     show_labels: bool,
     auto_push_on_save: bool,
+    snap_to_grid: bool,
+    undo_stack: Vec<EditorSnapshot>,
+    redo_stack: Vec<EditorSnapshot>,
+    clipboard: Option<Node>,
+    canvas_zoom: f32,
+    canvas_pan: Vec2,
 }
 
 impl PhantomGui {
@@ -211,6 +242,12 @@ impl PhantomGui {
             dirty: false,
             show_labels: true,
             auto_push_on_save: true,
+            snap_to_grid: true,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            clipboard: None,
+            canvas_zoom: 1.0,
+            canvas_pan: Vec2::ZERO,
         }
     }
 
@@ -228,6 +265,72 @@ impl PhantomGui {
         }
     }
 
+    fn snapshot(&self) -> EditorSnapshot {
+        EditorSnapshot {
+            profile: self.profile.clone(),
+            profile_path: self.profile_path.clone(),
+            selected: self.selected,
+        }
+    }
+
+    fn reset_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
+    fn begin_edit(&mut self) {
+        let snapshot = self.snapshot();
+        self.push_history_snapshot(snapshot);
+    }
+
+    fn push_history_snapshot(&mut self, snapshot: EditorSnapshot) {
+        if self.undo_stack.last() != Some(&snapshot) {
+            self.undo_stack.push(snapshot);
+            if self.undo_stack.len() > MAX_HISTORY {
+                self.undo_stack.remove(0);
+            }
+        }
+        self.redo_stack.clear();
+    }
+
+    fn restore_snapshot(&mut self, snapshot: EditorSnapshot) {
+        self.profile = snapshot.profile;
+        self.profile_path = snapshot.profile_path;
+        self.selected = snapshot.selected;
+        self.drag_state = None;
+        self.pending_binding = None;
+        self.pending_binding_started_at = None;
+        self.dirty = true;
+    }
+
+    fn undo(&mut self) {
+        let Some(snapshot) = self.undo_stack.pop() else {
+            return;
+        };
+        let current = self.snapshot();
+        if self.redo_stack.last() != Some(&current) {
+            self.redo_stack.push(current);
+        }
+        self.restore_snapshot(snapshot);
+        self.set_banner("Undo", false);
+    }
+
+    fn redo(&mut self) {
+        let Some(snapshot) = self.redo_stack.pop() else {
+            return;
+        };
+        let current = self.snapshot();
+        if self.undo_stack.last() != Some(&current) {
+            self.undo_stack.push(current);
+        }
+        self.restore_snapshot(snapshot);
+        self.set_banner("Redo", false);
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
     fn new_profile(&mut self) {
         self.profile = Some(Profile {
             name: "New Profile".into(),
@@ -237,9 +340,13 @@ impl PhantomGui {
             nodes: Vec::new(),
         });
         self.profile_path = None;
+        self.screenshot = None;
         self.selected = None;
         self.dirty = true;
         self.tool = Tool::Select;
+        self.reset_history();
+        self.canvas_zoom = 1.0;
+        self.canvas_pan = Vec2::ZERO;
         self.set_banner("New profile created", false);
     }
 
@@ -248,12 +355,35 @@ impl PhantomGui {
             Ok(profile) => {
                 self.profile = Some(profile);
                 self.profile_path = Some(path.to_path_buf());
+                self.screenshot = None;
                 self.selected = None;
                 self.dirty = false;
                 self.tool = Tool::Select;
+                self.reset_history();
+                self.canvas_zoom = 1.0;
+                self.canvas_pan = Vec2::ZERO;
                 self.set_banner(format!("Loaded {}", path.display()), false);
             }
             Err(e) => self.set_banner(format!("Load failed: {}", e), true),
+        }
+    }
+
+    fn load_template(&mut self, file_name: &str) {
+        let path = config::profiles_dir().join(file_name);
+        match Profile::load(&path) {
+            Ok(profile) => {
+                self.profile = Some(profile);
+                self.profile_path = None;
+                self.screenshot = None;
+                self.selected = None;
+                self.dirty = true;
+                self.tool = Tool::Select;
+                self.reset_history();
+                self.canvas_zoom = 1.0;
+                self.canvas_pan = Vec2::ZERO;
+                self.set_banner(format!("Loaded template {}", file_name), false);
+            }
+            Err(e) => self.set_banner(format!("Template load failed: {}", e), true),
         }
     }
 
@@ -315,6 +445,13 @@ impl PhantomGui {
                 );
                 self.screenshot = Some(texture);
                 let mut banner = Some(format!("Loaded screenshot {}", path.display()));
+                let should_lock_screen = self
+                    .profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.screen.is_none());
+                if should_lock_screen {
+                    self.begin_edit();
+                }
                 if let Some(profile) = &mut self.profile {
                     match &mut profile.screen {
                         Some(screen) => {
@@ -330,7 +467,7 @@ impl PhantomGui {
                                 width: size[0] as u32,
                                 height: size[1] as u32,
                             });
-                            self.dirty = true;
+                            self.mark_dirty();
                         }
                     }
                 }
@@ -362,6 +499,7 @@ impl PhantomGui {
         self.runtime.profile = response.profile.clone();
         self.runtime.paused = response.paused.unwrap_or(false);
         self.runtime.capture_active = response.capture_active.unwrap_or(false);
+        self.runtime.active_layers = response.active_layers.clone().unwrap_or_default();
         self.runtime.screen = match (response.screen_width, response.screen_height) {
             (Some(w), Some(h)) => Some((w, h)),
             _ => None,
@@ -437,7 +575,7 @@ impl PhantomGui {
         let should_poll = self
             .runtime
             .last_checked
-            .map(|t| t.elapsed() >= Duration::from_secs(2))
+            .map(|t| t.elapsed() >= RUNTIME_POLL_INTERVAL)
             .unwrap_or(true);
         if should_poll {
             self.refresh_status();
@@ -449,9 +587,129 @@ impl PhantomGui {
         (0..=9).find(|slot| !profile.nodes.iter().any(|node| node.slot() == Some(*slot)))
     }
 
-    fn add_non_canvas_node(&mut self, template: NodeTemplate) {
+    fn unique_node_id(&self, prefix: &str) -> String {
+        let Some(profile) = &self.profile else {
+            return format!("{prefix}_1");
+        };
+        let mut next = 1;
+        loop {
+            let candidate = format!("{prefix}_{next}");
+            if !profile.nodes.iter().any(|node| node.id() == candidate) {
+                return candidate;
+            }
+            next += 1;
+        }
+    }
+
+    fn duplicate_node_for_insert(&self, node: &Node) -> Option<Node> {
+        let mut node = node.clone();
+        let prefix = node_id_prefix(&node);
+        set_node_id(&mut node, self.unique_node_id(prefix));
+        match &mut node {
+            Node::Tap { slot, pos, .. }
+            | Node::HoldTap { slot, pos, .. }
+            | Node::ToggleTap { slot, pos, .. }
+            | Node::RepeatTap { slot, pos, .. } => {
+                *slot = self.next_slot()?;
+                *pos = offset_rel_pos(*pos);
+            }
+            Node::Joystick { slot, pos, .. } => {
+                *slot = self.next_slot()?;
+                *pos = offset_rel_pos(*pos);
+            }
+            Node::MouseCamera { slot, region, .. } => {
+                *slot = self.next_slot()?;
+                *region = offset_region(*region);
+            }
+            Node::Macro { .. } | Node::LayerShift { .. } => {}
+        }
+        Some(node)
+    }
+
+    fn copy_selected(&mut self) {
+        let Some(profile) = &self.profile else {
+            return;
+        };
+        let Some(idx) = self.selected else {
+            return;
+        };
+        if let Some(node) = profile.nodes.get(idx) {
+            self.clipboard = Some(node.clone());
+            self.set_banner("Copied control", false);
+        }
+    }
+
+    fn paste_clipboard(&mut self) {
+        let Some(node) = self.clipboard.clone() else {
+            return;
+        };
+        let Some(node) = self.duplicate_node_for_insert(&node) else {
+            self.set_banner("No free touch slot for paste", true);
+            return;
+        };
+        self.begin_edit();
         let Some(profile) = &mut self.profile else {
+            return;
+        };
+        profile.nodes.push(node);
+        self.selected = Some(profile.nodes.len() - 1);
+        self.mark_dirty();
+        self.set_banner("Pasted control", false);
+    }
+
+    fn duplicate_selected(&mut self) {
+        let Some(idx) = self.selected else {
+            return;
+        };
+        let Some(source) = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.nodes.get(idx))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(node) = self.duplicate_node_for_insert(&source) else {
+            self.set_banner("No free touch slot for duplicate", true);
+            return;
+        };
+        self.begin_edit();
+        let Some(profile) = &mut self.profile else {
+            return;
+        };
+        profile.nodes.insert(idx + 1, node);
+        self.selected = Some(idx + 1);
+        self.mark_dirty();
+        self.set_banner("Duplicated control", false);
+    }
+
+    fn move_selected(&mut self, delta: isize) {
+        let Some(len) = self.profile.as_ref().map(|profile| profile.nodes.len()) else {
+            return;
+        };
+        let Some(idx) = self.selected else {
+            return;
+        };
+        let target = idx as isize + delta;
+        if !(0..len as isize).contains(&target) {
+            return;
+        }
+        self.begin_edit();
+        let Some(profile) = &mut self.profile else {
+            return;
+        };
+        profile.nodes.swap(idx, target as usize);
+        self.selected = Some(target as usize);
+        self.mark_dirty();
+    }
+
+    fn add_non_canvas_node(&mut self, template: NodeTemplate) {
+        if self.profile.is_none() {
             self.set_banner("Open or create a profile first", true);
+            return;
+        }
+        self.begin_edit();
+        let Some(profile) = &mut self.profile else {
             return;
         };
 
@@ -485,7 +743,7 @@ impl PhantomGui {
         };
         profile.nodes.push(node);
         self.selected = Some(profile.nodes.len() - 1);
-        self.dirty = true;
+        self.mark_dirty();
     }
 
     fn place_node(&mut self, template: NodeTemplate, rel: RelPos) {
@@ -493,6 +751,10 @@ impl PhantomGui {
             self.set_banner("All 10 touch slots are already assigned", true);
             return;
         };
+        if self.profile.is_none() {
+            return;
+        }
+        self.begin_edit();
         let Some(profile) = &mut self.profile else {
             return;
         };
@@ -562,7 +824,7 @@ impl PhantomGui {
         };
         profile.nodes.push(node);
         self.selected = Some(profile.nodes.len() - 1);
-        self.dirty = true;
+        self.mark_dirty();
         self.tool = Tool::Select;
     }
 
@@ -570,21 +832,26 @@ impl PhantomGui {
         let Some(idx) = self.selected else {
             return;
         };
-        let Some(profile) = &mut self.profile else {
+        let Some(len) = self.profile.as_ref().map(|profile| profile.nodes.len()) else {
             return;
         };
-        if idx < profile.nodes.len() {
+        if idx < len {
+            self.begin_edit();
+            let Some(profile) = &mut self.profile else {
+                return;
+            };
             profile.nodes.remove(idx);
             self.selected = None;
             self.drag_state = None;
             self.pending_binding = None;
-            self.dirty = true;
+            self.mark_dirty();
         }
     }
 
     fn begin_binding_capture(&mut self, target: BindingTarget) {
         self.pending_binding = Some(target);
         self.pending_binding_started_at = Some(Instant::now());
+        self.set_banner("Binding mode active. Press Esc to cancel.", false);
     }
 
     fn handle_binding_capture(&mut self, ctx: &egui::Context) {
@@ -641,13 +908,17 @@ impl PhantomGui {
             if self.apply_binding(&target, binding.clone()) {
                 self.pending_binding = None;
                 self.pending_binding_started_at = None;
-                self.dirty = true;
+                self.mark_dirty();
                 self.set_banner(format!("Bound {}", binding), false);
             }
         }
     }
 
     fn apply_binding(&mut self, target: &BindingTarget, binding: String) -> bool {
+        if self.profile.is_none() {
+            return false;
+        }
+        self.begin_edit();
         let Some(profile) = &mut self.profile else {
             return false;
         };
@@ -687,7 +958,7 @@ impl PhantomGui {
         }
     }
 
-    fn content_rect(&self, canvas: Rect) -> Rect {
+    fn base_content_rect(&self, canvas: Rect) -> Rect {
         let aspect = self
             .screenshot
             .as_ref()
@@ -708,7 +979,47 @@ impl PhantomGui {
         fit_rect_to_aspect(canvas, aspect)
     }
 
+    fn content_rect(&self, canvas: Rect) -> Rect {
+        zoom_rect(
+            self.base_content_rect(canvas),
+            self.canvas_zoom,
+            self.canvas_pan,
+        )
+    }
+
+    fn zoom_canvas(&mut self, canvas: Rect, pointer: Option<Pos2>, zoom_delta: f32) {
+        let old_zoom = self.canvas_zoom;
+        let next_zoom = (self.canvas_zoom * zoom_delta).clamp(MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM);
+        if (next_zoom - old_zoom).abs() < f32::EPSILON {
+            return;
+        }
+
+        let base = self.base_content_rect(canvas);
+        if let Some(pointer) = pointer {
+            let old_rect = zoom_rect(base, old_zoom, self.canvas_pan);
+            let next_rect = zoom_rect(base, next_zoom, self.canvas_pan);
+            let old_rel = from_canvas_pos(old_rect, pointer);
+            let new_pointer = to_canvas_pos(next_rect, &old_rel);
+            self.canvas_pan += pointer - new_pointer;
+        }
+
+        self.canvas_zoom = next_zoom;
+        self.clamp_canvas_pan(canvas);
+    }
+
+    fn clamp_canvas_pan(&mut self, canvas: Rect) {
+        let base = self.base_content_rect(canvas);
+        let scaled = zoom_rect(base, self.canvas_zoom, Vec2::ZERO);
+        let max_x = ((scaled.width() - canvas.width()).max(0.0) / 2.0) + 24.0;
+        let max_y = ((scaled.height() - canvas.height()).max(0.0) / 2.0) + 24.0;
+        self.canvas_pan.x = self.canvas_pan.x.clamp(-max_x, max_x);
+        self.canvas_pan.y = self.canvas_pan.y.clamp(-max_y, max_y);
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.pending_binding.is_some() {
+            return;
+        }
         if ctx.wants_keyboard_input() {
             return;
         }
@@ -735,19 +1046,58 @@ impl PhantomGui {
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::R)) {
             self.push_profile_live();
         }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z) && !i.modifiers.shift) {
+            self.undo();
+        }
+        if ctx.input(|i| {
+            (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z))
+                || (i.modifiers.command && i.key_pressed(egui::Key::Y))
+        }) {
+            self.redo();
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D)) {
+            self.duplicate_selected();
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
+            self.copy_selected();
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::V)) {
+            self.paste_clipboard();
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
             self.delete_selected();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num1)) {
+            self.tool = Tool::Select;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num2)) {
+            self.tool = Tool::Place(NodeTemplate::Tap);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num3)) {
+            self.tool = Tool::Place(NodeTemplate::HoldTap);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num4)) {
+            self.tool = Tool::Place(NodeTemplate::ToggleTap);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num5)) {
+            self.tool = Tool::Place(NodeTemplate::Joystick);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num6)) {
+            self.tool = Tool::Place(NodeTemplate::MouseLook);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num7)) {
+            self.tool = Tool::Place(NodeTemplate::RepeatTap);
         }
     }
 
     fn draw_top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("toolbar")
-            .exact_height(82.0)
+            .exact_height(TOOLBAR_HEIGHT)
             .show(ctx, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
+                    ui.label(RichText::new("Project").strong().small());
                     if ui.button("New").clicked() {
                         self.new_profile();
                     }
@@ -766,44 +1116,80 @@ impl PhantomGui {
                     if ui.button("Save As").clicked() {
                         self.save_profile_as();
                     }
+                    ui.menu_button("Templates", |ui| {
+                        for (label, file_name) in TEMPLATE_FILES {
+                            if ui.button(*label).clicked() {
+                                self.load_template(file_name);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                     if ui.button("Screenshot").clicked() {
                         self.load_screenshot(ctx);
                     }
+                    if ui.button("Undo").clicked() {
+                        self.undo();
+                    }
+                    if ui.button("Redo").clicked() {
+                        self.redo();
+                    }
                     ui.separator();
+                    ui.label(RichText::new("Edit").strong().small());
+                    if ui.button("Copy").clicked() {
+                        self.copy_selected();
+                    }
+                    if ui.button("Paste").clicked() {
+                        self.paste_clipboard();
+                    }
+                    if ui.button("Duplicate").clicked() {
+                        self.duplicate_selected();
+                    }
+                    if ui.button("Delete").clicked() {
+                        self.delete_selected();
+                    }
+                });
 
-                    tool_button(ui, &mut self.tool, Tool::Select, "Select");
-                    tool_button(ui, &mut self.tool, Tool::Place(NodeTemplate::Tap), "Tap");
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
+                    ui.label(RichText::new("Place").strong().small());
+                    tool_button(ui, &mut self.tool, Tool::Select, "Select (1)");
+                    tool_button(
+                        ui,
+                        &mut self.tool,
+                        Tool::Place(NodeTemplate::Tap),
+                        "Tap (2)",
+                    );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::HoldTap),
-                        "Hold",
+                        "Hold (3)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::ToggleTap),
-                        "Toggle",
+                        "Toggle (4)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::Joystick),
-                        "Left Stick",
+                        "Left Stick (5)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::MouseLook),
-                        "Mouse Look",
+                        "Mouse Look (6)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::RepeatTap),
-                        "Rapid Tap",
+                        "Rapid Tap (7)",
                     );
-
                     if ui.button("Add Macro").clicked() {
                         self.add_non_canvas_node(NodeTemplate::Macro);
                     }
@@ -811,7 +1197,28 @@ impl PhantomGui {
                         self.add_non_canvas_node(NodeTemplate::LayerShift);
                     }
                     ui.separator();
+                    ui.label(RichText::new("View").strong().small());
+                    if ui.button("Zoom -").clicked() {
+                        self.canvas_zoom =
+                            (self.canvas_zoom - 0.1).clamp(MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM);
+                    }
+                    ui.label(format!("{:.0}%", self.canvas_zoom * 100.0));
+                    if ui.button("Zoom +").clicked() {
+                        self.canvas_zoom =
+                            (self.canvas_zoom + 0.1).clamp(MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM);
+                    }
+                    if ui.button("Reset View").clicked() {
+                        self.canvas_zoom = 1.0;
+                        self.canvas_pan = Vec2::ZERO;
+                    }
+                    ui.checkbox(&mut self.snap_to_grid, "Snap");
+                    ui.checkbox(&mut self.show_labels, "Labels");
+                });
 
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 8.0);
+                    ui.label(RichText::new("Runtime").strong().small());
                     if ui.button("Push Live").clicked() {
                         self.push_profile_live();
                     }
@@ -865,6 +1272,15 @@ impl PhantomGui {
                     ui.separator();
                     ui.label(RichText::new(banner_text).color(banner_color));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if !self.runtime.active_layers.is_empty() {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Layers: {}",
+                                    self.runtime.active_layers.join(", ")
+                                ))
+                                .color(Color32::from_rgb(255, 218, 121)),
+                            );
+                        }
                         runtime_chip(ui, self.runtime.capture_active, "Capture");
                         runtime_chip(ui, !self.runtime.paused, "Active");
                         runtime_chip(ui, self.runtime.connected, "Daemon");
@@ -878,13 +1294,15 @@ impl PhantomGui {
             .resizable(true)
             .default_width(290.0)
             .show(ctx, |ui| {
+                let snapshot_before = self.snapshot();
+                let mut profile_changed = false;
                 ui.heading("Profile");
                 ui.add_space(6.0);
 
                 let default_screen = self.default_screen();
                 if let Some(profile) = &mut self.profile {
                     if ui.text_edit_singleline(&mut profile.name).changed() {
-                        self.dirty = true;
+                        profile_changed = true;
                     }
 
                     let screen = profile.screen.get_or_insert(default_screen);
@@ -897,7 +1315,7 @@ impl PhantomGui {
                             .changed()
                         {
                             screen.width = width as u32;
-                            self.dirty = true;
+                            profile_changed = true;
                         }
                         ui.label("x");
                         if ui
@@ -905,7 +1323,7 @@ impl PhantomGui {
                             .changed()
                         {
                             screen.height = height as u32;
-                            self.dirty = true;
+                            profile_changed = true;
                         }
                     });
                     ui.horizontal(|ui| {
@@ -920,10 +1338,9 @@ impl PhantomGui {
                             .changed()
                         {
                             profile.global_sensitivity = (value * 100.0).round() / 100.0;
-                            self.dirty = true;
+                            profile_changed = true;
                         }
                     });
-                    ui.checkbox(&mut self.show_labels, "Show canvas labels");
                     ui.checkbox(&mut self.auto_push_on_save, "Push live after save");
 
                     ui.separator();
@@ -931,9 +1348,19 @@ impl PhantomGui {
                     ui.add_space(6.0);
 
                     let mut clicked = None;
+                    let mut move_up = None;
+                    let mut move_down = None;
+                    let mut duplicate = None;
+                    let mut delete = None;
                     for (idx, node) in profile.nodes.iter().enumerate() {
                         let selected = self.selected == Some(idx);
                         let text = format!("{}  {}", display_binding(node), display_type(node));
+                        let is_layer_active = !node.layer().trim().is_empty()
+                            && self
+                                .runtime
+                                .active_layers
+                                .iter()
+                                .any(|layer| layer == node.layer());
                         let subtitle = match (node.slot(), node.layer().trim().is_empty()) {
                             (Some(slot), true) => format!("slot {}", slot),
                             (Some(slot), false) => {
@@ -944,14 +1371,33 @@ impl PhantomGui {
                         };
 
                         ui.group(|ui| {
-                            let response = ui.selectable_label(
-                                selected,
-                                RichText::new(text).color(node_color(node)).strong(),
-                            );
-                            if response.clicked() {
-                                clicked = Some(idx);
-                            }
-                            ui.label(RichText::new(subtitle).small().weak());
+                            ui.horizontal(|ui| {
+                                let response = ui.selectable_label(
+                                    selected,
+                                    RichText::new(text).color(node_color(node)).strong(),
+                                );
+                                if response.clicked() {
+                                    clicked = Some(idx);
+                                }
+                                if ui.small_button("↑").clicked() {
+                                    move_up = Some(idx);
+                                }
+                                if ui.small_button("↓").clicked() {
+                                    move_down = Some(idx);
+                                }
+                                if ui.small_button("⧉").clicked() {
+                                    duplicate = Some(idx);
+                                }
+                                if ui.small_button("✕").clicked() {
+                                    delete = Some(idx);
+                                }
+                            });
+                            let subtitle_color = if is_layer_active {
+                                Color32::from_rgb(255, 218, 121)
+                            } else {
+                                Color32::from_gray(150)
+                            };
+                            ui.label(RichText::new(subtitle).small().color(subtitle_color));
                             if !node.id().is_empty() {
                                 ui.label(RichText::new(node.id()).small().italics().weak());
                             }
@@ -960,6 +1406,22 @@ impl PhantomGui {
                     }
                     if let Some(idx) = clicked {
                         self.selected = Some(idx);
+                    }
+                    if let Some(idx) = move_up {
+                        self.selected = Some(idx);
+                        self.move_selected(-1);
+                    }
+                    if let Some(idx) = move_down {
+                        self.selected = Some(idx);
+                        self.move_selected(1);
+                    }
+                    if let Some(idx) = duplicate {
+                        self.selected = Some(idx);
+                        self.duplicate_selected();
+                    }
+                    if let Some(idx) = delete {
+                        self.selected = Some(idx);
+                        self.delete_selected();
                     }
                 } else {
                     ui.label("Create or open a profile to start mapping.");
@@ -1003,6 +1465,10 @@ impl PhantomGui {
                 if let Some(error) = &self.runtime.last_error {
                     ui.label(RichText::new(error).small().color(Color32::LIGHT_RED));
                 }
+                if profile_changed {
+                    self.push_history_snapshot(snapshot_before);
+                    self.mark_dirty();
+                }
             });
     }
 
@@ -1011,6 +1477,7 @@ impl PhantomGui {
             .resizable(true)
             .default_width(360.0)
             .show(ctx, |ui| {
+                let snapshot_before = self.snapshot();
                 ui.heading("Properties");
                 ui.add_space(6.0);
 
@@ -1030,6 +1497,7 @@ impl PhantomGui {
                 let mut start_binding = None;
                 let mut delete_current = false;
                 let mut dirty = false;
+                let screen = profile.screen.clone();
 
                 let node = &mut profile.nodes[idx];
                 ui.label(
@@ -1060,13 +1528,13 @@ impl PhantomGui {
                     | Node::ToggleTap { layer, pos, .. }
                     | Node::RepeatTap { layer, pos, .. } => {
                         layer_row(ui, layer, &mut dirty);
-                        position_editor(ui, pos, &mut dirty);
+                        position_editor(ui, pos, screen.as_ref(), &mut dirty);
                     }
                     Node::Joystick {
                         layer, pos, radius, ..
                     } => {
                         layer_row(ui, layer, &mut dirty);
-                        position_editor(ui, pos, &mut dirty);
+                        position_editor(ui, pos, screen.as_ref(), &mut dirty);
                         ui.horizontal(|ui| {
                             ui.label("Radius");
                             let mut value = *radius;
@@ -1085,7 +1553,7 @@ impl PhantomGui {
                     }
                     Node::MouseCamera { layer, region, .. } => {
                         layer_row(ui, layer, &mut dirty);
-                        region_editor(ui, region, &mut dirty);
+                        region_editor(ui, region, screen.as_ref(), &mut dirty);
                     }
                     Node::Macro { layer, .. } => {
                         layer_row(ui, layer, &mut dirty);
@@ -1269,7 +1737,7 @@ impl PhantomGui {
                                 }
                             });
                             if let Some(pos) = &mut step.pos {
-                                position_editor(ui, pos, &mut dirty);
+                                position_editor(ui, pos, screen.as_ref(), &mut dirty);
                             }
                         });
                     }
@@ -1335,7 +1803,8 @@ impl PhantomGui {
                     return;
                 }
                 if dirty {
-                    self.dirty = true;
+                    self.push_history_snapshot(snapshot_before);
+                    self.mark_dirty();
                 }
             });
     }
@@ -1350,7 +1819,15 @@ impl PhantomGui {
             };
 
             let response = ui.allocate_response(ui.available_size(), Sense::click_and_drag());
-            let canvas = response.rect;
+            let canvas = response.rect.shrink(4.0);
+            if response.hovered() {
+                let zoom_scroll = ctx.input(|input| input.raw_scroll_delta.y);
+                if zoom_scroll.abs() > 0.0 {
+                    let factor = (1.0 + zoom_scroll * 0.0015).clamp(0.85, 1.2);
+                    self.zoom_canvas(canvas, response.hover_pos(), factor);
+                }
+            }
+            self.clamp_canvas_pan(canvas);
             let content = self.content_rect(canvas);
             let painter = ui.painter_at(canvas);
 
@@ -1394,12 +1871,131 @@ impl PhantomGui {
                         content,
                         node,
                         self.selected == Some(idx),
+                        !node.layer().trim().is_empty()
+                            && self
+                                .runtime
+                                .active_layers
+                                .iter()
+                                .any(|layer| layer == node.layer()),
                         self.show_labels,
                     );
                 }
             }
 
             let pointer_pos = response.interact_pointer_pos();
+            let hovered_hit = pointer_pos
+                .filter(|mouse| content.contains(*mouse))
+                .and_then(|mouse| {
+                    self.profile
+                        .as_ref()
+                        .and_then(|profile| hit_test(profile, content, mouse, self.selected))
+                });
+            let hovered_summary = hovered_hit.and_then(|hit| {
+                self.profile.as_ref().and_then(|profile| {
+                    profile.nodes.get(hit.idx()).map(|node| {
+                        (
+                            display_type(node).to_string(),
+                            node.primary_binding().is_some(),
+                        )
+                    })
+                })
+            });
+
+            if response.secondary_clicked() {
+                if let Some(hit) = hovered_hit {
+                    self.selected = Some(hit.idx());
+                }
+            }
+
+            let mut context_duplicate = false;
+            let mut context_delete = false;
+            let mut context_copy = false;
+            let mut context_paste = false;
+            let mut context_move_up = false;
+            let mut context_move_down = false;
+            let mut context_rebind = None;
+
+            response.context_menu(|ui| {
+                if let Some(hit) = hovered_hit {
+                    self.selected = Some(hit.idx());
+                    if let Some((label, has_primary_binding)) = hovered_summary.as_ref() {
+                        ui.label(RichText::new(label).strong());
+                        if *has_primary_binding && ui.button("Bind").clicked() {
+                            context_rebind = Some(BindingTarget::Primary(hit.idx()));
+                            ui.close_menu();
+                        }
+                    }
+                    if ui.button("Copy").clicked() {
+                        context_copy = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Duplicate").clicked() {
+                        context_duplicate = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Delete").clicked() {
+                        context_delete = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Move Up").clicked() {
+                        context_move_up = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Move Down").clicked() {
+                        context_move_down = true;
+                        ui.close_menu();
+                    }
+                } else {
+                    ui.label("Canvas");
+                    if self.clipboard.is_some() && ui.button("Paste").clicked() {
+                        context_paste = true;
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                if ui.button("Reset View").clicked() {
+                    self.canvas_zoom = 1.0;
+                    self.canvas_pan = Vec2::ZERO;
+                    ui.close_menu();
+                }
+            });
+
+            if context_copy {
+                self.copy_selected();
+            }
+            if context_duplicate {
+                self.duplicate_selected();
+            }
+            if context_delete {
+                self.delete_selected();
+            }
+            if context_paste {
+                self.paste_clipboard();
+            }
+            if context_move_up {
+                self.move_selected(-1);
+            }
+            if context_move_down {
+                self.move_selected(1);
+            }
+            if let Some(target) = context_rebind {
+                self.begin_binding_capture(target);
+            }
+
+            if let (Some(mouse), Some(hit)) = (pointer_pos, hovered_hit) {
+                if self.pending_binding.is_none() {
+                    if let Some(profile) = &self.profile {
+                        let node = &profile.nodes[hit.idx()];
+                        draw_hover_card(&painter, mouse, node, profile.screen.as_ref());
+                    }
+                }
+            }
+
+            if let Some(target) = self.pending_binding.as_ref() {
+                draw_binding_overlay(&painter, content, target);
+                return;
+            }
 
             if response.clicked() {
                 if let Some(mouse) = pointer_pos {
@@ -1429,55 +2025,82 @@ impl PhantomGui {
 
             if response.drag_started() {
                 if let (Some(mouse), Some(profile)) = (pointer_pos, self.profile.as_ref()) {
-                    self.drag_state = hit_test(profile, content, mouse, self.selected).and_then(
-                        |hit| match hit {
-                            HitTarget::Point(idx) => Some(DragState::Point { idx }),
-                            HitTarget::Region(idx) => profile.nodes.get(idx).and_then(|node| {
-                                let Node::MouseCamera { region, .. } = node else {
-                                    return None;
-                                };
-                                Some(DragState::RegionMove {
-                                    idx,
-                                    origin: region.clone(),
-                                    start_mouse: mouse,
-                                })
-                            }),
-                            HitTarget::RegionHandle(idx, handle) => {
-                                profile.nodes.get(idx).and_then(|node| {
+                    if ctx.input(|input| {
+                        input.key_down(egui::Key::Space) || input.pointer.middle_down()
+                    }) {
+                        self.drag_state = Some(DragState::Pan {
+                            origin_pan: self.canvas_pan,
+                            start_mouse: mouse,
+                        });
+                    } else {
+                        self.drag_state = hit_test(profile, content, mouse, self.selected)
+                            .and_then(|hit| match hit {
+                                HitTarget::Point(idx) => Some(DragState::Point { idx }),
+                                HitTarget::Region(idx) => profile.nodes.get(idx).and_then(|node| {
                                     let Node::MouseCamera { region, .. } = node else {
                                         return None;
                                     };
-                                    Some(DragState::RegionResize {
+                                    Some(DragState::RegionMove {
                                         idx,
-                                        handle,
-                                        origin: region.clone(),
+                                        origin: *region,
                                         start_mouse: mouse,
                                     })
-                                })
-                            }
-                        },
-                    );
-                    if let Some(drag) = &self.drag_state {
-                        self.selected = Some(match drag {
-                            DragState::Point { idx }
-                            | DragState::RegionMove { idx, .. }
-                            | DragState::RegionResize { idx, .. } => *idx,
-                        });
+                                }),
+                                HitTarget::RegionHandle(idx, handle) => {
+                                    profile.nodes.get(idx).and_then(|node| {
+                                        let Node::MouseCamera { region, .. } = node else {
+                                            return None;
+                                        };
+                                        Some(DragState::RegionResize {
+                                            idx,
+                                            handle,
+                                            origin: *region,
+                                            start_mouse: mouse,
+                                        })
+                                    })
+                                }
+                            });
+                    }
+                    let dragged_idx = match self.drag_state.as_ref() {
+                        Some(DragState::Point { idx })
+                        | Some(DragState::RegionMove { idx, .. })
+                        | Some(DragState::RegionResize { idx, .. }) => Some(*idx),
+                        _ => None,
+                    };
+                    if let Some(idx) = dragged_idx {
+                        self.begin_edit();
+                        self.selected = Some(idx);
                     }
                 }
             }
 
             if response.dragged() {
-                if let (Some(mouse), Some(profile)) = (pointer_pos, self.profile.as_mut()) {
+                if let Some(mouse) = pointer_pos {
                     if let Some(drag) = &self.drag_state {
                         match drag {
+                            DragState::Pan {
+                                origin_pan,
+                                start_mouse,
+                            } => {
+                                self.canvas_pan = *origin_pan + (mouse - *start_mouse);
+                                self.clamp_canvas_pan(canvas);
+                            }
                             DragState::Point { idx } => {
-                                if let Some(node) = profile.nodes.get_mut(*idx) {
+                                let mut rel = from_canvas_pos(content, mouse);
+                                rel = snap_rel_pos(
+                                    self.profile.as_ref(),
+                                    *idx,
+                                    rel,
+                                    self.snap_to_grid,
+                                );
+                                if let Some(node) = self
+                                    .profile
+                                    .as_mut()
+                                    .and_then(|profile| profile.nodes.get_mut(*idx))
+                                {
                                     if let Some(pos) = node_pos_mut(node) {
-                                        let rel = from_canvas_pos(content, mouse);
-                                        pos.x = round3(rel.x);
-                                        pos.y = round3(rel.y);
-                                        self.dirty = true;
+                                        *pos = rel;
+                                        self.mark_dirty();
                                     }
                                 }
                             }
@@ -1486,18 +2109,22 @@ impl PhantomGui {
                                 origin,
                                 start_mouse,
                             } => {
-                                let Some(Node::MouseCamera { region, .. }) =
-                                    profile.nodes.get_mut(*idx)
-                                else {
-                                    return;
-                                };
-                                let delta = (mouse - *start_mouse)
-                                    / Vec2::new(content.width(), content.height());
-                                region.x = (origin.x + delta.x as f64).clamp(0.0, 1.0 - origin.w);
-                                region.y = (origin.y + delta.y as f64).clamp(0.0, 1.0 - origin.h);
-                                region.x = round3(region.x);
-                                region.y = round3(region.y);
-                                self.dirty = true;
+                                if let Some(Node::MouseCamera { region, .. }) = self
+                                    .profile
+                                    .as_mut()
+                                    .and_then(|profile| profile.nodes.get_mut(*idx))
+                                {
+                                    let delta = (mouse - *start_mouse)
+                                        / Vec2::new(content.width(), content.height());
+                                    let next = Region {
+                                        x: (origin.x + delta.x as f64).clamp(0.0, 1.0 - origin.w),
+                                        y: (origin.y + delta.y as f64).clamp(0.0, 1.0 - origin.h),
+                                        w: origin.w,
+                                        h: origin.h,
+                                    };
+                                    *region = snap_region(next, self.snap_to_grid);
+                                    self.mark_dirty();
+                                }
                             }
                             DragState::RegionResize {
                                 idx,
@@ -1505,38 +2132,39 @@ impl PhantomGui {
                                 origin,
                                 start_mouse,
                             } => {
-                                let Some(Node::MouseCamera { region, .. }) =
-                                    profile.nodes.get_mut(*idx)
-                                else {
-                                    return;
-                                };
-                                let delta = (mouse - *start_mouse)
-                                    / Vec2::new(content.width(), content.height());
-                                let mut next = origin.clone();
-                                match handle {
-                                    RegionHandle::TopLeft => {
-                                        next.x = origin.x + delta.x as f64;
-                                        next.y = origin.y + delta.y as f64;
-                                        next.w = origin.w - delta.x as f64;
-                                        next.h = origin.h - delta.y as f64;
+                                if let Some(Node::MouseCamera { region, .. }) = self
+                                    .profile
+                                    .as_mut()
+                                    .and_then(|profile| profile.nodes.get_mut(*idx))
+                                {
+                                    let delta = (mouse - *start_mouse)
+                                        / Vec2::new(content.width(), content.height());
+                                    let mut next = *origin;
+                                    match handle {
+                                        RegionHandle::TopLeft => {
+                                            next.x = origin.x + delta.x as f64;
+                                            next.y = origin.y + delta.y as f64;
+                                            next.w = origin.w - delta.x as f64;
+                                            next.h = origin.h - delta.y as f64;
+                                        }
+                                        RegionHandle::TopRight => {
+                                            next.y = origin.y + delta.y as f64;
+                                            next.w = origin.w + delta.x as f64;
+                                            next.h = origin.h - delta.y as f64;
+                                        }
+                                        RegionHandle::BottomLeft => {
+                                            next.x = origin.x + delta.x as f64;
+                                            next.w = origin.w - delta.x as f64;
+                                            next.h = origin.h + delta.y as f64;
+                                        }
+                                        RegionHandle::BottomRight => {
+                                            next.w = origin.w + delta.x as f64;
+                                            next.h = origin.h + delta.y as f64;
+                                        }
                                     }
-                                    RegionHandle::TopRight => {
-                                        next.y = origin.y + delta.y as f64;
-                                        next.w = origin.w + delta.x as f64;
-                                        next.h = origin.h - delta.y as f64;
-                                    }
-                                    RegionHandle::BottomLeft => {
-                                        next.x = origin.x + delta.x as f64;
-                                        next.w = origin.w - delta.x as f64;
-                                        next.h = origin.h + delta.y as f64;
-                                    }
-                                    RegionHandle::BottomRight => {
-                                        next.w = origin.w + delta.x as f64;
-                                        next.h = origin.h + delta.y as f64;
-                                    }
+                                    *region = snap_region(clamp_region(next), self.snap_to_grid);
+                                    self.mark_dirty();
                                 }
-                                *region = clamp_region(next);
-                                self.dirty = true;
                             }
                         }
                     }
@@ -1547,24 +2175,13 @@ impl PhantomGui {
                 self.drag_state = None;
             }
 
-            if let Some(target) = &self.pending_binding {
-                let label = format!(
-                    "Press a key or mouse button for {}",
-                    binding_target_label(target)
-                );
-                let banner_rect = Rect::from_center_size(
-                    Pos2::new(content.center().x, content.top() + 32.0),
-                    Vec2::new(320.0, 34.0),
-                );
-                painter.rect_filled(banner_rect, 8.0, Color32::from_black_alpha(190));
-                painter.text(
-                    banner_rect.center(),
-                    Align2::CENTER_CENTER,
-                    label,
-                    egui::FontId::proportional(13.0),
-                    Color32::WHITE,
-                );
-            }
+            painter.text(
+                Pos2::new(content.right() - 12.0, content.bottom() - 12.0),
+                Align2::RIGHT_BOTTOM,
+                "Mouse wheel zoom • Space+drag pan • Right-click actions",
+                egui::FontId::proportional(11.0),
+                Color32::from_white_alpha(140),
+            );
         });
     }
 }
@@ -1574,7 +2191,7 @@ impl eframe::App for PhantomGui {
         self.handle_shortcuts(ctx);
         self.handle_binding_capture(ctx);
         self.maybe_poll_runtime();
-        ctx.request_repaint_after(Duration::from_millis(250));
+        ctx.request_repaint_after(REPAINT_INTERVAL);
 
         self.draw_top_bar(ctx);
         self.draw_left_panel(ctx);
@@ -1640,21 +2257,30 @@ fn draw_node(
     content: Rect,
     node: &Node,
     selected: bool,
+    layer_active: bool,
     show_labels: bool,
 ) {
     let color = node_color(node);
+    let accent = if layer_active {
+        Color32::from_rgb(255, 218, 121)
+    } else {
+        Color32::WHITE
+    };
     if let Node::MouseCamera { region, .. } = node {
         let rect = region_rect(content, region);
         painter.rect_filled(rect, 8.0, color.gamma_multiply(0.08));
         painter.rect_stroke(
             rect,
             8.0,
-            Stroke::new(if selected { 3.0 } else { 2.0 }, color),
+            Stroke::new(
+                if selected { 3.0 } else { 2.0 },
+                if layer_active { accent } else { color },
+            ),
             StrokeKind::Outside,
         );
         if selected {
             for (_, handle_rect) in region_handles(rect) {
-                painter.rect_filled(handle_rect, 2.0, Color32::WHITE);
+                painter.rect_filled(handle_rect, 2.0, accent);
             }
         }
         painter.text(
@@ -1662,7 +2288,7 @@ fn draw_node(
             Align2::CENTER_TOP,
             display_binding(node),
             egui::FontId::proportional(13.0),
-            color,
+            if layer_active { accent } else { color },
         );
         return;
     }
@@ -1683,8 +2309,8 @@ fn draw_node(
 
     let marker_radius = if selected { 16.0 } else { 12.0 };
     painter.circle_filled(point, marker_radius, color);
-    if selected {
-        painter.circle_stroke(point, marker_radius + 3.0, Stroke::new(2.0, Color32::WHITE));
+    if selected || layer_active {
+        painter.circle_stroke(point, marker_radius + 3.0, Stroke::new(2.0, accent));
     }
     painter.text(
         point,
@@ -1699,7 +2325,7 @@ fn draw_node(
             Align2::CENTER_TOP,
             display_binding(node),
             egui::FontId::proportional(11.0),
-            Color32::WHITE,
+            if layer_active { accent } else { Color32::WHITE },
         );
     }
 }
@@ -1884,7 +2510,12 @@ fn draw_grid(painter: &egui::Painter, rect: Rect) {
     }
 }
 
-fn position_editor(ui: &mut egui::Ui, pos: &mut RelPos, dirty: &mut bool) {
+fn position_editor(
+    ui: &mut egui::Ui,
+    pos: &mut RelPos,
+    screen: Option<&ScreenOverride>,
+    dirty: &mut bool,
+) {
     ui.horizontal(|ui| {
         ui.label("X");
         let mut x = pos.x;
@@ -1905,9 +2536,22 @@ fn position_editor(ui: &mut egui::Ui, pos: &mut RelPos, dirty: &mut bool) {
             *dirty = true;
         }
     });
+    if let Some(screen) = screen {
+        let (px, py) = rel_to_pixels(pos, screen);
+        ui.label(
+            RichText::new(format!("Pixels: {}, {}", px, py))
+                .small()
+                .color(Color32::from_gray(170)),
+        );
+    }
 }
 
-fn region_editor(ui: &mut egui::Ui, region: &mut Region, dirty: &mut bool) {
+fn region_editor(
+    ui: &mut egui::Ui,
+    region: &mut Region,
+    screen: Option<&ScreenOverride>,
+    dirty: &mut bool,
+) {
     for (label, value) in [
         ("X", &mut region.x),
         ("Y", &mut region.y),
@@ -1924,7 +2568,26 @@ fn region_editor(ui: &mut egui::Ui, region: &mut Region, dirty: &mut bool) {
             }
         });
     }
-    *region = clamp_region(region.clone());
+    *region = clamp_region(*region);
+    if let Some(screen) = screen {
+        let origin = RelPos {
+            x: region.x,
+            y: region.y,
+        };
+        let size = (
+            (region.w * screen.width as f64).round() as i32,
+            (region.h * screen.height as f64).round() as i32,
+        );
+        let (px, py) = rel_to_pixels(&origin, screen);
+        ui.label(
+            RichText::new(format!(
+                "Pixels: origin {}, {} • size {}x{}",
+                px, py, size.0, size.1
+            ))
+            .small()
+            .color(Color32::from_gray(170)),
+        );
+    }
 }
 
 fn layer_row(ui: &mut egui::Ui, layer: &mut String, dirty: &mut bool) {
@@ -1945,29 +2608,59 @@ fn binding_picker(
     start_binding: &mut Option<BindingTarget>,
     dirty: &mut bool,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(label);
+    ui.group(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            ui.monospace(key.as_str());
+            if pending == Some(target) {
+                ui.label(
+                    RichText::new("Listening")
+                        .strong()
+                        .color(Color32::from_rgb(255, 218, 121)),
+                );
+            }
+        });
         let capture_text = if pending == Some(target) {
-            "Press key..."
+            "Press key or click mouse"
         } else {
-            "Capture"
+            "Bind"
         };
-        if ui.button(capture_text).clicked() {
-            *start_binding = Some(target.clone());
-        }
-        egui::ComboBox::from_id_salt(("binding", label, key.as_str()))
-            .selected_text(key.as_str())
-            .show_ui(ui, |ui| {
-                for candidate in BINDABLE_KEYS {
-                    if ui
-                        .selectable_label(*key == *candidate, *candidate)
-                        .clicked()
-                    {
-                        *key = (*candidate).to_string();
-                        *dirty = true;
-                    }
-                }
+        ui.horizontal(|ui| {
+            if ui
+                .add_sized(
+                    [140.0, 28.0],
+                    egui::Button::new(capture_text).fill(if pending == Some(target) {
+                        Color32::from_rgb(77, 62, 25)
+                    } else {
+                        Color32::from_rgb(36, 57, 87)
+                    }),
+                )
+                .clicked()
+            {
+                *start_binding = Some(target.clone());
+            }
+            ui.menu_button("More keys", |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        for candidate in BINDABLE_KEYS {
+                            if ui
+                                .selectable_label(*key == *candidate, *candidate)
+                                .clicked()
+                            {
+                                *key = (*candidate).to_string();
+                                *dirty = true;
+                                ui.close_menu();
+                            }
+                        }
+                    });
             });
+        });
+        ui.label(
+            RichText::new("Bind is the primary path. The key list is only for rare cases.")
+                .small()
+                .color(Color32::from_gray(150)),
+        );
     });
 }
 
@@ -1995,6 +2688,13 @@ fn from_canvas_pos(rect: Rect, pos: Pos2) -> RelPos {
         x: ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64,
         y: ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0) as f64,
     }
+}
+
+fn rel_to_pixels(pos: &RelPos, screen: &ScreenOverride) -> (i32, i32) {
+    (
+        (pos.x * screen.width as f64).round() as i32,
+        (pos.y * screen.height as f64).round() as i32,
+    )
 }
 
 fn region_rect(content: Rect, region: &Region) -> Rect {
@@ -2044,6 +2744,180 @@ fn clamp_region(mut region: Region) -> Region {
     region.w = round3(region.w);
     region.h = round3(region.h);
     region
+}
+
+fn snap_rel_pos(
+    profile: Option<&Profile>,
+    current_idx: usize,
+    mut pos: RelPos,
+    enabled: bool,
+) -> RelPos {
+    if !enabled {
+        pos.x = round3(pos.x);
+        pos.y = round3(pos.y);
+        return pos;
+    }
+
+    pos.x = snap_scalar(pos.x);
+    pos.y = snap_scalar(pos.y);
+
+    if let Some(profile) = profile {
+        for (idx, node) in profile.nodes.iter().enumerate() {
+            if idx == current_idx {
+                continue;
+            }
+            if let Some(other) = node_pos(node) {
+                if (pos.x - other.x).abs() <= SNAP_THRESHOLD {
+                    pos.x = other.x;
+                }
+                if (pos.y - other.y).abs() <= SNAP_THRESHOLD {
+                    pos.y = other.y;
+                }
+            }
+        }
+    }
+
+    pos.x = round3(pos.x.clamp(0.0, 1.0));
+    pos.y = round3(pos.y.clamp(0.0, 1.0));
+    pos
+}
+
+fn snap_region(region: Region, enabled: bool) -> Region {
+    if !enabled {
+        return clamp_region(region);
+    }
+    clamp_region(Region {
+        x: snap_scalar(region.x),
+        y: snap_scalar(region.y),
+        w: snap_scalar(region.w),
+        h: snap_scalar(region.h),
+    })
+}
+
+fn snap_scalar(value: f64) -> f64 {
+    let snapped = (value / SNAP_GRID_STEP).round() * SNAP_GRID_STEP;
+    if (value - snapped).abs() <= SNAP_THRESHOLD {
+        snapped
+    } else {
+        value
+    }
+}
+
+fn offset_rel_pos(pos: RelPos) -> RelPos {
+    RelPos {
+        x: round3((pos.x + 0.02).clamp(0.0, 1.0)),
+        y: round3((pos.y + 0.02).clamp(0.0, 1.0)),
+    }
+}
+
+fn offset_region(region: Region) -> Region {
+    clamp_region(Region {
+        x: region.x + 0.02,
+        y: region.y + 0.02,
+        w: region.w,
+        h: region.h,
+    })
+}
+
+fn node_id_prefix(node: &Node) -> &'static str {
+    match node {
+        Node::Tap { .. } => "tap",
+        Node::HoldTap { .. } => "hold",
+        Node::ToggleTap { .. } => "toggle",
+        Node::Joystick { .. } => "stick",
+        Node::MouseCamera { .. } => "look",
+        Node::RepeatTap { .. } => "rapid",
+        Node::Macro { .. } => "macro",
+        Node::LayerShift { .. } => "layer",
+    }
+}
+
+fn zoom_rect(rect: Rect, zoom: f32, pan: Vec2) -> Rect {
+    let size = rect.size() * zoom;
+    Rect::from_center_size(rect.center() + pan, size)
+}
+
+fn draw_hover_card(
+    painter: &egui::Painter,
+    mouse: Pos2,
+    node: &Node,
+    screen: Option<&ScreenOverride>,
+) {
+    let mut lines = vec![
+        display_type(node).to_string(),
+        format!("Binding: {}", display_binding(node)),
+    ];
+    if let Some(slot) = node.slot() {
+        lines.push(format!("Slot: {}", slot));
+    }
+    if !node.layer().trim().is_empty() {
+        lines.push(format!("Layer: {}", node.layer()));
+    }
+    match node {
+        Node::Tap { pos, .. }
+        | Node::HoldTap { pos, .. }
+        | Node::ToggleTap { pos, .. }
+        | Node::Joystick { pos, .. }
+        | Node::RepeatTap { pos, .. } => {
+            lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
+            if let Some(screen) = screen {
+                let (px, py) = rel_to_pixels(pos, screen);
+                lines.push(format!("Pixels: {}, {}", px, py));
+            }
+        }
+        Node::MouseCamera { region, .. } => {
+            lines.push(format!(
+                "Region: {:.3}, {:.3}, {:.3}, {:.3}",
+                region.x, region.y, region.w, region.h
+            ));
+        }
+        Node::Macro { sequence, .. } => lines.push(format!("Steps: {}", sequence.len())),
+        Node::LayerShift {
+            layer_name, mode, ..
+        } => lines.push(format!(
+            "Target: {} ({})",
+            layer_name,
+            match mode {
+                LayerMode::Hold => "hold",
+                LayerMode::Toggle => "toggle",
+            }
+        )),
+    }
+
+    let line_height = 16.0;
+    let width = 220.0;
+    let height = 12.0 + line_height * lines.len() as f32;
+    let rect = Rect::from_min_size(mouse + Vec2::new(16.0, 16.0), Vec2::new(width, height));
+    painter.rect_filled(rect, 8.0, Color32::from_black_alpha(220));
+    for (idx, line) in lines.iter().enumerate() {
+        painter.text(
+            rect.left_top() + Vec2::new(10.0, 8.0 + idx as f32 * line_height),
+            Align2::LEFT_TOP,
+            line,
+            egui::FontId::proportional(12.0),
+            Color32::WHITE,
+        );
+    }
+}
+
+fn draw_binding_overlay(painter: &egui::Painter, content: Rect, target: &BindingTarget) {
+    let label = format!(
+        "Binding {}. Press a key or mouse button. Esc cancels.",
+        binding_target_label(target)
+    );
+    let banner_rect = Rect::from_center_size(
+        Pos2::new(content.center().x, content.top() + 34.0),
+        Vec2::new(420.0, 40.0),
+    );
+    painter.rect_filled(content, 10.0, Color32::from_black_alpha(90));
+    painter.rect_filled(banner_rect, 10.0, Color32::from_black_alpha(220));
+    painter.text(
+        banner_rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        Color32::WHITE,
+    );
 }
 
 fn round3(value: f64) -> f64 {

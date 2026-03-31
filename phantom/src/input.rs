@@ -779,22 +779,24 @@ impl InputCapture {
     }
 
     fn merge_mouse_moves(events: &mut Vec<InputEvent>) {
-        let mut i = 0;
-        while i + 1 < events.len() {
-            if let (
-                InputEvent::MouseMove { dx: dx1, dy: dy1 },
-                InputEvent::MouseMove { dx: dx2, dy: dy2 },
-            ) = (&events[i], &events[i + 1])
-            {
-                events[i] = InputEvent::MouseMove {
-                    dx: dx1 + dx2,
-                    dy: dy1 + dy2,
-                };
-                events.remove(i + 1);
-            } else {
-                i += 1;
+        let original = std::mem::take(events);
+        let mut merged = Vec::with_capacity(original.len());
+        for event in original {
+            match (merged.last_mut(), event) {
+                (
+                    Some(InputEvent::MouseMove { dx, dy }),
+                    InputEvent::MouseMove {
+                        dx: next_dx,
+                        dy: next_dy,
+                    },
+                ) => {
+                    *dx += next_dx;
+                    *dy += next_dy;
+                }
+                (_, event) => merged.push(event),
             }
         }
+        *events = merged;
     }
 
     pub fn device_count(&self) -> usize {
@@ -818,18 +820,26 @@ impl InputCapture {
     }
 
     pub fn set_grabbed_all(&mut self, grabbed: bool) -> Result<()> {
-        if grabbed {
-            self.set_grabbed_keyboard_only(true)?;
-            if let Err(err) = self.set_grabbed_mouse_only(true) {
-                let _ = self.set_grabbed_keyboard_only(false);
-                return Err(err);
-            }
+        let previous_keyboard = self.keyboard_grabbed;
+        let previous_mouse = self.mouse_grabbed;
+
+        let result = if grabbed {
+            self.set_grabbed_keyboard_only(true)
+                .and_then(|_| self.set_grabbed_mouse_only(true))
         } else {
-            self.set_grabbed_mouse_only(false)?;
-            if let Err(err) = self.set_grabbed_keyboard_only(false) {
-                let _ = self.set_grabbed_mouse_only(true);
-                return Err(err);
+            self.set_grabbed_mouse_only(false)
+                .and_then(|_| self.set_grabbed_keyboard_only(false))
+        };
+
+        if let Err(err) = result {
+            if let Err(restore_err) = self.restore_grab_state(previous_keyboard, previous_mouse) {
+                tracing::warn!(
+                    "failed to restore grab state after error: original={}, restore={}",
+                    err,
+                    restore_err
+                );
             }
+            return Err(err);
         }
         Ok(())
     }
@@ -892,22 +902,42 @@ impl InputCapture {
 
     /// Release all grabs unconditionally. Used during shutdown.
     pub fn force_release_all(&mut self) {
-        for dev in &self.devices {
+        for dev in &mut self.devices {
             unsafe {
                 let _ = eviocgrab(dev.fd(), 0);
             }
+            dev.pressed_keys.clear();
+            dev.desynced = false;
         }
         self.mouse_grabbed = false;
         self.keyboard_grabbed = false;
+    }
+
+    fn restore_grab_state(&mut self, keyboard: bool, mouse: bool) -> Result<()> {
+        if keyboard {
+            self.set_grabbed_keyboard_only(true)?;
+        } else {
+            self.set_grabbed_keyboard_only(false)?;
+        }
+
+        if mouse {
+            self.set_grabbed_mouse_only(true)?;
+        } else {
+            self.set_grabbed_mouse_only(false)?;
+        }
+
+        Ok(())
     }
 }
 
 impl Drop for InputCapture {
     fn drop(&mut self) {
-        for dev in &self.devices {
+        for dev in &mut self.devices {
             unsafe {
                 let _ = eviocgrab(dev.fd(), 0);
             }
+            dev.pressed_keys.clear();
+            dev.desynced = false;
         }
         unsafe {
             libc::close(self.epoll_fd);

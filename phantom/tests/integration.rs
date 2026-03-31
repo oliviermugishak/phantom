@@ -253,7 +253,7 @@ fn mouse_camera_releases_after_idle() {
     let cmds = engine.process(&InputEvent::MouseMove { dx: 20, dy: 0 });
     assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::thread::sleep(std::time::Duration::from_millis(300));
     let cmds = engine.tick();
     assert!(cmds
         .iter()

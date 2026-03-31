@@ -61,6 +61,8 @@ pub struct IpcResponse {
     pub screen_height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<ProfileEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_layers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -229,6 +231,7 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 screen_width: Some(state.screen_width),
                 screen_height: Some(state.screen_height),
                 profiles: None,
+                active_layers: Some(engine.active_layers().map(str::to_string).collect()),
             }
         }
         IpcRequest::SetSensitivity { value } => {
@@ -277,6 +280,7 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 screen_width: None,
                 screen_height: None,
                 profiles: Some(profiles),
+                active_layers: None,
             }
         }
         IpcRequest::Pause => {
@@ -385,6 +389,7 @@ async fn load_profile_into_state(
         screen_width: Some(state.screen_width),
         screen_height: Some(state.screen_height),
         profiles: None,
+        active_layers: Some(Vec::new()),
     })
 }
 
@@ -453,6 +458,7 @@ fn error_response(error: String) -> IpcResponse {
         screen_width: None,
         screen_height: None,
         profiles: None,
+        active_layers: None,
     }
 }
 
@@ -471,6 +477,7 @@ fn ok_response() -> IpcResponse {
         screen_width: None,
         screen_height: None,
         profiles: None,
+        active_layers: None,
     }
 }
 

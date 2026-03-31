@@ -65,15 +65,22 @@ Implemented:
 
 - native desktop app with `egui`
 - open, create, save, save-as
+- built-in template loading
 - screenshot-first canvas
 - placement tools for common control types
 - direct drag editing for points
 - direct drag and resize handles for mouse-look regions
+- zoom, pan, and snapping on the canvas
+- hover cards and right-click context actions
 - inline rename
 - key capture by pressing keyboard or mouse input
+- undo and redo
+- copy, paste, duplicate, and reorder
+- pixel coordinate feedback in the editor
 - layer editing
 - macro step editing
 - runtime status panel
+- active-layer highlighting from daemon status
 - `Push Live`
 - capture buttons
 - pause/resume buttons through daemon requests
@@ -164,12 +171,11 @@ The editor is much better now, but still not final-polish.
 
 Still missing:
 
-- zoom and pan on the canvas
 - conflict visualization while editing
-- better modifier-key capture for standalone left/right modifiers
-- profile templates inside the app
+- full modifier-combination bindings such as `Ctrl+F`
 - calibration wizard
 - a richer preset browser
+- drag-from-palette placement instead of toolbar-first placement
 
 ## 5. Why This Is Closer To Emulator Keymappers
 
@@ -211,16 +217,15 @@ That is how Phantom becomes a practical immersive tool instead of a permanently 
 ### P0: Finish The Fullscreen Gaming Loop
 
 - add a dedicated overlay or HUD for capture state
-- add better modifier-key capture and explicit binding search
+- add full modifier-combination binding support
 - add conflict warnings in the editor
 - add more complete starter profiles for PUBG and eFootball
 
 ### P1: Improve Placement And Tuning
 
-- add zoom and pan
-- add alignment guides and snapping
 - add calibration workflow
 - add richer macro editing presets
+- add palette drag-and-drop placement
 
 ### P2: Runtime Polish
 

@@ -6,7 +6,7 @@ use crate::inject::UinputDevice;
 use crate::input::{InputEvent, Key};
 use crate::profile::{LayerMode, MacroAction, Node, Profile};
 
-const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(40);
+const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub enum TouchCommand {
@@ -58,6 +58,7 @@ enum NodeState {
 pub struct KeymapEngine {
     profile: Profile,
     key_bindings: HashMap<Key, Vec<usize>>,
+    joystick_bindings: Vec<Option<JoystickBinding>>,
     states: Vec<NodeState>,
     sensitivity: f64,
     paused: bool,
@@ -68,6 +69,11 @@ impl KeymapEngine {
     pub fn new(profile: Profile) -> Self {
         let sensitivity = profile.global_sensitivity;
         let states: Vec<NodeState> = profile.nodes.iter().map(Self::init_state).collect();
+        let joystick_bindings: Vec<Option<JoystickBinding>> = profile
+            .nodes
+            .iter()
+            .map(Self::build_joystick_binding)
+            .collect();
 
         let mut key_bindings: HashMap<Key, Vec<usize>> = HashMap::new();
         for (idx, node) in profile.nodes.iter().enumerate() {
@@ -84,9 +90,35 @@ impl KeymapEngine {
             sensitivity,
             profile,
             key_bindings,
+            joystick_bindings,
             states,
             paused: false,
             active_layers: HashSet::new(),
+        }
+    }
+
+    fn build_joystick_binding(node: &Node) -> Option<JoystickBinding> {
+        let Node::Joystick { id, keys, .. } = node else {
+            return None;
+        };
+
+        let parse = |name: &str| name.parse::<Key>().ok();
+        match (
+            parse(&keys.up),
+            parse(&keys.down),
+            parse(&keys.left),
+            parse(&keys.right),
+        ) {
+            (Some(up), Some(down), Some(left), Some(right)) => Some(JoystickBinding {
+                up,
+                down,
+                left,
+                right,
+            }),
+            _ => {
+                tracing::warn!("invalid joystick binding in node '{}'", id);
+                None
+            }
         }
     }
 
@@ -203,7 +235,7 @@ impl KeymapEngine {
                             let was_down = *finger_down;
                             if let Some(slot) = node.slot() {
                                 let pos = match node {
-                                    Node::RepeatTap { pos, .. } => pos.clone(),
+                                    Node::RepeatTap { pos, .. } => *pos,
                                     _ => unreachable!(),
                                 };
                                 self.states[idx] = NodeState::RepeatTap {
@@ -392,13 +424,9 @@ impl KeymapEngine {
                 }
             }
             Node::Joystick {
-                slot,
-                pos,
-                radius,
-                keys,
-                ..
+                slot, pos, radius, ..
             } => {
-                if let Some(d) = Self::joystick_direction(key, keys) {
+                if let Some(d) = self.joystick_direction(idx, key) {
                     if let NodeState::Joystick {
                         up,
                         down,
@@ -503,13 +531,9 @@ impl KeymapEngine {
             }
             Node::ToggleTap { .. } => {}
             Node::Joystick {
-                slot,
-                pos,
-                radius,
-                keys,
-                ..
+                slot, pos, radius, ..
             } => {
-                if let Some(d) = Self::joystick_direction(key, keys) {
+                if let Some(d) = self.joystick_direction(idx, key) {
                     if let NodeState::Joystick {
                         up,
                         down,
@@ -834,19 +858,31 @@ impl KeymapEngine {
         layer.is_empty() || self.active_layers.contains(layer)
     }
 
-    fn joystick_direction(key: Key, keys: &crate::profile::JoystickKeys) -> Option<Dir> {
-        if keys.up.parse::<Key>().ok() == Some(key) {
+    fn joystick_direction(&self, idx: usize, key: Key) -> Option<Dir> {
+        let binding = self
+            .joystick_bindings
+            .get(idx)
+            .and_then(|binding| binding.as_ref())?;
+        if binding.up == key {
             Some(Dir::Up)
-        } else if keys.down.parse::<Key>().ok() == Some(key) {
+        } else if binding.down == key {
             Some(Dir::Down)
-        } else if keys.left.parse::<Key>().ok() == Some(key) {
+        } else if binding.left == key {
             Some(Dir::Left)
-        } else if keys.right.parse::<Key>().ok() == Some(key) {
+        } else if binding.right == key {
             Some(Dir::Right)
         } else {
             None
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct JoystickBinding {
+    up: Key,
+    down: Key,
+    left: Key,
+    right: Key,
 }
 
 #[derive(Debug, Clone, Copy)]

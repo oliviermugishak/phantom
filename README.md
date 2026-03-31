@@ -53,11 +53,20 @@ This covers the normal control patterns for PUBG-like, Genshin-like, and eFootba
 It supports:
 
 - screenshot-first canvas editing
+- bundled templates for PUBG, Genshin, and eFootball
 - direct placement tools
 - drag editing for points
 - drag and resize handles for mouse-look regions
+- mouse-wheel zoom and space-drag panning
+- grid and node snapping for placement
+- hover cards and right-click canvas actions
 - on-the-fly key capture
+- undo and redo
+- copy, paste, and duplicate controls
 - inline rename
+- control reordering from the left panel
+- pixel coordinate feedback in the properties panel
+- active-layer highlighting
 - macro step editing
 - layer switch editing
 - live daemon status
@@ -138,6 +147,22 @@ Runtime workflow:
 - `F8`: enter or leave exclusive gameplay capture
 - `F1`: temporarily release or re-grab only the mouse while staying in capture mode
 - `F9`: pause or resume touch injection without shutting the daemon down
+
+Editor workflow:
+
+- use `Bind` in the properties panel as the primary key-binding flow
+- use `Templates` to start from a shipped layout instead of mapping from scratch
+- use the mouse wheel to zoom and hold `Space` while dragging to pan
+- right-click controls on the canvas for bind, copy, duplicate, delete, and reorder
+
+Editor shortcuts:
+
+- `Ctrl+N`, `Ctrl+O`, `Ctrl+S`, `Ctrl+Shift+S`
+- `Ctrl+R` to push live
+- `Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`
+- `Ctrl+C`, `Ctrl+V`, `Ctrl+D`
+- `Delete`
+- `1` to `7` for Select, Tap, Hold, Toggle, Left Stick, Mouse Look, Rapid Tap
 
 ## Common Commands
 

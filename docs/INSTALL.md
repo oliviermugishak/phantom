@@ -154,18 +154,20 @@ Recommended workflow:
 
 1. Open or create a profile.
 2. Confirm the locked screen resolution in the left panel.
-3. Load a screenshot from the target game if you want visual placement.
-4. Use the toolbar placement tools:
+3. Start from `Templates` if the game is close to one of the shipped layouts.
+4. Load a screenshot from the target game if you want visual placement.
+5. Use the toolbar placement tools or the `1` to `7` shortcuts:
    - `Tap`
    - `Hold`
    - `Toggle`
    - `Left Stick`
    - `Mouse Look`
    - `Rapid Tap`
-5. Click on the canvas to place controls.
-6. Select a control and press `Capture` in the properties panel, then press the real key or mouse button.
-7. Use `Push Live` to send the current in-memory profile straight to the daemon.
-8. Use `Enter Capture` or `Exit Capture` from the toolbar as needed.
+6. Click on the canvas to place controls.
+7. Select a control and press `Bind` in the properties panel, then press the real key or mouse button.
+8. Use the mouse wheel to zoom, hold `Space` while dragging to pan, and right-click controls for quick actions.
+9. Use `Push Live` to send the current in-memory profile straight to the daemon.
+10. Use `Enter Capture` or `Exit Capture` from the toolbar as needed.
 
 The GUI is now runtime-aware:
 
@@ -173,6 +175,13 @@ The GUI is now runtime-aware:
 - it can push unsaved edits live
 - it can enter or exit capture mode
 - it can pause or resume play through the daemon buttons
+- it highlights currently active layers reported by the daemon
+
+Editor shortcuts:
+
+- `Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`
+- `Ctrl+C`, `Ctrl+V`, `Ctrl+D`
+- `Delete`
 
 ## Runtime Controls
 

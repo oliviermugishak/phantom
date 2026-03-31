@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::error::{PhantomError, Result};
 use crate::input::Key;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
     pub version: u32,
@@ -15,13 +15,13 @@ pub struct Profile {
     pub nodes: Vec<Node>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScreenOverride {
     pub width: u32,
     pub height: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerMode {
     #[default]
@@ -29,7 +29,7 @@ pub enum LayerMode {
     Toggle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
     Tap {
@@ -100,13 +100,13 @@ pub enum Node {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RelPos {
     pub x: f64,
     pub y: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JoystickKeys {
     pub up: String,
     pub down: String,
@@ -114,7 +114,7 @@ pub struct JoystickKeys {
     pub right: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Region {
     pub x: f64,
     pub y: f64,
@@ -122,7 +122,7 @@ pub struct Region {
     pub h: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MacroStep {
     pub action: MacroAction,
     #[serde(default)]
@@ -132,7 +132,7 @@ pub struct MacroStep {
     pub delay_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MacroAction {
     Down,
