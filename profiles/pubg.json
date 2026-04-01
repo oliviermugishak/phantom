@@ -28,12 +28,14 @@
       "id": "camera",
       "slot": 1,
       "region": {
-        "x": 0.2,
+        "x": 0.35,
         "y": 0.0,
-        "w": 0.5,
+        "w": 0.65,
         "h": 1.0
       },
       "sensitivity": 1.2,
+      "activation_mode": "while_held",
+      "activation_key": "MouseRight",
       "invert_y": false
     },
     {

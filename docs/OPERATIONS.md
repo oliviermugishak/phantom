@@ -198,6 +198,8 @@ This is a valid configuration because Phantom can bind the same physical key to:
 - one `hold_tap` node
 - one `mouse_camera` activation key
 
+The shipped `profiles/pubg.json` now uses this setup by default.
+
 ### Setup B: `toggle` on a spare key
 
 Use this if you want:

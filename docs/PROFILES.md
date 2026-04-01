@@ -327,6 +327,12 @@ Good practice:
 - one `hold_tap` or `toggle_tap` for ADS
 - `mouse_camera` mode chosen to match the aiming workflow
 
+The shipped `profiles/pubg.json` uses:
+
+- `MouseLeft` for fire
+- `MouseRight` for ADS
+- `mouse_camera` in `while_held` mode on `MouseRight`
+
 ### Genshin-like
 
 - one joystick

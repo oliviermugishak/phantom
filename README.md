@@ -256,6 +256,12 @@ Shipped starter profiles:
 
 Treat them as starting points, not final universal layouts.
 
+Current `profiles/pubg.json` intent:
+
+- `MouseLeft` -> fire
+- `MouseRight` -> ADS hold and mouse-look activation
+- `mouse_camera` -> `while_held` on `MouseRight`
+
 ## Current Direction
 
 The correct direction for Phantom is:
