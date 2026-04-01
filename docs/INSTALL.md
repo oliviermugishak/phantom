@@ -67,11 +67,10 @@ sudo ./target/release/phantom --daemon
 
 ```bash
 mkdir -p ~/.config/phantom/profiles
+cp config.example.toml ~/.config/phantom/config.toml
 cp profiles/*.json ~/.config/phantom/profiles/
 cp profiles/pubg.json ~/.config/phantom/profiles/default.json
 ```
-
-On first daemon start, Phantom auto-creates `~/.config/phantom/config.toml` for the invoking user if it is missing.
 
 Set the real fullscreen Waydroid resolution in `~/.config/phantom/config.toml`:
 
@@ -90,16 +89,15 @@ Every real profile should also carry a matching `screen` block. If the profile a
 ## Recommended Startup Order
 
 1. Start Phantom.
-2. Edit the generated config if your fullscreen surface is not `1920x1080`, then restart Phantom.
-3. Start or restart the Waydroid session.
-4. Load the target profile if needed.
-5. Enter capture when you are ready to play.
-6. Verify touch placement in Android.
+2. Start or restart the Waydroid session.
+3. Load the target profile if needed.
+4. Enter capture when you are ready to play.
+5. Verify touch placement in Android.
 
 Commands:
 
 ```bash
-sudo ./target/release/phantom --daemon
+./target/release/phantom --daemon
 waydroid session stop
 waydroid session start
 ./target/release/phantom load ~/.config/phantom/profiles/pubg.json
@@ -107,9 +105,6 @@ waydroid session start
 ```
 
 If Waydroid was already running when Phantom started and the touch device does not appear, restart the Waydroid session.
-
-When the daemon is started with `sudo`, Phantom now resolves config, profiles, and the IPC socket against the invoking user's state instead of `/root`.
-If `~/.config/phantom/config.toml` does not exist yet, Phantom creates it automatically from the shipped example and keeps it owned by the invoking user.
 
 ## First Verification
 
@@ -135,17 +130,7 @@ You should now see:
 ### 3. Confirm Waydroid can see the device
 
 ```bash
-sudo waydroid shell getevent -lp | grep -A10 "Phantom"
-```
-
-If Android still does not treat Phantom as a proper touchscreen, install the shipped IDC:
-
-```bash
-phantom waydroid-print-idc
-sudo phantom waydroid-install-idc
-sudo phantom waydroid-diagnose
-waydroid session stop
-waydroid session start
+waydroid shell getevent -lp | grep -A10 "Phantom"
 ```
 
 ### 4. Confirm Android receives touches
@@ -154,9 +139,7 @@ Enable Android `Show taps` in Developer Options, then press mapped keys.
 
 Expected behavior:
 
-- `tap` presses and releases automatically after a short pulse
-- `hold_tap` stays down while the key is held
-- `toggle_tap` stays active until toggled off
+- `tap`, `hold_tap`, and `toggle_tap` land on fixed buttons
 - `joystick` holds and moves from a fixed left-stick center
 - `mouse_camera` drives a bounded mouse-look swipe region
 - `repeat_tap` repeatedly presses while held
@@ -223,9 +206,6 @@ phantom resume
 phantom enter-capture
 phantom exit-capture
 phantom toggle-capture
-phantom waydroid-print-idc
-sudo phantom waydroid-install-idc
-sudo phantom waydroid-diagnose
 ```
 
 ## Systemd
@@ -281,7 +261,7 @@ Check both sides:
 
 ```bash
 grep -A5 "Phantom Virtual Touch" /proc/bus/input/devices
-sudo waydroid shell getevent -lp | grep -A10 "Phantom"
+waydroid shell getevent -lp | grep -A10 "Phantom"
 ```
 
 If the host sees the device but Waydroid does not:

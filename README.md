@@ -95,21 +95,16 @@ sudo usermod -aG input "$USER"
 
 Log out and back in after changing groups.
 
-3. Install profiles:
+3. Install config and profiles:
 
 ```bash
 mkdir -p ~/.config/phantom/profiles
+cp config.example.toml ~/.config/phantom/config.toml
 cp profiles/*.json ~/.config/phantom/profiles/
 cp profiles/pubg.json ~/.config/phantom/profiles/default.json
 ```
 
-4. Start the daemon once. It auto-creates `~/.config/phantom/config.toml` for the invoking user if it is missing:
-
-```bash
-sudo ./target/release/phantom --daemon
-```
-
-5. If your fullscreen Waydroid surface is not already `1920x1080`, edit `~/.config/phantom/config.toml`:
+4. Set the real fullscreen Waydroid resolution in `~/.config/phantom/config.toml`:
 
 ```toml
 log_level = "info"
@@ -119,32 +114,28 @@ width = 1920
 height = 1080
 ```
 
-If you changed the config after the first start, restart Phantom.
-
-6. Restart Waydroid if it is already running:
+5. Start Phantom, then restart Waydroid if it is already running:
 
 ```bash
+./target/release/phantom --daemon
 waydroid session stop
 waydroid session start
 ```
 
-When started with `sudo`, Phantom now resolves config, profiles, and the IPC socket against the invoking user's state instead of `/root`.
-If `~/.config/phantom/config.toml` does not exist yet, Phantom creates it automatically from the shipped example.
-
-7. Check status or load another profile:
+6. Check status or load another profile:
 
 ```bash
 ./target/release/phantom status
 ./target/release/phantom load ~/.config/phantom/profiles/pubg.json
 ```
 
-8. Open the GUI:
+7. Open the GUI:
 
 ```bash
 ./target/release/phantom-gui
 ```
 
-9. Enter gameplay capture when you are ready to play:
+8. Enter gameplay capture when you are ready to play:
 
 ```bash
 ./target/release/phantom enter-capture
@@ -173,13 +164,6 @@ Editor shortcuts:
 - `Delete`
 - `1` to `7` for Select, Tap, Hold, Toggle, Left Stick, Mouse Look, Rapid Tap
 
-Waydroid classification workflow:
-
-- `phantom waydroid-print-idc` shows the exact IDC Phantom expects and the resolved overlay paths
-- `sudo phantom waydroid-install-idc` installs the IDC into Waydroid's system overlay
-- `sudo phantom waydroid-diagnose` prints the Waydroid overlay status plus `getevent -lp` and `dumpsys input` excerpts for `Phantom Virtual Touch`
-- restart the Waydroid session after installing or changing the IDC
-
 ## Common Commands
 
 ```bash
@@ -194,9 +178,6 @@ phantom exit-capture
 phantom toggle-capture
 phantom sensitivity <value>
 phantom list
-phantom waydroid-print-idc
-sudo phantom waydroid-install-idc
-sudo phantom waydroid-diagnose
 phantom shutdown
 ```
 

@@ -2,6 +2,7 @@
 # Place at ~/.config/phantom/config.toml
 
 # Log level: trace, debug, info, warn, error
+# Use "trace" when debugging raw evdev input, engine decisions, and injected touch batches.
 log_level = "info"
 
 # Fullscreen Waydroid touch resolution
@@ -9,7 +10,3 @@ log_level = "info"
 [screen]
 width = 1920
 height = 1080
-
-# Optional: override the Waydroid work directory if you do not use /var/lib/waydroid
-[waydroid]
-# work_dir = "/var/lib/waydroid"

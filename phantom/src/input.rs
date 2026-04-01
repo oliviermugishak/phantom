@@ -664,6 +664,13 @@ impl InputCapture {
         let mut result = Vec::new();
 
         for (fd, event) in raw {
+            tracing::trace!(
+                fd = *fd,
+                type_ = event.type_,
+                code = event.code,
+                value = event.value,
+                "raw evdev event"
+            );
             let Some(device) = self.device_for_fd_mut(*fd) else {
                 tracing::warn!("received input event for unknown fd {}", fd);
                 continue;
@@ -702,20 +709,34 @@ impl InputCapture {
                 if let Some(key) = evdev_code_to_key(event.code) {
                     if event.value == 1 {
                         if device.pressed_keys.insert(key) {
+                            tracing::trace!(
+                                device = %device.path,
+                                key = ?key,
+                                pressed = %format_pressed_keys(&device.pressed_keys),
+                                "translated key press"
+                            );
                             result.push(InputEvent::KeyPress(key));
                         }
                     } else if event.value == 0 {
                         device.pressed_keys.remove(&key);
+                        tracing::trace!(
+                            device = %device.path,
+                            key = ?key,
+                            pressed = %format_pressed_keys(&device.pressed_keys),
+                            "translated key release"
+                        );
                         result.push(InputEvent::KeyRelease(key));
                     }
                 }
             } else if event.type_ == EV_REL {
                 if event.code == REL_X {
+                    tracing::trace!(device = %device.path, dx = event.value, dy = 0, "translated mouse move");
                     result.push(InputEvent::MouseMove {
                         dx: event.value,
                         dy: 0,
                     });
                 } else if event.code == REL_Y {
+                    tracing::trace!(device = %device.path, dx = 0, dy = event.value, "translated mouse move");
                     result.push(InputEvent::MouseMove {
                         dx: 0,
                         dy: event.value,
@@ -952,6 +973,12 @@ fn test_bit(bit: u16, bits: &[u8]) -> bool {
         return false;
     }
     (bits[idx] >> off) & 1 != 0
+}
+
+fn format_pressed_keys(keys: &HashSet<Key>) -> String {
+    let mut rendered: Vec<String> = keys.iter().map(|key| format!("{:?}", key)).collect();
+    rendered.sort();
+    rendered.join(",")
 }
 
 fn eviocgname_request(len: usize) -> libc::c_ulong {

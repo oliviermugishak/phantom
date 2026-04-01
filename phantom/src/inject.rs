@@ -33,10 +33,6 @@ const BTN_TOUCH: u16 = 0x14a;
 const INPUT_PROP_DIRECT: u16 = 0x01;
 const BUS_VIRTUAL: u16 = 0x06;
 
-pub const PHANTOM_VENDOR_ID: u16 = 0x1234;
-pub const PHANTOM_PRODUCT_ID: u16 = 0x5678;
-pub const PHANTOM_DEVICE_NAME: &str = "Phantom Virtual Touch";
-
 const MAX_SLOTS: i32 = 9;
 const SLOT_COUNT: usize = (MAX_SLOTS as usize) + 1;
 const ABS_CNT: usize = 0x40;
@@ -328,7 +324,14 @@ impl UinputDevice {
             }
         }
 
-        self.sync_report()
+        self.update_touch_state()?;
+        self.sync_report()?;
+        tracing::trace!(
+            active_touches = self.active_touches,
+            active_slots = ?self.active_slot_ids(),
+            "touch batch applied"
+        );
+        Ok(())
     }
 
     fn touch_down_inner(&mut self, slot: u8, x: f64, y: f64, sync: bool) -> Result<()> {
@@ -352,8 +355,8 @@ impl UinputDevice {
         self.write_event(EV_ABS, ABS_MT_PRESSURE, PRESSURE_MAX)?;
         self.active_slots[slot_idx] = true;
         self.active_touches += 1;
-        self.update_touch_state()?;
         if sync {
+            self.update_touch_state()?;
             self.sync_report()?;
         }
         Ok(())
@@ -391,8 +394,8 @@ impl UinputDevice {
         self.write_event(EV_ABS, ABS_MT_TRACKING_ID, -1)?;
         self.active_slots[slot_idx] = false;
         self.active_touches = self.active_touches.saturating_sub(1);
-        self.update_touch_state()?;
         if sync {
+            self.update_touch_state()?;
             self.sync_report()?;
         }
         Ok(())
@@ -404,6 +407,7 @@ impl UinputDevice {
                 self.touch_up_inner(slot, false)?;
             }
         }
+        self.update_touch_state()?;
         self.sync_report()
     }
 
@@ -453,6 +457,14 @@ impl UinputDevice {
     fn sync_report(&mut self) -> Result<()> {
         self.write_event(EV_SYN, SYN_REPORT, 0)
     }
+
+    fn active_slot_ids(&self) -> Vec<u8> {
+        self.active_slots
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, active)| active.then_some(idx as u8))
+            .collect()
+    }
 }
 
 impl Drop for UinputDevice {
@@ -470,14 +482,14 @@ fn build_setup() -> UinputSetup {
     let mut setup = UinputSetup {
         id: InputId {
             bustype: BUS_VIRTUAL,
-            vendor: PHANTOM_VENDOR_ID,
-            product: PHANTOM_PRODUCT_ID,
+            vendor: 0x1234,
+            product: 0x5678,
             version: 1,
         },
         name: [0; 80],
         ff_effects_max: 0,
     };
-    let name = PHANTOM_DEVICE_NAME.as_bytes();
+    let name = b"Phantom Virtual Touch";
     setup.name[..name.len()].copy_from_slice(name);
     setup
 }
@@ -611,6 +623,41 @@ mod tests {
         assert!(slot_writes.windows(1).any(|window| window[0] == 1));
         assert_eq!(tracking_ids.len(), 2);
         assert_ne!(tracking_ids[0], tracking_ids[1]);
+    }
+
+    #[test]
+    fn batched_report_emits_btn_touch_once() {
+        let (mut dev, path) = fake_device();
+        dev.apply_commands(&[
+            crate::engine::TouchCommand::TouchDown {
+                slot: 0,
+                x: 0.2,
+                y: 0.2,
+            },
+            crate::engine::TouchCommand::TouchDown {
+                slot: 1,
+                x: 0.8,
+                y: 0.8,
+            },
+        ])
+        .unwrap();
+
+        let events = read_events(&mut dev, &path);
+        let btn_touch_events: Vec<&InputEvent> = events
+            .iter()
+            .filter(|event| event.type_ == EV_KEY && event.code == BTN_TOUCH)
+            .collect();
+        assert_eq!(btn_touch_events.len(), 1);
+        assert_eq!(btn_touch_events[0].value, 1);
+        assert!(matches!(
+            events.last(),
+            Some(InputEvent {
+                type_: EV_SYN,
+                code: SYN_REPORT,
+                value: 0,
+                ..
+            })
+        ));
     }
 
     // These tests require /dev/uinput access (root or a configured udev rule).

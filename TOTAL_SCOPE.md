@@ -24,7 +24,6 @@ Implemented:
 - evdev keyboard and mouse capture
 - exclusive `EVIOCGRAB`
 - uinput direct-touch injection
-- Waydroid IDC install and diagnose helpers
 - fixed fullscreen screen contract
 - live profile load from disk
 - live in-memory profile push over IPC

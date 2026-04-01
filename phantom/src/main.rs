@@ -11,7 +11,6 @@ use phantom::inject::UinputDevice;
 use phantom::input::{InputCapture, InputEvent, Key};
 use phantom::ipc::{self, DaemonState, IpcRequest};
 use phantom::profile::Profile;
-use phantom::waydroid;
 
 const CAPTURE_TOGGLE_KEY: Key = Key::F8;
 const PAUSE_TOGGLE_KEY: Key = Key::F9;
@@ -34,9 +33,6 @@ USAGE:
     phantom toggle-capture            Toggle gameplay capture
     phantom sensitivity <value>       Set global sensitivity
     phantom list                      List available profiles
-    phantom waydroid-print-idc        Print the Phantom IDC and resolved Waydroid paths
-    phantom waydroid-install-idc      Install the Phantom IDC into the Waydroid overlay
-    phantom waydroid-diagnose         Show how Waydroid / Android sees the Phantom device
     phantom shutdown                  Graceful shutdown
 
 KEYS (while daemon running):
@@ -47,6 +43,7 @@ KEYS (while daemon running):
 
 FLAGS:
     --daemon      Run as daemon (requires root)
+    --trace       Force trace logging for this run
     -h, --help    Show this help
     -V, --version Show version"#
     );
@@ -56,12 +53,20 @@ fn print_version() {
     eprintln!("phantom {}", env!("CARGO_PKG_VERSION"));
 }
 
-fn init_logging() {
-    let cfg = config::load_config();
-    let default_level = if cfg.log_level.trim().is_empty() {
-        "info"
+fn init_logging(force_trace: bool) {
+    let default_level = if force_trace
+        || matches!(
+            std::env::var("PHANTOM_TRACE").ok().as_deref(),
+            Some("1" | "true" | "TRUE" | "yes" | "YES")
+        ) {
+        "trace".to_string()
     } else {
-        cfg.log_level.as_str()
+        let cfg = config::load_config();
+        if cfg.log_level.trim().is_empty() {
+            "info".to_string()
+        } else {
+            cfg.log_level
+        }
     };
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
@@ -210,6 +215,7 @@ async fn run_daemon() -> Result<()> {
                                 continue;
                             }
                         };
+                        tracing::trace!(events = ?input_events, "translated input batch");
 
                         let mut gameplay_events = Vec::new();
                         for event in input_events {
@@ -223,10 +229,13 @@ async fn run_daemon() -> Result<()> {
                             }
                             if state.capture_active.load(Ordering::Acquire) {
                                 gameplay_events.push(event);
+                            } else {
+                                tracing::trace!(event = ?event, "dropping gameplay event because capture is inactive");
                             }
                         }
 
                         if !gameplay_events.is_empty() {
+                            tracing::trace!(events = ?gameplay_events, "forwarding gameplay events to engine");
                             let mut engine = state.engine.write().await;
                             let mut pending = Vec::new();
                             for event in &gameplay_events {
@@ -354,35 +363,6 @@ async fn handle_runtime_shortcut(state: &Arc<DaemonState>, event: &InputEvent) -
 
 async fn run_cli_command(args: &[String]) -> Result<()> {
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("status");
-    let config = config::load_config();
-    let waydroid_work_dir = waydroid::waydroid_work_dir(&config);
-
-    match cmd {
-        "waydroid-print-idc" => {
-            let paths = waydroid::phantom_paths(&waydroid_work_dir);
-            eprintln!("Waydroid work dir: {}", paths.work_dir.display());
-            eprintln!("Waydroid overlay dir: {}", paths.overlay_dir.display());
-            eprintln!(
-                "Vendor/product IDC path: {}",
-                paths.vendor_product_idc.display()
-            );
-            eprintln!("Device-name IDC path: {}", paths.device_name_idc.display());
-            eprintln!();
-            eprintln!("{}", waydroid::phantom_idc_text());
-            return Ok(());
-        }
-        "waydroid-install-idc" => {
-            let report = waydroid::install_phantom_idc(&waydroid_work_dir)?;
-            eprintln!("{}", waydroid::render_install_report(&report));
-            return Ok(());
-        }
-        "waydroid-diagnose" => {
-            let report = waydroid::diagnose_phantom_input(&waydroid_work_dir);
-            eprintln!("{}", waydroid::render_diagnosis(&report));
-            return Ok(());
-        }
-        _ => {}
-    }
 
     let request = match cmd {
         "load" => {
@@ -461,9 +441,10 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
 
 #[tokio::main]
 async fn main() {
-    init_logging();
-
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let force_trace = args.iter().any(|a| a == "--trace");
+    args.retain(|arg| arg != "--trace");
+    init_logging(force_trace);
 
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print_help();
