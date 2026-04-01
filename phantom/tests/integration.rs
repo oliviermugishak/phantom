@@ -176,9 +176,9 @@ fn full_pubg_move_and_shoot() {
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 2 }));
 
-    let cmds = engine.process(&InputEvent::KeyRelease(Key::Space));
-    assert_eq!(cmds.len(), 1);
-    assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 3 }));
+    assert!(engine
+        .process(&InputEvent::KeyRelease(Key::Space))
+        .is_empty());
 
     let cmds = engine.process(&InputEvent::KeyRelease(Key::W));
     // W released but D still held — joystick adjusts to right-only
@@ -589,12 +589,17 @@ fn simultaneous_tap_keys_both_register() {
     ));
 
     // Release both
-    let cmds_a_up = engine.process(&InputEvent::KeyRelease(Key::A));
-    let cmds_b_up = engine.process(&InputEvent::KeyRelease(Key::B));
-    assert_eq!(cmds_a_up.len(), 1);
-    assert_eq!(cmds_b_up.len(), 1);
-    assert!(matches!(&cmds_a_up[0], TouchCommand::TouchUp { slot: 0 }));
-    assert!(matches!(&cmds_b_up[0], TouchCommand::TouchUp { slot: 1 }));
+    assert!(engine.process(&InputEvent::KeyRelease(Key::A)).is_empty());
+    assert!(engine.process(&InputEvent::KeyRelease(Key::B)).is_empty());
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    let cmds = engine.tick();
+    assert_eq!(cmds.len(), 2);
+    assert!(cmds
+        .iter()
+        .any(|cmd| matches!(cmd, TouchCommand::TouchUp { slot: 0 })));
+    assert!(cmds
+        .iter()
+        .any(|cmd| matches!(cmd, TouchCommand::TouchUp { slot: 1 })));
 }
 
 #[test]
@@ -646,12 +651,9 @@ fn simultaneous_tap_and_joystick() {
 
     // Both slots are active simultaneously
     // Release Space, movement continues
-    let cmds_jump_up = engine.process(&InputEvent::KeyRelease(Key::Space));
-    assert_eq!(cmds_jump_up.len(), 1);
-    assert!(matches!(
-        &cmds_jump_up[0],
-        TouchCommand::TouchUp { slot: 1 }
-    ));
+    assert!(engine
+        .process(&InputEvent::KeyRelease(Key::Space))
+        .is_empty());
 
     // Movement still active on slot 0
     let cmds_d = engine.process(&InputEvent::KeyPress(Key::D));
@@ -659,5 +661,61 @@ fn simultaneous_tap_and_joystick() {
     assert!(matches!(
         &cmds_d[0],
         TouchCommand::TouchMove { slot: 0, .. }
+    ));
+}
+
+#[test]
+fn tap_and_hold_have_distinct_semantics() {
+    let profile = Profile {
+        name: "TapVsHold".into(),
+        version: 1,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
+        global_sensitivity: 1.0,
+        nodes: vec![
+            Node::Tap {
+                id: "tap".into(),
+                layer: String::new(),
+                slot: 0,
+                pos: RelPos { x: 0.3, y: 0.5 },
+                key: "Q".into(),
+            },
+            Node::HoldTap {
+                id: "hold".into(),
+                layer: String::new(),
+                slot: 1,
+                pos: RelPos { x: 0.7, y: 0.5 },
+                key: "E".into(),
+            },
+        ],
+    };
+    let mut engine = KeymapEngine::new(profile);
+
+    let tap_down = engine.process(&InputEvent::KeyPress(Key::Q));
+    assert!(matches!(
+        tap_down.as_slice(),
+        [TouchCommand::TouchDown { slot: 0, .. }]
+    ));
+    assert!(engine.process(&InputEvent::KeyRelease(Key::Q)).is_empty());
+
+    let hold_down = engine.process(&InputEvent::KeyPress(Key::E));
+    assert!(matches!(
+        hold_down.as_slice(),
+        [TouchCommand::TouchDown { slot: 1, .. }]
+    ));
+
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    let tick = engine.tick();
+    assert!(matches!(
+        tick.as_slice(),
+        [TouchCommand::TouchUp { slot: 0 }]
+    ));
+
+    let hold_up = engine.process(&InputEvent::KeyRelease(Key::E));
+    assert!(matches!(
+        hold_up.as_slice(),
+        [TouchCommand::TouchUp { slot: 1 }]
     ));
 }

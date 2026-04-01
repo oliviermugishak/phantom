@@ -7,6 +7,7 @@ use crate::input::{InputEvent, Key};
 use crate::profile::{LayerMode, MacroAction, Node, Profile};
 
 const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(250);
+const TAP_DURATION: Duration = Duration::from_millis(30);
 
 #[derive(Debug, Clone)]
 pub enum TouchCommand {
@@ -18,7 +19,8 @@ pub enum TouchCommand {
 #[derive(Debug)]
 enum NodeState {
     Tap {
-        active: bool,
+        finger_down: bool,
+        release_at: Option<Instant>,
     },
     HoldTap {
         held: bool,
@@ -124,7 +126,10 @@ impl KeymapEngine {
 
     fn init_state(node: &Node) -> NodeState {
         match node {
-            Node::Tap { .. } => NodeState::Tap { active: false },
+            Node::Tap { .. } => NodeState::Tap {
+                finger_down: false,
+                release_at: None,
+            },
             Node::HoldTap { .. } => NodeState::HoldTap { held: false },
             Node::ToggleTap { .. } => NodeState::ToggleTap { active: false },
             Node::Joystick { .. } => NodeState::Joystick {
@@ -214,6 +219,19 @@ impl KeymapEngine {
                 {
                     if *finger_active && now.duration_since(*last_motion) >= MOUSE_LOOK_IDLE_TIMEOUT
                     {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                        self.states[idx] = Self::init_state(node);
+                    }
+                }
+            }
+
+            if let Node::Tap { slot, .. } = node {
+                if let NodeState::Tap {
+                    finger_down,
+                    release_at: Some(release_at),
+                } = &self.states[idx]
+                {
+                    if *finger_down && now >= *release_at {
                         cmds.push(TouchCommand::TouchUp { slot: *slot });
                         self.states[idx] = Self::init_state(node);
                     }
@@ -386,14 +404,17 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         match node {
             Node::Tap { slot, pos, .. } => {
-                if let NodeState::Tap { active } = &self.states[idx] {
-                    if !*active {
+                if let NodeState::Tap { finger_down, .. } = &self.states[idx] {
+                    if !*finger_down {
                         cmds.push(TouchCommand::TouchDown {
                             slot: *slot,
                             x: pos.x,
                             y: pos.y,
                         });
-                        self.states[idx] = NodeState::Tap { active: true };
+                        self.states[idx] = NodeState::Tap {
+                            finger_down: true,
+                            release_at: Some(Instant::now() + TAP_DURATION),
+                        };
                     }
                 }
             }
@@ -513,14 +534,7 @@ impl KeymapEngine {
         let node = &self.profile.nodes[idx];
         let mut cmds = Vec::new();
         match node {
-            Node::Tap { slot, .. } => {
-                if let NodeState::Tap { active } = &self.states[idx] {
-                    if *active {
-                        cmds.push(TouchCommand::TouchUp { slot: *slot });
-                        self.states[idx] = NodeState::Tap { active: false };
-                    }
-                }
-            }
+            Node::Tap { .. } => {}
             Node::HoldTap { slot, .. } => {
                 if let NodeState::HoldTap { held } = &self.states[idx] {
                     if *held {
@@ -767,11 +781,13 @@ impl KeymapEngine {
         let node = &self.profile.nodes[idx];
         let slot = node.slot();
         match &self.states[idx] {
-            NodeState::Tap { active: true } => {
+            NodeState::Tap {
+                finger_down: true, ..
+            } => {
                 if let Some(s) = slot {
                     cmds.push(TouchCommand::TouchUp { slot: s });
                 }
-                self.states[idx] = NodeState::Tap { active: false };
+                self.states[idx] = Self::init_state(node);
             }
             NodeState::HoldTap { held: true } => {
                 if let Some(s) = slot {
@@ -975,7 +991,11 @@ mod tests {
         let cmds = engine.process(&InputEvent::KeyPress(Key::Space));
         assert_eq!(cmds.len(), 1);
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 0, .. }));
-        let cmds = engine.process(&InputEvent::KeyRelease(Key::Space));
+        assert!(engine
+            .process(&InputEvent::KeyRelease(Key::Space))
+            .is_empty());
+        std::thread::sleep(TAP_DURATION + Duration::from_millis(5));
+        let cmds = engine.tick();
         assert_eq!(cmds.len(), 1);
         assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
     }

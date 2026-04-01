@@ -13,8 +13,8 @@ Workaround:
 
 1. start Phantom first
 2. restart the Waydroid session
-3. verify with `waydroid shell getevent -lp`
-4. run `phantom waydroid-diagnose`
+3. verify with `sudo waydroid shell getevent -lp`
+4. run `sudo phantom waydroid-diagnose`
 5. if Android is not classifying Phantom correctly, run `sudo phantom waydroid-install-idc`
 
 Phantom cannot force Waydroid hotplug behavior from inside this repo.

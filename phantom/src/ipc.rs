@@ -1,4 +1,6 @@
 use std::io::{BufRead, BufReader as StdBufReader, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -132,10 +134,16 @@ pub async fn run_ipc_server(state: Arc<DaemonState>) -> Result<()> {
     let listener = UnixListener::bind(&socket_path)
         .map_err(|e| PhantomError::Ipc(format!("cannot bind {}: {}", socket_path.display(), e)))?;
 
-    let _ = std::fs::set_permissions(
-        &socket_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    );
+    let _ = std::fs::set_permissions(&socket_path, PermissionsExt::from_mode(0o660));
+    if let Ok(path) = std::ffi::CString::new(socket_path.as_os_str().as_bytes()) {
+        let _ = unsafe {
+            libc::chown(
+                path.as_ptr(),
+                config::state_owner_uid() as libc::uid_t,
+                config::state_owner_gid() as libc::gid_t,
+            )
+        };
+    }
 
     tracing::info!("IPC server listening on {}", socket_path.display());
 

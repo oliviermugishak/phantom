@@ -89,7 +89,8 @@ Slot-bearing nodes use slots `0..9`. Those slots must stay unique across all slo
 Behavior:
 
 - key press -> touch down
-- key release -> touch up
+- Phantom releases the touch automatically after a short pulse
+- key release does not emit an extra touch event
 
 ### `hold_tap`
 
