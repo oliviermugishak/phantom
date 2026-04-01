@@ -121,12 +121,18 @@ Defaults:
 - `F1` -> toggle mouse routing
 - `F8` -> toggle capture
 - `F9` -> toggle pause
+- `F10` -> toggle the transparent control preview overlay
 - `F2` -> shutdown daemon
 
 Fn row warning:
 
-- on many keyboards the function row only emits true `F1` and `F8` events when Fn Lock is enabled
-- if `F2` works but `F1` or `F8` appear dead, check Fn Lock first
+- on many keyboards the function row only emits true `F1`, `F8`, and `F10` events when Fn Lock is enabled
+- if `F2` works but `F1`, `F8`, or `F10` appear dead, check Fn Lock first
+
+Overlay notes:
+
+- `F10` shows or hides a transparent click-through preview of the current profile
+- the overlay is visual only and does not intercept desktop or game input
 
 ## Mouse Look Operations
 

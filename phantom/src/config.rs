@@ -34,6 +34,8 @@ pub struct RuntimeHotkeysConfig {
     pub capture_toggle: String,
     #[serde(default = "default_pause_toggle_hotkey")]
     pub pause_toggle: String,
+    #[serde(default = "default_overlay_toggle_hotkey")]
+    pub overlay_toggle: String,
     #[serde(default = "default_shutdown_hotkey")]
     pub shutdown: String,
 }
@@ -43,6 +45,7 @@ pub struct RuntimeHotkeys {
     pub mouse_toggle: Option<Key>,
     pub capture_toggle: Option<Key>,
     pub pause_toggle: Option<Key>,
+    pub overlay_toggle: Option<Key>,
     pub shutdown: Option<Key>,
 }
 
@@ -119,6 +122,7 @@ impl Default for RuntimeHotkeysConfig {
             mouse_toggle: default_mouse_toggle_hotkey(),
             capture_toggle: default_capture_toggle_hotkey(),
             pause_toggle: default_pause_toggle_hotkey(),
+            overlay_toggle: default_overlay_toggle_hotkey(),
             shutdown: default_shutdown_hotkey(),
         }
     }
@@ -130,6 +134,7 @@ impl Default for RuntimeHotkeys {
             mouse_toggle: Some(Key::F1),
             capture_toggle: Some(Key::F8),
             pause_toggle: Some(Key::F9),
+            overlay_toggle: Some(Key::F10),
             shutdown: Some(Key::F2),
         }
     }
@@ -149,6 +154,10 @@ fn default_capture_toggle_hotkey() -> String {
 
 fn default_pause_toggle_hotkey() -> String {
     "F9".into()
+}
+
+fn default_overlay_toggle_hotkey() -> String {
+    "F10".into()
 }
 
 fn default_shutdown_hotkey() -> String {
@@ -212,6 +221,11 @@ pub fn resolved_runtime_hotkeys(config: &Config) -> RuntimeHotkeys {
             &config.runtime_hotkeys.pause_toggle,
             defaults.pause_toggle,
         ),
+        overlay_toggle: parse_hotkey(
+            "runtime_hotkeys.overlay_toggle",
+            &config.runtime_hotkeys.overlay_toggle,
+            defaults.overlay_toggle,
+        ),
         shutdown: parse_hotkey(
             "runtime_hotkeys.shutdown",
             &config.runtime_hotkeys.shutdown,
@@ -220,7 +234,9 @@ pub fn resolved_runtime_hotkeys(config: &Config) -> RuntimeHotkeys {
     };
 
     if has_duplicate_hotkeys(&resolved) {
-        tracing::warn!("runtime hotkeys contain duplicates; falling back to defaults F1/F8/F9/F2");
+        tracing::warn!(
+            "runtime hotkeys contain duplicates; falling back to defaults F1/F8/F9/F10/F2"
+        );
         return defaults;
     }
 
@@ -275,7 +291,7 @@ fn invoking_runtime_dir() -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
-fn invoking_home_dir() -> Option<PathBuf> {
+pub fn invoking_home_dir() -> Option<PathBuf> {
     home_dir_for_uid(invoking_uid()).or_else(dirs::home_dir)
 }
 
@@ -347,6 +363,7 @@ fn has_duplicate_hotkeys(hotkeys: &RuntimeHotkeys) -> bool {
         hotkeys.mouse_toggle,
         hotkeys.capture_toggle,
         hotkeys.pause_toggle,
+        hotkeys.overlay_toggle,
         hotkeys.shutdown,
     ]
     .into_iter()
@@ -369,6 +386,7 @@ mod tests {
         assert_eq!(resolved.mouse_toggle, Some(Key::F1));
         assert_eq!(resolved.capture_toggle, Some(Key::F8));
         assert_eq!(resolved.pause_toggle, Some(Key::F9));
+        assert_eq!(resolved.overlay_toggle, Some(Key::F10));
         assert_eq!(resolved.shutdown, Some(Key::F2));
     }
 

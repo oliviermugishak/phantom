@@ -99,9 +99,10 @@ After the daemon is up, check:
 - `F1`
 - `F8`
 - `F9`
+- `F10`
 - `F2`
 
-If `F2` works but `F1` and `F8` do not:
+If `F2` works but `F1`, `F8`, or `F10` do not:
 
 - check Fn Lock first
 

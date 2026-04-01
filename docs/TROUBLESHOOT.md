@@ -26,12 +26,13 @@ Why:
 
 - `./install.sh` copies missing shipped profiles into the user profile library without overwriting existing user edits
 
-## `F2` Works But `F1` Or `F8` Do Not
+## `F2` Works But `F1`, `F8`, Or `F10` Do Not
 
 Symptom:
 
 - shutdown works
 - capture or mouse-toggle hotkeys do not
+- overlay toggle does not work
 
 Likely cause:
 
@@ -39,7 +40,7 @@ Likely cause:
 
 Fix:
 
-- enable Fn Lock so the top row emits real `F1`, `F8`, and `F9` function keys
+- enable Fn Lock so the top row emits real `F1`, `F8`, `F9`, and `F10` function keys
 
 ## Waydroid Is Running But Phantom Still Cannot Connect
 

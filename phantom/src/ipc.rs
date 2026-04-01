@@ -15,6 +15,7 @@ use crate::desktop_relay::DesktopKeyboardRelay;
 use crate::engine::{KeymapEngine, TouchCommand};
 use crate::error::{PhantomError, Result};
 use crate::input::{InputCapture, InputEvent};
+use crate::overlay::OverlayPreview;
 use crate::profile::Profile;
 use crate::touch::TouchDevice;
 
@@ -85,6 +86,7 @@ pub struct DaemonState {
     pub touch: Mutex<Box<dyn TouchDevice>>,
     pub desktop_keyboard: Mutex<DesktopKeyboardRelay>,
     pub capture: Mutex<InputCapture>,
+    pub overlay: Mutex<OverlayPreview>,
     pub screen_width: u32,
     pub screen_height: u32,
     pub capture_active: AtomicBool,
@@ -107,6 +109,7 @@ impl DaemonState {
             touch: Mutex::new(touch),
             desktop_keyboard: Mutex::new(desktop_keyboard),
             capture: Mutex::new(capture),
+            overlay: Mutex::new(OverlayPreview::new()),
             screen_width: width,
             screen_height: height,
             capture_active: AtomicBool::new(false),
@@ -600,6 +603,16 @@ pub fn lock_capture(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, InputCapt
         Ok(guard) => Ok(guard),
         Err(poisoned) => {
             tracing::warn!("input capture lock poisoned, recovering");
+            Ok(poisoned.into_inner())
+        }
+    }
+}
+
+pub fn lock_overlay(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, OverlayPreview>> {
+    match state.overlay.lock() {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::warn!("overlay preview lock poisoned, recovering");
             Ok(poisoned.into_inner())
         }
     }

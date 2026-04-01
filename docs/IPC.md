@@ -175,6 +175,7 @@ Defaults:
 - `F1` -> toggle mouse routing
 - `F8` -> toggle capture
 - `F9` -> toggle pause
+- `F10` -> toggle overlay preview
 - `F2` -> shutdown
 
 These are handled in the daemon itself, not through the IPC socket.

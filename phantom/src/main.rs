@@ -46,6 +46,7 @@ KEYS (while daemon running, configurable in config.toml [runtime_hotkeys]):
     F1   Toggle mouse grab (default)
     F8   Toggle capture mode (default)
     F9   Toggle pause (default)
+    F10  Toggle transparent control overlay (default)
 
 FLAGS:
     --daemon      Run as daemon (requires root)
@@ -270,6 +271,7 @@ async fn run_daemon() -> Result<()> {
         mouse_toggle = ?runtime_hotkeys.mouse_toggle,
         capture_toggle = ?runtime_hotkeys.capture_toggle,
         pause_toggle = ?runtime_hotkeys.pause_toggle,
+        overlay_toggle = ?runtime_hotkeys.overlay_toggle,
         shutdown = ?runtime_hotkeys.shutdown,
         "daemon ready, entering event loop"
     );
@@ -440,6 +442,12 @@ async fn run_daemon() -> Result<()> {
     }
 
     {
+        if let Ok(mut overlay) = ipc::lock_overlay(&state) {
+            let _ = overlay.stop();
+        }
+    }
+
+    {
         let mut capture = ipc::lock_capture(&state)?;
         capture.force_release_all();
     }
@@ -491,6 +499,26 @@ async fn handle_runtime_shortcut(
             }
             Ok(true)
         }
+        InputEvent::KeyPress(key) if hotkeys.overlay_toggle == Some(*key) => {
+            tracing::info!(?key, "runtime hotkey pressed");
+            let profile = {
+                let engine = state.engine.read().await;
+                engine.profile_clone()
+            };
+            let visible = {
+                let mut overlay = ipc::lock_overlay(state)?;
+                overlay.toggle(&profile)?
+            };
+            tracing::info!(
+                "{}",
+                if visible {
+                    "control overlay enabled"
+                } else {
+                    "control overlay disabled"
+                }
+            );
+            Ok(true)
+        }
         InputEvent::KeyPress(key) if hotkeys.mouse_toggle == Some(*key) => {
             tracing::info!(?key, "runtime hotkey pressed");
             if !state.capture_active.load(Ordering::Acquire) {
@@ -526,6 +554,7 @@ fn is_runtime_hotkey(key: phantom::input::Key, hotkeys: &config::RuntimeHotkeys)
     hotkeys.mouse_toggle == Some(key)
         || hotkeys.capture_toggle == Some(key)
         || hotkeys.pause_toggle == Some(key)
+        || hotkeys.overlay_toggle == Some(key)
         || hotkeys.shutdown == Some(key)
 }
 

@@ -252,6 +252,10 @@ impl KeymapEngine {
         self.active_layers.iter().map(String::as_str)
     }
 
+    pub fn profile_clone(&self) -> Profile {
+        self.profile.clone()
+    }
+
     pub fn process(&mut self, event: &InputEvent) -> Vec<TouchCommand> {
         if self.paused {
             return vec![];

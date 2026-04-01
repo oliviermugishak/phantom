@@ -143,6 +143,7 @@ Default daemon hotkeys:
 - `F1` -> toggle mouse routing
 - `F8` -> toggle capture
 - `F9` -> toggle pause
+- `F10` -> toggle the transparent control preview overlay
 - `F2` -> shutdown daemon
 
 These are configured in:
@@ -152,8 +153,25 @@ These are configured in:
 
 Important keyboard note:
 
-- on many laptops and compact keyboards, the top row only sends standard `F1`/`F8`/`F9` events when Fn Lock is enabled
-- if `F2` works but `F1` or `F8` do not, check Fn Lock first
+- on many laptops and compact keyboards, the top row only sends standard `F1`/`F8`/`F9`/`F10` events when Fn Lock is enabled
+- if `F2` works but `F1`, `F8`, or `F10` do not, check Fn Lock first
+
+## Overlay Preview
+
+Press `F10` while the daemon is running to show or hide a transparent click-through preview overlay.
+
+What it shows:
+
+- button controls as soft circles with their bound key labels
+- joysticks as fixed centers or floating zones
+- drag gestures as subtle swipe arrows
+- mouse-look as a faint region outline
+
+What it does not do:
+
+- it does not block clicks or touches behind it
+- it does not inject any input by itself
+- it is a static preview of the currently loaded profile
 
 ## Mouse Look
 

@@ -209,13 +209,14 @@ Runtime hotkeys:
 mouse_toggle = "F1"
 capture_toggle = "F8"
 pause_toggle = "F9"
+overlay_toggle = "F10"
 shutdown = "F2"
 ```
 
 Keyboard note:
 
-- on many laptops, `F1` and `F8` only arrive as real function keys when Fn Lock is enabled
-- if `F2` works but `F1` or `F8` do not, check Fn Lock first
+- on many laptops, `F1`, `F8`, and `F10` only arrive as real function keys when Fn Lock is enabled
+- if `F2` works but `F1`, `F8`, or `F10` do not, check Fn Lock first
 
 ## 10. First Startup
 

@@ -1,3 +1,5 @@
+mod overlay;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -585,6 +587,7 @@ impl PhantomGui {
         ));
         ui.label(format!("Capture: {}", hotkey_label(hotkeys.capture_toggle)));
         ui.label(format!("Pause: {}", hotkey_label(hotkeys.pause_toggle)));
+        ui.label(format!("Overlay: {}", hotkey_label(hotkeys.overlay_toggle)));
         ui.label(format!("Shutdown: {}", hotkey_label(hotkeys.shutdown)));
         ui.add_space(4.0);
         ui.label(
@@ -4409,6 +4412,9 @@ fn egui_key_to_binding(key: egui::Key) -> Option<&'static str> {
 }
 
 fn main() -> eframe::Result<()> {
+    if let Some(profile_path) = overlay_profile_arg() {
+        return overlay::run_overlay(&profile_path);
+    }
     if should_print_help() {
         print_help();
         return Ok(());
@@ -4470,11 +4476,15 @@ Fullscreen mapping GUI and runtime control surface for Phantom.
 
 USAGE:
     {binary}
+    {binary} --overlay <profile.json>
     {binary} version
 
 FLAGS:
     -h, --help       Show this help
-    -V, --version    Show version"#,
+    -V, --version    Show version
+
+INTERNAL:
+    --overlay <profile.json>    Launch the transparent preview overlay"#,
         binary = binary,
         version = env!("CARGO_PKG_VERSION"),
     );
@@ -4497,4 +4507,14 @@ fn current_gui_binary_name() -> String {
                 .map(|name| name.to_string_lossy().to_string())
         })
         .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string())
+}
+
+fn overlay_profile_arg() -> Option<PathBuf> {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--overlay" {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
 }

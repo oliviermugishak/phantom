@@ -6,6 +6,4 @@ Cargo.lock
 .idea/
 .vscode/
 .DS_Store
-
-*.jar
-
+/contrib/android-server/build/
