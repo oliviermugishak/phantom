@@ -1,12 +1,33 @@
 # Profiles
 
-Profiles are JSON files stored in:
+Profiles are JSON files that describe how physical keyboard and mouse input becomes Android touch behavior.
+
+Operationally, the user profile library lives in:
 
 - `~/.config/phantom/profiles/`
 
-They describe how physical keyboard and mouse input should become Android touch behavior.
+The repository also ships starter profiles in:
 
-## 1. Top-Level Schema
+- `./profiles/`
+
+The GUI reads the user profile library, not the repository directory directly.
+
+## 1. Profile Discovery And Sync
+
+Phantom uses this model:
+
+- shipped profiles live in the repository
+- installed profiles live in `~/.config/phantom/profiles/`
+- `./install.sh` copies missing shipped profiles into the user profile library
+- rerunning `./install.sh` is the supported way to seed newly added shipped profiles
+
+That means:
+
+- repository profiles are the seed library
+- user profiles are the active working library
+- `phantom-gui` discovers profiles from the user library at startup
+
+## 2. Top-Level Schema
 
 ```json
 {
@@ -31,18 +52,15 @@ Fields:
 - `nodes`
   Control definitions.
 
-## 2. Screen Contract
+## 3. Screen Contract
 
 The profile `screen` must match the daemon `screen`.
 
-Why:
+Phantom does not guess transforms at runtime. Coordinates are normalized against one explicit surface.
 
-- Phantom does not guess transforms at runtime
-- profile coordinates are normalized against this explicit surface
+If the profile and daemon disagree, the profile load is rejected.
 
-If the profile and daemon disagree, profile load is rejected.
-
-## 3. Coordinates
+## 4. Coordinates
 
 All positions are normalized to `[0.0, 1.0]`.
 
@@ -61,19 +79,22 @@ pixel_x = rel_x * screen_width
 pixel_y = rel_y * screen_height
 ```
 
-## 4. Slot Rules
+## 5. Slot Rules
 
-Slot-bearing nodes use touch slots `0..9`.
+Touch-bearing nodes use unique touch slots:
 
-Rules:
+- `0..9`
+
+That means:
 
 - slot-bearing nodes must use unique slots
-- joysticks use one slot for the whole stick
-- `mouse_camera` also consumes one slot
+- one profile can contain at most 10 independently slotted touch-bearing nodes
 
-This is why `phantom audit` is so important.
+Important consequence:
 
-## 5. Layers
+- large games may need tradeoffs or future model extensions because a profile cannot be infinitely large under the current slot model
+
+## 6. Layers
 
 Action nodes may include:
 
@@ -88,7 +109,7 @@ Rules:
 - a base-layer key may not also be reused in a non-base layer
 - the same key may be reused across different non-base layers
 
-## 6. Node Types
+## 7. Node Types
 
 ### `tap`
 
@@ -152,6 +173,7 @@ Behavior:
   "slot": 0,
   "pos": { "x": 0.18, "y": 0.72 },
   "radius": 0.07,
+  "mode": "fixed",
   "keys": {
     "up": "W",
     "down": "S",
@@ -161,17 +183,62 @@ Behavior:
 }
 ```
 
+Fields:
+
+- `pos`
+  Stick anchor. Required for compatibility and fixed mode.
+- `radius`
+  Maximum drag distance.
+- `mode`
+  One of:
+  - `fixed`
+  - `floating`
+- `region`
+  Required for `floating`, omitted for `fixed`.
+
 Behavior:
 
-- first direction press -> finger down at stick center, then move to the offset
+- first direction press -> finger down
 - direction changes -> `TouchMove`
 - all directions released -> `TouchUp`
 
-Notes:
+Modes:
 
-- diagonals are normalized
-- opposing directions cancel
-- joystick center is fixed
+- `fixed`
+  - uses `pos` as the exact center
+  - best for visible static sticks
+- `floating`
+  - chooses a runtime origin inside `region`
+  - keeps that origin stable until all movement keys are released
+  - best for floating movement zones and football-style drag movement
+
+### `drag`
+
+```json
+{
+  "id": "lane_left",
+  "type": "drag",
+  "slot": 2,
+  "start": { "x": 0.50, "y": 0.72 },
+  "end": { "x": 0.22, "y": 0.72 },
+  "key": "A",
+  "duration_ms": 90
+}
+```
+
+Behavior:
+
+- key press -> `TouchDown` at `start`
+- Phantom moves the touch toward `end` over `duration_ms`
+- the gesture finishes with `TouchUp`
+- key release does not cancel the gesture once started
+
+Use cases:
+
+- Temple Run
+- Subway Surfers
+- sprint-lock drags
+- one-shot directional gestures
 
 ### `mouse_camera`
 
@@ -187,8 +254,6 @@ Notes:
   "invert_y": false
 }
 ```
-
-In the GUI this appears as `Mouse Look`.
 
 Fields:
 
@@ -206,21 +271,10 @@ Fields:
 - `invert_y`
   Inverts vertical mouse input.
 
-Behavior:
-
-- `always_on`
-  - mouse movement immediately drives the look region while capture and mouse routing are active
-- `while_held`
-  - movement only drives the look region while the activation key is held
-- `toggle`
-  - the activation key toggles look mode on and off
-- when movement stops, the synthetic finger is released shortly afterward
-- disabling look mode emits an immediate `TouchUp`
-
 Important:
 
-- `mouse_camera` is camera/look emulation
-- it is not a desktop cursor or generic pointer
+- `mouse_camera` is touch-drag camera emulation
+- it is not desktop pointer emulation
 
 ### `repeat_tap`
 
@@ -274,14 +328,12 @@ Behavior:
 
 Behavior:
 
-- `hold` -> layer active while key is held
+- `hold` -> layer active while the key is held
 - `toggle` -> layer active until pressed again
 
-Deactivating a layer releases touches owned by nodes in that layer.
+## 8. Validation Rules
 
-## 7. Validation Rules
-
-Profiles are rejected if they violate the schema or behavioral rules.
+Profiles are rejected if they violate the schema or runtime rules.
 
 Important rules:
 
@@ -295,10 +347,9 @@ Important rules:
 - `mouse_camera.sensitivity > 0`
 - `mouse_camera.activation_key` required for `while_held` and `toggle`
 - `mouse_camera.activation_key` omitted for `always_on`
-- macro `down` steps require `pos`
 - all key names must be known to Phantom
 
-## 8. Common Key Names
+## 9. Common Key Names
 
 Examples:
 
@@ -307,41 +358,52 @@ Examples:
 - wheel: `WheelUp`, `WheelDown`
 - function keys: `F1` through `F12`
 
-## 9. Profile Authoring Guidelines
+## 10. Shipped Starter Profiles
+
+Current shipped library:
+
+- `pubg.json`
+- `pubg-mobile-layout1.json`
+- `genshin.json`
+- `efootball-template.json`
+- `temple-run.json`
+- `subway-surfers.json`
+- `asphalt8.json`
+- `asphalt9.json`
+
+Intent:
+
+- `pubg.json`
+  compact combat starter
+- `pubg-mobile-layout1.json`
+  richer PUBG starter based on a real layout screen
+- `temple-run.json`
+  swipe-only runner starter
+- `subway-surfers.json`
+  swipe runner starter with hoverboard
+- `asphalt8.json`
+  keyboard driving starter
+- `asphalt9.json`
+  keyboard driving starter with 360 control
+
+## 11. Authoring Guidelines
 
 Good practice:
 
 - keep slot usage simple and explicit
 - keep the profile screen exact
-- prefer one control concept per node
+- prefer one gameplay concept per node
 - use `phantom audit` after every meaningful edit
-- use `while_held` or `toggle` for `mouse_camera` when the game needs mode control
+- use `drag` for deliberate swipe gestures
+- use `fixed` joystick for visible sticks
+- use `floating` joystick for floating movement zones
 
-## 10. Example Patterns
+## 12. Notes On Unsupported Inputs
 
-### PUBG-like
+Profiles currently map touch behavior.
 
-- one joystick
-- one `mouse_camera`
-- one `hold_tap` for fire
-- one `hold_tap` or `toggle_tap` for ADS
-- `mouse_camera` mode chosen to match the aiming workflow
+They do not describe:
 
-The shipped `profiles/pubg.json` uses:
-
-- `MouseLeft` for fire
-- `MouseRight` for ADS
-- `mouse_camera` in `while_held` mode on `MouseRight`
-
-### Genshin-like
-
-- one joystick
-- one `mouse_camera`
-- `repeat_tap` for repeated attacks
-- `tap` for skill and burst
-
-### Football-like
-
-- one joystick
-- `tap` for pass, shoot, switch
-- `hold_tap` for sprint or pressure
+- accelerometer tilt
+- gyroscope motion
+- other non-touch Android sensors

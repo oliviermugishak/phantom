@@ -16,7 +16,7 @@ CONFIG_PATH="$CONFIG_DIR/config.toml"
 usage() {
     cat <<'EOF'
 Usage:
-  ./install.sh        Build and install Phantom and Phantom Studio into the current user environment
+  ./install.sh        Build and install Phantom and Phantom GUI into the current user environment
   ./install.sh -u     Uninstall Phantom binaries and installed Android server jar
   ./install.sh -h     Show this help
 
@@ -78,7 +78,7 @@ install_phantom() {
     install -d "$BIN_DIR" "$ANDROID_DIR" "$PROFILE_DIR"
     install -m755 "$REPO_ROOT/target/release/phantom" "$BIN_DIR/phantom"
     install -m755 "$REPO_ROOT/target/release/phantom-gui" "$BIN_DIR/phantom-gui"
-    ln -sfn "$BIN_DIR/phantom-gui" "$BIN_DIR/phantom-studio"
+    rm -f "$BIN_DIR/phantom-studio"
     install -m644 "$REPO_ROOT/contrib/android-server/build/phantom-server.jar" "$INSTALLED_JAR"
 
     for profile in "$REPO_ROOT"/profiles/*.json; do
@@ -90,7 +90,6 @@ install_phantom() {
     printf '\ninstalled:\n'
     printf '  %s\n' "$BIN_DIR/phantom"
     printf '  %s\n' "$BIN_DIR/phantom-gui"
-    printf '  %s\n' "$BIN_DIR/phantom-studio"
     printf '  %s\n' "$INSTALLED_JAR"
     printf '  %s\n' "$CONFIG_PATH"
 

@@ -1,109 +1,71 @@
-# Troubleshooting And Limits
+# Known Limits
 
-This document covers current operational limits and common failure cases.
+This document describes current product boundaries.
 
-## 1. Waydroid Is Running But Phantom Still Fails
+These are not normal troubleshooting cases. For common operational failures, see [TROUBLESHOOT.md](TROUBLESHOOT.md).
 
-Check the container state, not just the session state.
+## 1. A Profile Has At Most 10 Touch-Bearing Nodes
 
-Bad:
+Current touch slots are:
 
-- `Session: RUNNING`
-- `Container: FROZEN`
+- `0..9`
 
-Good:
+That means a profile can only contain 10 independently slotted touch-bearing nodes at once.
 
-- `Session: RUNNING`
-- `Container: RUNNING`
+Affected node types:
 
-For the Android backend, `FROZEN` is not good enough.
+- `tap`
+- `hold_tap`
+- `toggle_tap`
+- `joystick`
+- `drag`
+- `mouse_camera`
+- `repeat_tap`
 
-## 2. Android Server Times Out On Startup
+Implication:
 
-Likely causes:
+- very large layouts such as full PUBG setups may need tradeoffs, layers, or future profile-model extensions
 
-- Waydroid was not running before Phantom started
-- the container was frozen
-- the Android jar path is wrong
-- the jar was not built as a dex jar
-- `app_process` startup failed
+## 2. Tilt And Other Sensors Are Not Supported
 
-Check:
+Phantom injects touch, not accelerometer or gyroscope input.
 
-```bash
-sudo waydroid status
-sudo waydroid shell -- sh -c 'tail -n 100 /data/local/tmp/phantom-server.log'
-```
+That means:
 
-## 3. Wrong Touch Placement
+- Temple Run tilt-to-collect-coins is unsupported
+- any game that requires sensors and offers no touch alternative is outside the current feature set
 
-Usually means the screen contract is wrong.
+## 3. `mouse_camera` Is Not A Desktop Cursor
 
-Check:
-
-- daemon `screen`
-- profile `screen`
-- actual Waydroid surface size
-
-Phantom is designed to fail fast on screen mismatch rather than silently stretch coordinates.
-
-## 4. Mouse Look Is Not A Desktop Cursor
-
-`mouse_camera` is a bounded swipe region with a short-lived synthetic finger.
+`mouse_camera` is a bounded drag-based look primitive.
 
 It is good for:
 
 - FPS camera
 - action camera
-- driving camera
+- free-look
 
-It is not a general-purpose Android cursor substitute.
+It is not:
 
-## 5. Mouse Look Feels Wrong
+- a desktop pointer
+- a generic Android cursor substitute
 
-Check:
+## 4. Dedicated Steering-Wheel Input Is Not First-Class Yet
 
-- region placement
-- node sensitivity
-- global sensitivity
-- activation mode
-- activation key
-- mouse routing state
+Phantom currently supports:
 
-Good debugging path:
+- fixed joystick
+- floating joystick
+- drag gestures
+- tap/hold/toggle style buttons
 
-1. test `always_on`
-2. confirm the region behaves
-3. then add `while_held` or `toggle`
+That covers many driving games that expose left/right buttons or drag-based steering zones.
 
-## 6. Stuck Touches
+It does not yet provide:
 
-Recovery options:
+- a dedicated analog steering-wheel primitive
 
-```bash
-phantom pause
-phantom resume
-phantom exit-capture
-phantom enter-capture
-```
-
-If needed, restart the daemon.
-
-## 7. Top-Row Hotkeys Do Not Trigger
-
-Common cause:
-
-- the keyboard is not sending standard `F1`/`F8`/`F9` key events because Fn Lock is off
-
-Typical symptom:
-
-- `F2` works, but `F1` or `F8` appear dead
-
-Resolution:
-
-- enable Fn Lock or switch the keyboard firmware mode so the top row emits standard function keys
-
-## 8. Hotplug Rescan Is Not Implemented
+## 5. Hotplug Rescan Is Not Implemented
 
 Current limitation:
 
@@ -111,34 +73,29 @@ Current limitation:
 
 If devices change, restart the daemon.
 
-## 9. Floating Joysticks Are Not Supported
+## 6. Multi-Monitor And Rotation Handling Are Not Supported
 
-Current limitation:
+Phantom assumes:
 
-- `joystick` is fixed-center
+- one known fullscreen Android surface
+- one stable orientation
 
-Profiles must be built for games and layouts that tolerate a fixed joystick anchor.
+It does not manage:
 
-## 10. Multi-Monitor And Rotation Handling Are Not Supported
+- compositor transforms
+- monitor rotation transforms
+- multi-display coordinate remapping
 
-Current limitation:
+## 7. The GUI Reads The User Profile Library, Not The Repo Directory
 
-- Phantom assumes one known target surface
-- it does not manage monitor transforms or rotation transforms
+The GUI loads:
 
-Best practice:
+- `~/.config/phantom/profiles/`
 
-- keep Waydroid fullscreen on one intended display
-- use one stable screen contract
+It does not live-read:
 
-## 11. `uinput` Visibility Problems
+- `./profiles/`
 
-This only applies to the compatibility backend.
+That is intentional because the installed user library is the operational source of truth.
 
-If Phantom creates the virtual device but Waydroid does not react:
-
-- restart Waydroid after starting Phantom
-- verify `/dev/uinput` permissions
-- verify the device appears in host input listings
-
-This is one of the reasons the Android backend is now preferred.
+Use `./install.sh` to seed new shipped profiles into the user directory.

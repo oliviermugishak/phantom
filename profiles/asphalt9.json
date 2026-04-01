@@ -1,0 +1,53 @@
+{
+  "name": "Asphalt 9",
+  "version": 1,
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
+  "global_sensitivity": 1.0,
+  "nodes": [
+    {
+      "id": "steer_left",
+      "type": "hold_tap",
+      "slot": 0,
+      "pos": { "x": 0.15, "y": 0.83 },
+      "key": "A"
+    },
+    {
+      "id": "steer_right",
+      "type": "hold_tap",
+      "slot": 1,
+      "pos": { "x": 0.30, "y": 0.83 },
+      "key": "D"
+    },
+    {
+      "id": "brake",
+      "type": "tap",
+      "slot": 2,
+      "pos": { "x": 0.08, "y": 0.90 },
+      "key": "S"
+    },
+    {
+      "id": "nitro",
+      "type": "tap",
+      "slot": 3,
+      "pos": { "x": 0.90, "y": 0.78 },
+      "key": "LeftShift"
+    },
+    {
+      "id": "drift",
+      "type": "hold_tap",
+      "slot": 4,
+      "pos": { "x": 0.82, "y": 0.87 },
+      "key": "Space"
+    },
+    {
+      "id": "spin_360",
+      "type": "tap",
+      "slot": 5,
+      "pos": { "x": 0.72, "y": 0.78 },
+      "key": "Q"
+    }
+  ]
+}

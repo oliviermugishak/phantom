@@ -245,6 +245,13 @@ Backends then decide how to realize those commands:
 - `android_socket` -> MotionEvents
 - `uinput` -> kernel MT events
 
+Two important recent consequences of that abstraction:
+
+- `joystick` can now support both fixed-center and floating-zone behavior without changing backend semantics
+- `drag` can model swipe games and sprint-lock style gestures without introducing a new transport contract
+
+The engine stays responsible for gesture meaning. The backend stays responsible for touch realization.
+
 ## 6. `mouse_camera` Design
 
 `mouse_camera` is the camera/look primitive.
@@ -348,8 +355,9 @@ If you need to change:
 
 The architecture explicitly does not solve:
 
-- floating joystick discovery
+- automatic floating joystick discovery
 - UI recognition
+- sensor injection such as accelerometer tilt
 - monitor transforms
 - rotation transforms
 - hotplug rescans

@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::input::{InputEvent, Key};
-use crate::profile::{LayerMode, MacroAction, MouseCameraActivationMode, Node, Profile, Region};
+use crate::profile::{
+    JoystickMode, LayerMode, MacroAction, MouseCameraActivationMode, Node, Profile, Region,
+};
 
 const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -30,6 +32,13 @@ enum NodeState {
         left: bool,
         right: bool,
         finger_active: bool,
+        origin_x: f64,
+        origin_y: f64,
+    },
+    Drag {
+        running: bool,
+        started_at: Instant,
+        last_progress: f64,
     },
     MouseCamera {
         enabled: bool,
@@ -177,6 +186,13 @@ impl KeymapEngine {
                 left: false,
                 right: false,
                 finger_active: false,
+                origin_x: 0.0,
+                origin_y: 0.0,
+            },
+            Node::Drag { .. } => NodeState::Drag {
+                running: false,
+                started_at: Instant::now(),
+                last_progress: 0.0,
             },
             Node::MouseCamera {
                 region,
@@ -324,6 +340,55 @@ impl KeymapEngine {
                                     });
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            if let Node::Drag {
+                slot,
+                start,
+                end,
+                duration_ms,
+                ..
+            } = node
+            {
+                if let NodeState::Drag {
+                    running,
+                    started_at,
+                    last_progress,
+                } = &self.states[idx]
+                {
+                    if *running {
+                        let duration = Duration::from_millis(*duration_ms);
+                        let progress = if duration.is_zero() {
+                            1.0
+                        } else {
+                            (now.duration_since(*started_at).as_secs_f64() / duration.as_secs_f64())
+                                .clamp(0.0, 1.0)
+                        };
+
+                        if progress > *last_progress {
+                            cmds.push(TouchCommand::TouchMove {
+                                slot: *slot,
+                                x: lerp(start.x, end.x, progress),
+                                y: lerp(start.y, end.y, progress),
+                            });
+                        }
+
+                        if progress >= 1.0 {
+                            cmds.push(TouchCommand::TouchUp { slot: *slot });
+                            self.states[idx] = NodeState::Drag {
+                                running: false,
+                                started_at: now,
+                                last_progress: 0.0,
+                            };
+                        } else {
+                            self.states[idx] = NodeState::Drag {
+                                running: true,
+                                started_at: *started_at,
+                                last_progress: progress,
+                            };
                         }
                     }
                 }
@@ -503,7 +568,12 @@ impl KeymapEngine {
                 }
             }
             Node::Joystick {
-                slot, pos, radius, ..
+                slot,
+                pos,
+                radius,
+                mode,
+                region,
+                ..
             } => {
                 if let Some(d) = self.joystick_direction(idx, key) {
                     if let NodeState::Joystick {
@@ -512,6 +582,8 @@ impl KeymapEngine {
                         left,
                         right,
                         finger_active,
+                        origin_x,
+                        origin_y,
                     } = &self.states[idx]
                     {
                         let mut u = *up;
@@ -519,32 +591,46 @@ impl KeymapEngine {
                         let mut l = *left;
                         let mut r = *right;
                         let mut fa = *finger_active;
+                        let mut ox = *origin_x;
+                        let mut oy = *origin_y;
                         match d {
                             Dir::Up => u = true,
                             Dir::Down => dn = true,
                             Dir::Left => l = true,
                             Dir::Right => r = true,
                         }
-                        let (ox, oy) = joystick_offset(u, dn, l, r, *radius);
+
                         if !fa {
+                            let (dir_x, dir_y) = joystick_direction_vector(u, dn, l, r);
+                            let (start_x, start_y) =
+                                joystick_origin(mode, pos, region.as_ref(), *radius, dir_x, dir_y);
+                            ox = start_x;
+                            oy = start_y;
                             cmds.push(TouchCommand::TouchDown {
                                 slot: *slot,
-                                x: pos.x,
-                                y: pos.y,
+                                x: start_x,
+                                y: start_y,
                             });
                             fa = true;
                         }
+
+                        let (move_x, move_y) =
+                            joystick_target(ox, oy, u, dn, l, r, *radius, region.as_ref());
+
                         cmds.push(TouchCommand::TouchMove {
                             slot: *slot,
-                            x: pos.x + ox,
-                            y: pos.y + oy,
+                            x: move_x,
+                            y: move_y,
                         });
+
                         self.states[idx] = NodeState::Joystick {
                             up: u,
                             down: dn,
                             left: l,
                             right: r,
                             finger_active: fa,
+                            origin_x: ox,
+                            origin_y: oy,
                         };
                     }
                 }
@@ -561,6 +647,22 @@ impl KeymapEngine {
                             active: true,
                             last_toggle: Instant::now(),
                             finger_down: true,
+                        };
+                    }
+                }
+            }
+            Node::Drag { slot, start, .. } => {
+                if let NodeState::Drag { running, .. } = &self.states[idx] {
+                    if !*running {
+                        cmds.push(TouchCommand::TouchDown {
+                            slot: *slot,
+                            x: start.x,
+                            y: start.y,
+                        });
+                        self.states[idx] = NodeState::Drag {
+                            running: true,
+                            started_at: Instant::now(),
+                            last_progress: 0.0,
                         };
                     }
                 }
@@ -625,7 +727,10 @@ impl KeymapEngine {
             }
             Node::ToggleTap { .. } => {}
             Node::Joystick {
-                slot, pos, radius, ..
+                slot,
+                radius,
+                region,
+                ..
             } => {
                 if let Some(d) = self.joystick_direction(idx, key) {
                     if let NodeState::Joystick {
@@ -634,6 +739,8 @@ impl KeymapEngine {
                         left,
                         right,
                         finger_active,
+                        origin_x,
+                        origin_y,
                     } = &self.states[idx]
                     {
                         let mut u = *up;
@@ -655,13 +762,24 @@ impl KeymapEngine {
                                 left: false,
                                 right: false,
                                 finger_active: false,
+                                origin_x: 0.0,
+                                origin_y: 0.0,
                             };
                         } else if fa {
-                            let (ox, oy) = joystick_offset(u, dn, l, r, *radius);
+                            let (move_x, move_y) = joystick_target(
+                                *origin_x,
+                                *origin_y,
+                                u,
+                                dn,
+                                l,
+                                r,
+                                *radius,
+                                region.as_ref(),
+                            );
                             cmds.push(TouchCommand::TouchMove {
                                 slot: *slot,
-                                x: pos.x + ox,
-                                y: pos.y + oy,
+                                x: move_x,
+                                y: move_y,
                             });
                             self.states[idx] = NodeState::Joystick {
                                 up: u,
@@ -669,6 +787,8 @@ impl KeymapEngine {
                                 left: l,
                                 right: r,
                                 finger_active: fa,
+                                origin_x: *origin_x,
+                                origin_y: *origin_y,
                             };
                         }
                     }
@@ -691,6 +811,7 @@ impl KeymapEngine {
                     };
                 }
             }
+            Node::Drag { .. } => {}
             Node::Macro { .. } => {
                 if let NodeState::Macro { running, .. } = &self.states[idx] {
                     if *running {
@@ -915,6 +1036,18 @@ impl KeymapEngine {
                     left: false,
                     right: false,
                     finger_active: false,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
+                };
+            }
+            NodeState::Drag { running: true, .. } => {
+                if let Some(s) = slot {
+                    cmds.push(TouchCommand::TouchUp { slot: s });
+                }
+                self.states[idx] = NodeState::Drag {
+                    running: false,
+                    started_at: Instant::now(),
+                    last_progress: 0.0,
                 };
             }
             NodeState::MouseCamera { finger_active, .. } => {
@@ -1021,19 +1154,24 @@ enum Dir {
 }
 
 fn joystick_offset(up: bool, down: bool, left: bool, right: bool, radius: f64) -> (f64, f64) {
+    let (dir_x, dir_y) = joystick_direction_vector(up, down, left, right);
+    (dir_x * radius, dir_y * radius)
+}
+
+fn joystick_direction_vector(up: bool, down: bool, left: bool, right: bool) -> (f64, f64) {
     let mut dx = 0.0;
     let mut dy = 0.0;
     if up {
-        dy -= radius;
+        dy -= 1.0;
     }
     if down {
-        dy += radius;
+        dy += 1.0;
     }
     if left {
-        dx -= radius;
+        dx -= 1.0;
     }
     if right {
-        dx += radius;
+        dx += 1.0;
     }
     if up && down {
         dy = 0.0;
@@ -1047,6 +1185,77 @@ fn joystick_offset(up: bool, down: bool, left: bool, right: bool, radius: f64) -
         dy *= diagonal;
     }
     (dx, dy)
+}
+
+fn joystick_origin(
+    mode: &JoystickMode,
+    pos: &crate::profile::RelPos,
+    region: Option<&Region>,
+    radius: f64,
+    dir_x: f64,
+    dir_y: f64,
+) -> (f64, f64) {
+    match mode {
+        JoystickMode::Fixed => (pos.x, pos.y),
+        JoystickMode::Floating => {
+            let region = region.expect("floating joystick requires region");
+            floating_joystick_origin(region, radius, dir_x, dir_y)
+        }
+    }
+}
+
+fn joystick_target(
+    origin_x: f64,
+    origin_y: f64,
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+    radius: f64,
+    region: Option<&Region>,
+) -> (f64, f64) {
+    let (offset_x, offset_y) = joystick_offset(up, down, left, right, radius);
+    let mut x = origin_x + offset_x;
+    let mut y = origin_y + offset_y;
+    if let Some(region) = region {
+        x = x.clamp(region.x, region.x + region.w);
+        y = y.clamp(region.y, region.y + region.h);
+    }
+    (x, y)
+}
+
+fn floating_joystick_origin(region: &Region, radius: f64, dir_x: f64, dir_y: f64) -> (f64, f64) {
+    // Floating sticks and football-style drag zones need a runtime origin:
+    // the synthetic finger should start inside the allowed zone, then keep
+    // that origin stable until all bound directions are released.
+    let center_x = region.x + region.w / 2.0;
+    let center_y = region.y + region.h / 2.0;
+    let desired_x = center_x - dir_x * radius * 0.5;
+    let desired_y = center_y - dir_y * radius * 0.5;
+
+    let margin_x = radius.min(region.w / 2.0);
+    let margin_y = radius.min(region.h / 2.0);
+    let min_x = region.x + margin_x;
+    let max_x = region.x + region.w - margin_x;
+    let min_y = region.y + margin_y;
+    let max_y = region.y + region.h - margin_y;
+
+    let origin_x = if min_x <= max_x {
+        desired_x.clamp(min_x, max_x)
+    } else {
+        center_x
+    };
+    let origin_y = if min_y <= max_y {
+        desired_y.clamp(min_y, max_y)
+    } else {
+        center_y
+    };
+
+    (origin_x, origin_y)
+}
+
+fn lerp(start: f64, end: f64, t: f64) -> f64 {
+    start + (end - start) * t
 }
 
 #[cfg(test)]
@@ -1081,6 +1290,8 @@ mod tests {
                     slot: 1,
                     pos: RelPos { x: 0.2, y: 0.7 },
                     radius: 0.07,
+                    mode: JoystickMode::Fixed,
+                    region: None,
                     keys: JoystickKeys {
                         up: "W".into(),
                         down: "S".into(),
@@ -1115,6 +1326,96 @@ mod tests {
             }
             other => panic!("expected move, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn floating_joystick_starts_inside_zone_and_keeps_origin() {
+        let profile = Profile {
+            name: "Float".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![Node::Joystick {
+                id: "move".into(),
+                layer: String::new(),
+                slot: 1,
+                pos: RelPos { x: 0.2, y: 0.7 },
+                radius: 0.08,
+                mode: JoystickMode::Floating,
+                region: Some(Region {
+                    x: 0.0,
+                    y: 0.4,
+                    w: 0.45,
+                    h: 0.45,
+                }),
+                keys: JoystickKeys {
+                    up: "W".into(),
+                    down: "S".into(),
+                    left: "A".into(),
+                    right: "D".into(),
+                },
+            }],
+        };
+
+        let mut engine = KeymapEngine::new(profile);
+        let cmds = engine.process(&InputEvent::KeyPress(Key::D));
+        let [TouchCommand::TouchDown {
+            x: down_x,
+            y: down_y,
+            ..
+        }, TouchCommand::TouchMove {
+            x: move_x,
+            y: move_y,
+            ..
+        }] = cmds.as_slice()
+        else {
+            panic!("expected down+move, got {cmds:?}");
+        };
+        assert!((*down_x >= 0.0) && (*down_x <= 0.45));
+        assert!((*down_y >= 0.4) && (*down_y <= 0.85));
+        assert!(*move_x >= *down_x);
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
+        let [TouchCommand::TouchMove {
+            x: next_x,
+            y: next_y,
+            ..
+        }] = cmds.as_slice()
+        else {
+            panic!("expected single move, got {cmds:?}");
+        };
+        assert!((*next_x >= 0.0) && (*next_x <= 0.45));
+        assert!((*next_y >= 0.4) && (*next_y <= 0.85));
+        assert!(*next_y <= *move_y);
+    }
+
+    #[test]
+    fn drag_gesture_runs_to_completion() {
+        let profile = Profile {
+            name: "Drag".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![Node::Drag {
+                id: "lane_left".into(),
+                layer: String::new(),
+                slot: 2,
+                start: RelPos { x: 0.5, y: 0.7 },
+                end: RelPos { x: 0.2, y: 0.7 },
+                key: "A".into(),
+                duration_ms: 1,
+            }],
+        };
+
+        let mut engine = KeymapEngine::new(profile);
+        let cmds = engine.process(&InputEvent::KeyPress(Key::A));
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 2, .. }));
+
+        std::thread::sleep(Duration::from_millis(2));
+        let cmds = engine.tick();
+        assert!(matches!(&cmds[0], TouchCommand::TouchMove { slot: 2, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::TouchUp { slot: 2 }));
     }
 
     #[test]

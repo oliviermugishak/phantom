@@ -1,6 +1,6 @@
 # Phantom configuration
-# Copy this file to ~/.config/phantom/config.toml and adjust it for your machine.
-# `./install.sh` does that automatically on first install.
+# `./install.sh` creates ~/.config/phantom/config.toml automatically on first install.
+# The GUI discovers profiles from ~/.config/phantom/profiles/.
 
 # Log level: trace, debug, info, warn, error
 # Use "trace" when debugging evdev capture, engine decisions, backend transport, or touch injection.
@@ -41,6 +41,7 @@ work_dir = "/var/lib/waydroid"
 # Optional daemon-level hotkeys.
 # Use a known key name like "F1" or "MouseRight".
 # Use "" or "none" to disable a hotkey entirely.
+# On many laptops, enable Fn Lock if you want the top row to emit real F-keys.
 [runtime_hotkeys]
 mouse_toggle = "F1"
 capture_toggle = "F8"

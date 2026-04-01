@@ -40,6 +40,7 @@ Supported mapping primitives:
 - `hold_tap`
 - `toggle_tap`
 - `joystick`
+- `drag`
 - `mouse_camera`
 - `repeat_tap`
 - `macro`
@@ -50,7 +51,8 @@ Supported mapping primitives:
 Not product goals:
 
 - dynamic UI recognition
-- floating joystick discovery
+- automatic floating joystick discovery
+- tilt or accelerometer injection
 - generic Android automation
 - cursor-level desktop remapping
 - multi-monitor correctness
@@ -83,7 +85,7 @@ The codebase is not considered maintainable unless these stay current:
 The next layers of value are:
 
 - better gameplay workflows
-- stronger templates
+- stronger shipped profiles
 - clearer runtime state
 - better testing and diagnostics
 - cleaner maintainer docs

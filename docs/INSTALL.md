@@ -1,17 +1,20 @@
-# Install And Rebuild
+# Install
 
-This is the complete setup guide for Phantom on a clean machine.
+This is the clean-machine setup guide for Phantom.
 
 It covers:
 
-- Rust toolchain
-- Android SDK setup for the `app_process` server
-- Linux input permissions
-- build outputs
-- config
+- Rust
+- Android SDK tools
+- Linux input access
+- local install
+- config creation
+- shipped profile seeding
 - first startup
 
-The recommended backend is `android_socket`.
+The recommended backend is:
+
+- `android_socket`
 
 ## 1. Prerequisites
 
@@ -20,18 +23,16 @@ You need:
 - Linux
 - Waydroid
 - Rust toolchain
+- Android SDK command-line tools
 - access to `/dev/input/event*`
-- Android SDK command-line tools with:
-  - at least one installed `android.jar`
-  - at least one installed `d8`
 
-You only need `/dev/uinput` if you intend to use the legacy `uinput` backend.
+You only need `/dev/uinput` if you want the legacy `uinput` backend.
 
 ## 2. Clone The Repository
 
 ```bash
-git clone <repo-url>
-cd ttplayer
+git clone https://github.com/oliviermugishak/phantom.git
+cd phantom
 ```
 
 ## 3. Install Rust
@@ -45,12 +46,12 @@ cargo --version
 
 ## 4. Install Android SDK Command-Line Tools
 
-Phantom's Android backend is built locally. The build needs:
+Phantom's Android backend build needs:
 
 - `android.jar`
 - `d8`
 
-Suggested SDK layout:
+Suggested layout:
 
 ```text
 ~/Android/Sdk/
@@ -59,7 +60,7 @@ Suggested SDK layout:
   platforms/android-<version>/
 ```
 
-Recommended environment variables:
+Recommended environment:
 
 ```bash
 export ANDROID_HOME="$HOME/Android/Sdk"
@@ -78,11 +79,11 @@ Example:
 sdkmanager "platform-tools" "platforms;android-37" "build-tools;37.0.0"
 ```
 
-The exact version numbers are not hard-coded into Phantom. `contrib/android-server/build.sh` auto-detects the newest installed `android.jar` and `d8`.
+`contrib/android-server/build.sh` auto-detects the newest installed `android.jar` and `d8`.
 
 ## 5. Configure Linux Input Access
 
-If you will run the daemon as your normal user, add input access:
+If you want to run the daemon as a normal user, configure device access:
 
 ```bash
 sudo cp contrib/99-phantom.rules /etc/udev/rules.d/
@@ -91,7 +92,7 @@ sudo udevadm trigger
 sudo usermod -aG input "$USER"
 ```
 
-Then log out and log back in.
+Then log out and back in.
 
 Verify:
 
@@ -100,11 +101,11 @@ groups | grep input
 ls -l /dev/input/event*
 ```
 
-If you plan to run the daemon with `sudo`, this step is less important but still recommended.
+If you always run the daemon with `sudo`, this is still recommended but less critical.
 
 ## 6. Optional: Enable `uinput`
 
-Only do this if you plan to use the legacy `uinput` backend.
+Only do this if you want the legacy fallback backend:
 
 ```bash
 sudo modprobe uinput
@@ -112,9 +113,9 @@ echo uinput | sudo tee /etc/modules-load.d/uinput.conf
 ls -l /dev/uinput
 ```
 
-## 7. Build The Project
+## 7. Install Phantom
 
-Recommended user-local install:
+Recommended install:
 
 ```bash
 ./install.sh
@@ -122,12 +123,24 @@ Recommended user-local install:
 
 That command:
 
-- builds the Rust binaries
+- builds `phantom`
+- builds `phantom-gui`
 - builds the Android server jar
-- installs `phantom`, `phantom-gui`, and `phantom-studio` into `~/.local/bin`
+- installs binaries into `~/.local/bin`
 - installs `phantom-server.jar` into `~/.local/share/phantom/android/`
-- creates `~/.config/phantom/config.toml` if it does not already exist
-- copies starter profiles into `~/.config/phantom/profiles/` if they are missing
+- creates `~/.config/phantom/config.toml` if missing
+- copies shipped profiles into `~/.config/phantom/profiles/` if those files do not already exist
+
+Installed binaries:
+
+- `phantom`
+- `phantom-gui`
+
+Important profile-library behavior:
+
+- the GUI reads profiles from `~/.config/phantom/profiles/`
+- the installer seeds that directory from the repository's `profiles/` directory
+- rerunning `./install.sh` copies any newly added shipped profiles without overwriting your edited ones
 
 Uninstall later with:
 
@@ -135,40 +148,30 @@ Uninstall later with:
 ./install.sh -u
 ```
 
-That removes the installed binaries and Android server jar, but keeps your config and profiles.
+That removes installed binaries and the installed Android server jar, but leaves your user config and profiles intact.
 
-Manual build remains available.
+## 8. Manual Build
 
-Build the Rust binaries:
+If you do not want to install yet:
 
 ```bash
 cargo build --release
+./contrib/android-server/build.sh
 ```
 
 Artifacts:
 
 - `target/release/phantom`
 - `target/release/phantom-gui`
-
-Build the Android server:
-
-```bash
-./contrib/android-server/build.sh
-```
-
-Artifact:
-
 - `contrib/android-server/build/phantom-server.jar`
 
-That jar must contain `classes.dex`.
+The Android jar must contain `classes.dex`.
 
-## 8. Install Config And Profiles
+## 9. Config
 
-If you used `./install.sh`, this step is already done.
+If you used `./install.sh`, `~/.config/phantom/config.toml` already exists.
 
-Phantom does not auto-create `~/.config/phantom/config.toml` during normal daemon startup. If the file is missing, it falls back to defaults. The installer is the supported way to create the initial config.
-
-If you want to install manually:
+If not:
 
 ```bash
 mkdir -p ~/.config/phantom/profiles
@@ -176,15 +179,7 @@ cp config.example.toml ~/.config/phantom/config.toml
 cp profiles/*.json ~/.config/phantom/profiles/
 ```
 
-If you want a default profile:
-
-```bash
-cp profiles/pubg.json ~/.config/phantom/profiles/default.json
-```
-
-## 9. Edit `config.toml`
-
-The minimum required fields are:
+Minimum important fields:
 
 ```toml
 log_level = "info"
@@ -196,7 +191,7 @@ height = 1080
 
 [android]
 auto_launch = true
-server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
+server_jar = "/absolute/path/to/phantom/contrib/android-server/build/phantom-server.jar"
 server_class = "com.phantom.server.PhantomServer"
 container_bind_host = "0.0.0.0"
 port = 27183
@@ -207,7 +202,7 @@ container_log_path = "/data/local/tmp/phantom-server.log"
 work_dir = "/var/lib/waydroid"
 ```
 
-Also set your daemon hotkeys explicitly:
+Runtime hotkeys:
 
 ```toml
 [runtime_hotkeys]
@@ -217,7 +212,10 @@ pause_toggle = "F9"
 shutdown = "F2"
 ```
 
-On laptops and compact keyboards, enable Fn Lock if you want the top row to send real `F1`/`F8`/`F9` keys instead of media actions.
+Keyboard note:
+
+- on many laptops, `F1` and `F8` only arrive as real function keys when Fn Lock is enabled
+- if `F2` works but `F1` or `F8` do not, check Fn Lock first
 
 ## 10. First Startup
 
@@ -240,100 +238,38 @@ Then start Phantom:
 sudo phantom --trace --daemon
 ```
 
-If the container is `FROZEN`, the Android server may listen but fail readiness checks. Open the UI or the game first.
+If the container is `FROZEN`, open the UI or game first.
 
-## 11. Verify The Daemon
+## 11. Verify Bring-Up
 
 In a normal user shell:
 
 ```bash
 phantom status
+phantom audit ~/.config/phantom/profiles/pubg-mobile-layout1.json
+phantom load ~/.config/phantom/profiles/pubg-mobile-layout1.json
+phantom-gui
 ```
 
 Expected:
 
 - daemon reachable
-- screen contract visible
-- capture state visible
-- mouse routed / keyboard routed visible
+- GUI sees profiles from `~/.config/phantom/profiles/`
+- `phantom-server.jar` path resolves correctly
+- the Android backend connects cleanly
 
-Audit a profile:
+## 12. If A New Shipped Profile Does Not Appear
 
-```bash
-phantom audit ~/.config/phantom/profiles/pubg.json
-```
-
-Load a profile:
+Do this:
 
 ```bash
-phantom load ~/.config/phantom/profiles/pubg.json
+./install.sh
+phantom-gui
 ```
 
-Enter capture:
+Reason:
 
-```bash
-phantom enter-capture
-```
+- the GUI reads the user profile library
+- the installer seeds new shipped profiles into that directory if they are missing
 
-## 12. Launch The GUI
-
-```bash
-phantom-studio
-```
-
-Recommended editor flow:
-
-1. open the target profile
-2. confirm the screen contract
-3. place or edit controls
-4. bind real keys
-5. `Push Live`
-6. test in-game
-
-## 13. Android Backend-Specific Checks
-
-Useful checks:
-
-```bash
-sudo waydroid shell -- sh -c 'ls -l /data/local/tmp/phantom-server.jar'
-sudo waydroid shell -- sh -c 'tail -n 50 /data/local/tmp/phantom-server.log'
-sudo waydroid shell -- sh -c 'ss -ltnp | grep 27183 || true'
-```
-
-Expected signs:
-
-- server jar staged inside the container
-- server log shows startup
-- port `27183` listening
-- daemon log shows successful connection
-
-## 14. `uinput` Fallback Setup
-
-If you intentionally want the compatibility backend:
-
-```toml
-touch_backend = "uinput"
-```
-
-Recommended startup order for that backend:
-
-```bash
-sudo phantom --trace --daemon
-waydroid session stop
-waydroid session start
-```
-
-That path is documented for compatibility only. The project is centered on `android_socket`.
-
-## 15. Rebuild Checklist
-
-Whenever you update the project:
-
-```bash
-cargo fmt --all
-cargo test --quiet
-cargo build --release
-./contrib/android-server/build.sh
-```
-
-If the behavior or contracts changed, update docs in the same change.
+That is the supported sync model.

@@ -1,0 +1,47 @@
+{
+  "name": "Temple Run",
+  "version": 1,
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
+  "global_sensitivity": 1.0,
+  "nodes": [
+    {
+      "id": "swipe_left",
+      "type": "drag",
+      "slot": 0,
+      "start": { "x": 0.50, "y": 0.72 },
+      "end": { "x": 0.24, "y": 0.72 },
+      "key": "A",
+      "duration_ms": 85
+    },
+    {
+      "id": "swipe_right",
+      "type": "drag",
+      "slot": 1,
+      "start": { "x": 0.50, "y": 0.72 },
+      "end": { "x": 0.76, "y": 0.72 },
+      "key": "D",
+      "duration_ms": 85
+    },
+    {
+      "id": "swipe_up",
+      "type": "drag",
+      "slot": 2,
+      "start": { "x": 0.50, "y": 0.72 },
+      "end": { "x": 0.50, "y": 0.42 },
+      "key": "W",
+      "duration_ms": 85
+    },
+    {
+      "id": "swipe_down",
+      "type": "drag",
+      "slot": 3,
+      "start": { "x": 0.50, "y": 0.72 },
+      "end": { "x": 0.50, "y": 0.90 },
+      "key": "S",
+      "duration_ms": 85
+    }
+  ]
+}

@@ -13,7 +13,7 @@ Top-level structure:
 - `phantom-gui/`
   Native editor and runtime control UI
 - `profiles/`
-  Starter profiles and templates
+  Shipped starter profile library
 - `docs/`
   Product, runtime, profile, protocol, and maintainer docs
 - `contrib/android-server/`
@@ -165,7 +165,6 @@ Both binaries inherit that shared version:
 
 - `phantom`
 - `phantom-gui`
-- `phantom-studio` (installed alias to `phantom-gui`)
 
 That means:
 
@@ -173,7 +172,6 @@ That means:
 - `phantom version`
 - `phantom-gui --version`
 - `phantom-gui version`
-- `phantom-studio --version`
 
 all stay in sync with one version bump.
 
@@ -258,7 +256,7 @@ Touch these places:
    - release logic
    - tests
 3. `phantom-gui/src/main.rs`
-   - template creation
+   - starter node creation
    - property editing
    - binding capture if relevant
    - canvas display

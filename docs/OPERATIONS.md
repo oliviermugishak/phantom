@@ -1,70 +1,28 @@
 # Operations
 
-This document is the day-to-day runtime guide for Phantom.
+This is the day-to-day runtime guide for Phantom.
 
-It assumes the project is already built and configured. If not, start with [INSTALL.md](INSTALL.md).
+If the project is not installed yet, start with [INSTALL.md](INSTALL.md).
 
 ## Runtime Model
 
-Phantom runtime behavior is controlled by four independent concerns:
+Phantom runtime behavior is easiest to reason about as four independent controls:
 
-1. daemon process
-2. capture state
-3. mouse routing state
-4. engine pause state
+1. daemon running
+2. capture enabled
+3. mouse routing enabled
+4. engine paused
 
-These are separate on purpose.
+These are separate deliberately.
 
-### Daemon Running
+Why:
 
-When the daemon is running:
+- the daemon can stay alive while profiles change
+- capture controls whether gameplay input should flow into the engine
+- mouse routing controls whether mouse-originated gameplay events should reach the game
+- pause freezes touch output without requiring a daemon restart
 
-- Phantom reads keyboard and mouse devices
-- the current profile engine exists in memory
-- the IPC socket is available to the CLI and GUI
-
-### Capture Enabled
-
-When capture is enabled:
-
-- Phantom grabs the input devices for gameplay
-- gameplay events are allowed to reach the engine
-
-When capture is disabled:
-
-- gameplay events are not forwarded into the engine
-- desktop interaction returns
-
-### Mouse Routed
-
-When mouse routing is enabled:
-
-- mouse movement can drive `mouse_camera`
-- mouse buttons and wheel events bound in profiles are forwarded into the engine
-
-When mouse routing is disabled:
-
-- mouse-originated gameplay events are suppressed
-- active mouse-driven touches are released
-- capture may remain active for keyboard-driven gameplay
-- the daemon still keeps the physical keyboard grabbed so runtime hotkeys continue to work
-- outside capture, non-hotkey keyboard events are replayed back to Linux through Phantom's virtual desktop keyboard
-
-This is the key distinction that makes menu interaction and hybrid workflows possible.
-
-### Engine Paused
-
-When paused:
-
-- Phantom still runs
-- capture can still exist
-- the engine stops producing new touch commands
-
-Use pause when you want the daemon alive but injection frozen.
-
-## Recommended Startup Flow
-
-For the current recommended backend:
+## Recommended Startup
 
 ```bash
 waydroid session start
@@ -73,19 +31,17 @@ sudo waydroid status
 sudo phantom --trace --daemon
 ```
 
-Before starting Phantom, confirm:
+Required Waydroid state:
 
 - `Session: RUNNING`
 - `Container: RUNNING`
 
-If the container is `FROZEN`, open the UI or the game first.
+If the container is `FROZEN`, the Android backend can appear partially alive while still failing readiness checks.
 
-## CLI Control Surface
-
-Common commands:
+## Daily CLI Commands
 
 ```bash
-phantom version
+phantom --version
 phantom status
 phantom audit <profile.json>
 phantom load <profile.json>
@@ -99,21 +55,59 @@ phantom toggle-mouse
 phantom pause
 phantom resume
 phantom sensitivity <value>
+phantom list
 phantom shutdown
 ```
 
-## Studio Runtime Surface
+## GUI Workflow
 
-`phantom-studio` is now more than a profile editor. Its `Runtime` tab can:
+Start the editor with:
 
-- request daemon launch
-- show daemon connection state
-- push the current profile live
-- enter or leave capture
-- toggle mouse routing
-- shut the daemon down
+```bash
+phantom-gui
+```
 
-If your system still requires elevated input access, the studio will prefer `pkexec` when it is available. Otherwise, start `phantom --daemon` manually and return to the studio.
+The GUI is a mapping editor and runtime control surface.
+
+Typical workflow:
+
+1. open or create a profile
+2. confirm the screen contract
+3. place controls
+4. bind real keys or mouse buttons
+5. save into `~/.config/phantom/profiles/`
+6. `Push Live`
+7. enter capture
+8. test in the game
+
+Runtime actions available in the GUI:
+
+- start daemon
+- shutdown daemon
+- push live
+- enter capture
+- exit capture
+- toggle capture
+- grab mouse
+- release mouse
+
+## Profile Library Behavior
+
+The GUI discovers profiles from:
+
+- `~/.config/phantom/profiles/`
+
+It does not read the repository `profiles/` directory directly.
+
+The supported sync flow is:
+
+1. keep shipped starter profiles in the repository `profiles/` directory
+2. seed missing ones into `~/.config/phantom/profiles/` through `./install.sh`
+3. let the GUI load and save against the user profile library
+
+Practical rule:
+
+- if a new shipped profile does not appear in the GUI, rerun `./install.sh`
 
 ## Runtime Hotkeys
 
@@ -122,141 +116,110 @@ Configured in:
 - `~/.config/phantom/config.toml`
 - `[runtime_hotkeys]`
 
-Default bindings:
+Defaults:
 
-- `F8` -> toggle capture
 - `F1` -> toggle mouse routing
+- `F8` -> toggle capture
 - `F9` -> toggle pause
 - `F2` -> shutdown daemon
 
-Use `""` or `"none"` to disable any of them.
+Fn row warning:
 
-If `F2` works but `F1` or `F8` do not, check Fn Lock first. On many keyboards the top row only sends real function keys when Fn Lock is enabled.
-
-## GUI Workflow
-
-Typical editor workflow:
-
-1. open or create a profile
-2. confirm the `screen` contract
-3. load a screenshot if useful
-4. place controls
-5. bind real input
-6. tune positions, regions, and sensitivity
-7. `Push Live`
-8. enter capture and test
-
-Useful GUI runtime actions:
-
-- `Push Live`
-- `Pause`
-- `Resume`
-- `Enter Capture`
-- `Exit Capture`
-- `Toggle Capture`
-- `Grab Mouse`
-- `Release Mouse`
+- on many keyboards the function row only emits true `F1` and `F8` events when Fn Lock is enabled
+- if `F2` works but `F1` or `F8` appear dead, check Fn Lock first
 
 ## Mouse Look Operations
 
-`mouse_camera` has three operational modes.
+`mouse_camera` has three modes.
 
 ### `always_on`
 
-Meaning:
+Use when:
 
-- once capture is active and mouse routing is enabled, mouse movement always drives the look region
-
-Best for:
-
-- games where camera motion should always follow the mouse during capture
+- capture should always steer the camera
 
 ### `while_held`
 
-Meaning:
+Use when:
 
-- the activation key enables mouse look while it is held
-- releasing the key disables mouse look and lifts the synthetic finger immediately
-
-Best for:
-
-- aim or scoped camera flows
-- situations where a key should both hold another touch and enable look
+- one key should temporarily enable look mode
+- right mouse button should both ADS and enable camera look
 
 ### `toggle`
 
-Meaning:
+Use when:
 
-- pressing the activation key toggles mouse look on or off
+- you want explicit on/off camera mode switching
 
-Best for:
+## Joystick And Drag Operations
 
-- mode-based games
-- players who want explicit camera mode switching
+### `joystick`
 
-## Recommended PUBG Workflow
+Use for:
 
-Start with this mental model:
+- continuous movement
+- visible sticks
+- floating movement zones
 
-- `WASD` -> joystick
+Modes:
+
+- `fixed`
+- `floating`
+
+### `drag`
+
+Use for:
+
+- swipe games like Temple Run and Subway Surfers
+- sprint-lock drags in PUBG-style movement systems
+- one-shot directional gestures
+
+## Suggested Game Workflows
+
+### PUBG Mobile
+
+Use:
+
+- `pubg.json` for a compact baseline
+- `pubg-mobile-layout1.json` for a richer starter based on a real custom-layout screen
+
+Typical mapping model:
+
+- `WASD` -> movement joystick
 - `MouseLeft` -> fire
-- `MouseRight` -> either ADS only, or ADS plus mouse-look activation
+- `MouseRight` -> ADS and/or `mouse_camera`
+- `LeftShift` -> sprint-lock drag
 
-Two reasonable setups:
+### Temple Run / Subway Surfers
 
-### Setup A: `while_held` on `MouseRight`
+Use:
 
-Use this if right-click should:
+- `temple-run.json`
+- `subway-surfers.json`
 
-- hold ADS
-- enable look at the same time
+Typical mapping model:
 
-This is a valid configuration because Phantom can bind the same physical key to:
+- `A` -> swipe left
+- `D` -> swipe right
+- `W` -> swipe up
+- `S` -> swipe down
 
-- one `hold_tap` node
-- one `mouse_camera` activation key
+### Asphalt 8 / Asphalt 9
 
-The shipped `profiles/pubg.json` now uses this setup by default.
+Use:
 
-### Setup B: `toggle` on a spare key
+- `asphalt8.json`
+- `asphalt9.json`
 
-Use this if you want:
+These are starter keyboard layouts for tap/hold driving controls, not full analog steering-wheel emulation.
 
-- ADS on one key
-- camera mode on another key
+## What Not To Expect
 
-This is often easier to debug and tune first.
+Phantom does not currently inject sensors.
 
-## Logs And Health Signals
+So:
 
-Important places to inspect:
+- tilt controls are not supported
+- accelerometer-based coin collection in Temple Run is not supported
 
-- daemon terminal output
-- `phantom status`
-- Waydroid status
-- container server log: `/data/local/tmp/phantom-server.log`
-
-For `android_socket`, the important health signals are:
-
-- daemon says it connected to the Android touch server
-- Waydroid container is `RUNNING`
-- the server log shows a client connection
-
-For `uinput`, the important health signals are:
-
-- Android sees the virtual touchscreen device
-- Waydroid reacts to injected touches from that device
-
-## Shutdown
-
-Graceful shutdown paths:
-
-- `phantom shutdown`
-- configured shutdown hotkey
-
-If you are debugging and want a clean reset:
-
-1. stop Phantom
-2. stop or restart Waydroid if necessary
-3. start Waydroid again
-4. start Phantom again
+If a game exposes a touch-based alternative, use that.

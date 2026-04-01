@@ -11,14 +11,15 @@ use phantom::config;
 use phantom::input::Key;
 use phantom::ipc::{self, IpcRequest, IpcResponse};
 use phantom::profile::{
-    JoystickKeys, LayerMode, MacroAction, MacroStep, MouseCameraActivationMode, Node, Profile,
-    Region, RelPos, ScreenOverride,
+    JoystickKeys, JoystickMode, LayerMode, MacroAction, MacroStep, MouseCameraActivationMode, Node,
+    Profile, Region, RelPos, ScreenOverride,
 };
 
 const COLOR_TAP: Color32 = Color32::from_rgb(66, 133, 244);
 const COLOR_HOLD: Color32 = Color32::from_rgb(234, 67, 53);
 const COLOR_TOGGLE: Color32 = Color32::from_rgb(0, 172, 193);
 const COLOR_JOYSTICK: Color32 = Color32::from_rgb(52, 168, 83);
+const COLOR_DRAG: Color32 = Color32::from_rgb(0, 200, 140);
 const COLOR_LOOK: Color32 = Color32::from_rgb(251, 188, 4);
 const COLOR_REPEAT: Color32 = Color32::from_rgb(171, 71, 188);
 const COLOR_MACRO: Color32 = Color32::from_rgb(255, 112, 67);
@@ -34,12 +35,6 @@ const MAX_CANVAS_ZOOM: f32 = 3.0;
 const SNAP_GRID_STEP: f64 = 0.05;
 const SNAP_THRESHOLD: f64 = 0.012;
 const TOOLBAR_HEIGHT: f32 = 126.0;
-const TEMPLATE_FILES: &[(&str, &str)] = &[
-    ("PUBG", "pubg.json"),
-    ("Genshin", "genshin.json"),
-    ("eFootball", "efootball-template.json"),
-];
-
 const BINDABLE_KEYS: &[&str] = &[
     "A",
     "B",
@@ -133,6 +128,7 @@ enum NodeTemplate {
     HoldTap,
     ToggleTap,
     Joystick,
+    Drag,
     MouseLook,
     RepeatTap,
     Macro,
@@ -164,6 +160,9 @@ enum RegionHandle {
 
 enum DragState {
     Point {
+        idx: usize,
+    },
+    DragEnd {
         idx: usize,
     },
     Pan {
@@ -351,6 +350,9 @@ impl PhantomGui {
         if let Some(path) = prefs.last_profile_path.filter(|path| path.exists()) {
             gui.load_profile(&path);
             gui.set_banner(format!("Restored {}", path.display()), false);
+        } else if let Some(path) = config::default_profile_path().filter(|path| path.exists()) {
+            gui.load_profile(&path);
+            gui.set_banner(format!("Loaded default {}", path.display()), false);
         }
         gui
     }
@@ -646,7 +648,7 @@ impl PhantomGui {
             if let Some(path) = &self.profile_path {
                 ui.label(format!("Path: {}", path.display()));
             } else {
-                ui.label("Path: unsaved template");
+                ui.label("Path: unsaved profile");
             }
         });
 
@@ -884,11 +886,38 @@ impl PhantomGui {
 
         ui.add_space(8.0);
         ui.group(|ui| {
+            ui.label(RichText::new("Profiles Directory").strong());
+            let profiles = available_profile_paths();
+            ui.label(format!("Discovered profiles: {}", profiles.len()));
+            if profiles.is_empty() {
+                ui.label(
+                    RichText::new(
+                        "No profiles found in ~/.config/phantom/profiles yet. Run install.sh or save a profile into that directory.",
+                    )
+                    .small()
+                    .color(Color32::from_gray(170)),
+                );
+            } else {
+                for path in profiles.iter().take(8) {
+                    ui.monospace(path.file_name().unwrap_or_default().to_string_lossy());
+                }
+                if profiles.len() > 8 {
+                    ui.label(
+                        RichText::new(format!("…and {} more", profiles.len() - 8))
+                            .small()
+                            .color(Color32::from_gray(170)),
+                    );
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
             ui.label(RichText::new("Product Language").strong());
-            ui.label("This UI is the Phantom Studio.");
+            ui.label("This UI is the Phantom GUI.");
             ui.label(
                 RichText::new(
-                    "The studio edits profiles, pushes them live, and helps you inspect runtime state. It is not an in-game overlay system.",
+                    "The GUI edits profiles, pushes them live, and helps you inspect runtime state. It is not an in-game overlay system.",
                 )
                 .small()
                 .color(Color32::from_gray(170)),
@@ -937,26 +966,6 @@ impl PhantomGui {
                 self.set_banner(format!("Loaded {}", path.display()), false);
             }
             Err(e) => self.set_banner(format!("Load failed: {}", e), true),
-        }
-    }
-
-    fn load_template(&mut self, file_name: &str) {
-        let path = config::profiles_dir().join(file_name);
-        match Profile::load(&path) {
-            Ok(profile) => {
-                self.profile = Some(profile);
-                self.profile_path = None;
-                self.screenshot = None;
-                self.selected = None;
-                self.dirty = true;
-                self.tool = Tool::Select;
-                self.right_panel_tab = RightPanelTab::Overview;
-                self.reset_history();
-                self.canvas_zoom = 1.0;
-                self.canvas_pan = Vec2::ZERO;
-                self.set_banner(format!("Loaded template {}", file_name), false);
-            }
-            Err(e) => self.set_banner(format!("Template load failed: {}", e), true),
         }
     }
 
@@ -1291,9 +1300,28 @@ impl PhantomGui {
                 *slot = self.next_slot()?;
                 *pos = offset_rel_pos(*pos);
             }
-            Node::Joystick { slot, pos, .. } => {
+            Node::Drag {
+                slot, start, end, ..
+            } => {
+                *slot = self.next_slot()?;
+                *start = offset_rel_pos(*start);
+                *end = offset_rel_pos(*end);
+            }
+            Node::Joystick {
+                slot,
+                pos,
+                mode,
+                region,
+                ..
+            } => {
                 *slot = self.next_slot()?;
                 *pos = offset_rel_pos(*pos);
+                if matches!(mode, JoystickMode::Floating) {
+                    if let Some(zone) = region.as_mut() {
+                        *zone = offset_region(*zone);
+                        *pos = region_center(zone);
+                    }
+                }
             }
             Node::MouseCamera { slot, region, .. } => {
                 *slot = self.next_slot()?;
@@ -1469,12 +1497,26 @@ impl PhantomGui {
                 slot,
                 pos: rel,
                 radius: 0.08,
+                mode: JoystickMode::Fixed,
+                region: None,
                 keys: JoystickKeys {
                     up: "W".into(),
                     down: "S".into(),
                     left: "A".into(),
                     right: "D".into(),
                 },
+            },
+            NodeTemplate::Drag => Node::Drag {
+                id: format!("drag_{}", slot),
+                layer: String::new(),
+                slot,
+                start: rel,
+                end: RelPos {
+                    x: rel.x,
+                    y: (rel.y - 0.18).clamp(0.0, 1.0),
+                },
+                key: "Up".into(),
+                duration_ms: 90,
             },
             NodeTemplate::MouseLook => {
                 let width = 0.55;
@@ -1618,6 +1660,7 @@ impl PhantomGui {
                     Node::Tap { key, .. }
                     | Node::HoldTap { key, .. }
                     | Node::ToggleTap { key, .. }
+                    | Node::Drag { key, .. }
                     | Node::RepeatTap { key, .. }
                     | Node::Macro { key, .. }
                     | Node::LayerShift { key, .. } => {
@@ -1784,9 +1827,12 @@ impl PhantomGui {
             self.tool = Tool::Place(NodeTemplate::Joystick);
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Num6)) {
-            self.tool = Tool::Place(NodeTemplate::MouseLook);
+            self.tool = Tool::Place(NodeTemplate::Drag);
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Num7)) {
+            self.tool = Tool::Place(NodeTemplate::MouseLook);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num8)) {
             self.tool = Tool::Place(NodeTemplate::RepeatTap);
         }
     }
@@ -1817,11 +1863,21 @@ impl PhantomGui {
                     if ui.button("Save As").clicked() {
                         self.save_profile_as();
                     }
-                    ui.menu_button("Templates", |ui| {
-                        for (label, file_name) in TEMPLATE_FILES {
-                            if ui.button(*label).clicked() {
-                                self.load_template(file_name);
-                                ui.close_menu();
+                    ui.menu_button("Profiles", |ui| {
+                        let profiles = available_profile_paths();
+                        if profiles.is_empty() {
+                            ui.label(
+                                RichText::new("No profiles found in ~/.config/phantom/profiles")
+                                    .small()
+                                    .color(Color32::from_gray(170)),
+                            );
+                        } else {
+                            for path in profiles {
+                                let label = profile_menu_label(&path);
+                                if ui.button(label).clicked() {
+                                    self.load_profile(&path);
+                                    ui.close_menu();
+                                }
                             }
                         }
                     });
@@ -1882,14 +1938,20 @@ impl PhantomGui {
                     tool_button(
                         ui,
                         &mut self.tool,
+                        Tool::Place(NodeTemplate::Drag),
+                        "Drag (6)",
+                    );
+                    tool_button(
+                        ui,
+                        &mut self.tool,
                         Tool::Place(NodeTemplate::MouseLook),
-                        "Mouse Look (6)",
+                        "Mouse Look (7)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::RepeatTap),
-                        "Rapid Tap (7)",
+                        "Rapid Tap (8)",
                     );
                     if ui.button("Add Macro").clicked() {
                         self.add_non_canvas_node(NodeTemplate::Macro);
@@ -2229,7 +2291,7 @@ impl PhantomGui {
             .default_width(390.0)
             .show(ctx, |ui| {
                 let snapshot_before = self.snapshot();
-                ui.heading("Phantom Studio");
+                ui.heading("Phantom GUI");
                 ui.add_space(6.0);
 
                 ui.horizontal_wrapped(|ui| {
@@ -2324,10 +2386,62 @@ impl PhantomGui {
                         position_editor(ui, pos, screen.as_ref(), &mut dirty);
                     }
                     Node::Joystick {
-                        layer, pos, radius, ..
+                        layer,
+                        pos,
+                        radius,
+                        mode,
+                        region,
+                        ..
                     } => {
                         layer_row(ui, layer, &mut dirty);
-                        position_editor(ui, pos, screen.as_ref(), &mut dirty);
+                        ui.horizontal(|ui| {
+                            ui.label("Mode");
+                            egui::ComboBox::from_id_salt(("joystick_mode", idx))
+                                .selected_text(match mode {
+                                    JoystickMode::Fixed => "Fixed Center",
+                                    JoystickMode::Floating => "Floating Zone",
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(mode, JoystickMode::Fixed),
+                                            "Fixed Center",
+                                        )
+                                        .clicked()
+                                    {
+                                        if let Some(zone) = region.as_ref() {
+                                            *pos = region_center(zone);
+                                        }
+                                        *mode = JoystickMode::Fixed;
+                                        *region = None;
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(mode, JoystickMode::Floating),
+                                            "Floating Zone",
+                                        )
+                                        .clicked()
+                                    {
+                                        *mode = JoystickMode::Floating;
+                                        if region.is_none() {
+                                            *region = Some(default_joystick_region(*pos));
+                                        }
+                                        dirty = true;
+                                    }
+                                });
+                        });
+                        match mode {
+                            JoystickMode::Fixed => {
+                                position_editor(ui, pos, screen.as_ref(), &mut dirty);
+                            }
+                            JoystickMode::Floating => {
+                                let zone =
+                                    region.get_or_insert_with(|| default_joystick_region(*pos));
+                                region_editor(ui, zone, screen.as_ref(), &mut dirty);
+                                *pos = region_center(zone);
+                            }
+                        }
                         ui.horizontal(|ui| {
                             ui.label("Radius");
                             let mut value = *radius;
@@ -2343,6 +2457,54 @@ impl PhantomGui {
                                 dirty = true;
                             }
                         });
+                        let mode_hint = match mode {
+                            JoystickMode::Fixed => {
+                                "Fixed Center: always drag from one exact center point. Best for games with a visible static stick."
+                            }
+                            JoystickMode::Floating => {
+                                "Floating Zone: touch starts inside the zone when movement begins, then drags from that runtime origin. Best for floating sticks and football-style movement zones."
+                            }
+                        };
+                        ui.label(
+                            RichText::new(mode_hint)
+                                .small()
+                                .color(Color32::from_gray(170)),
+                        );
+                    }
+                    Node::Drag {
+                        layer,
+                        start,
+                        end,
+                        duration_ms,
+                        ..
+                    } => {
+                        layer_row(ui, layer, &mut dirty);
+                        ui.label(RichText::new("Start").small().strong());
+                        position_editor(ui, start, screen.as_ref(), &mut dirty);
+                        ui.label(RichText::new("End").small().strong());
+                        position_editor(ui, end, screen.as_ref(), &mut dirty);
+                        ui.horizontal(|ui| {
+                            ui.label("Duration ms");
+                            let mut value = *duration_ms as f64;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut value)
+                                        .speed(1.0)
+                                        .range(16.0..=1500.0),
+                                )
+                                .changed()
+                            {
+                                *duration_ms = value as u64;
+                                dirty = true;
+                            }
+                        });
+                        ui.label(
+                            RichText::new(
+                                "Drag runs once from Start to End when the bound key is pressed. Use it for swipe games and sprint-latch style drags.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(170)),
+                        );
                     }
                     Node::MouseCamera { layer, region, .. } => {
                         layer_row(ui, layer, &mut dirty);
@@ -2359,6 +2521,7 @@ impl PhantomGui {
                     Node::Tap { key, .. }
                     | Node::HoldTap { key, .. }
                     | Node::ToggleTap { key, .. }
+                    | Node::Drag { key, .. }
                     | Node::RepeatTap { key, .. }
                     | Node::Macro { key, .. }
                     | Node::LayerShift { key, .. } => {
@@ -2921,10 +3084,9 @@ impl PhantomGui {
                         self.drag_state = hit_test(profile, content, mouse, self.selected)
                             .and_then(|hit| match hit {
                                 HitTarget::Point(idx) => Some(DragState::Point { idx }),
+                                HitTarget::DragEnd(idx) => Some(DragState::DragEnd { idx }),
                                 HitTarget::Region(idx) => profile.nodes.get(idx).and_then(|node| {
-                                    let Node::MouseCamera { region, .. } = node else {
-                                        return None;
-                                    };
+                                    let region = node_region(node)?;
                                     Some(DragState::RegionMove {
                                         idx,
                                         origin: *region,
@@ -2933,9 +3095,7 @@ impl PhantomGui {
                                 }),
                                 HitTarget::RegionHandle(idx, handle) => {
                                     profile.nodes.get(idx).and_then(|node| {
-                                        let Node::MouseCamera { region, .. } = node else {
-                                            return None;
-                                        };
+                                        let region = node_region(node)?;
                                         Some(DragState::RegionResize {
                                             idx,
                                             handle,
@@ -2948,6 +3108,7 @@ impl PhantomGui {
                     }
                     let dragged_idx = match self.drag_state.as_ref() {
                         Some(DragState::Point { idx })
+                        | Some(DragState::DragEnd { idx })
                         | Some(DragState::RegionMove { idx, .. })
                         | Some(DragState::RegionResize { idx, .. }) => Some(*idx),
                         _ => None,
@@ -2989,26 +3150,48 @@ impl PhantomGui {
                                     }
                                 }
                             }
+                            DragState::DragEnd { idx } => {
+                                let mut rel = from_canvas_pos(content, mouse);
+                                rel = snap_rel_pos(
+                                    self.profile.as_ref(),
+                                    *idx,
+                                    rel,
+                                    self.snap_to_grid,
+                                );
+                                if let Some(Node::Drag { end, .. }) = self
+                                    .profile
+                                    .as_mut()
+                                    .and_then(|profile| profile.nodes.get_mut(*idx))
+                                {
+                                    *end = rel;
+                                    self.mark_dirty();
+                                }
+                            }
                             DragState::RegionMove {
                                 idx,
                                 origin,
                                 start_mouse,
                             } => {
-                                if let Some(Node::MouseCamera { region, .. }) = self
+                                if let Some(node) = self
                                     .profile
                                     .as_mut()
                                     .and_then(|profile| profile.nodes.get_mut(*idx))
                                 {
-                                    let delta = (mouse - *start_mouse)
-                                        / Vec2::new(content.width(), content.height());
-                                    let next = Region {
-                                        x: (origin.x + delta.x as f64).clamp(0.0, 1.0 - origin.w),
-                                        y: (origin.y + delta.y as f64).clamp(0.0, 1.0 - origin.h),
-                                        w: origin.w,
-                                        h: origin.h,
-                                    };
-                                    *region = snap_region(next, self.snap_to_grid);
-                                    self.mark_dirty();
+                                    if let Some(region) = node_region_mut(node) {
+                                        let delta = (mouse - *start_mouse)
+                                            / Vec2::new(content.width(), content.height());
+                                        let next = Region {
+                                            x: (origin.x + delta.x as f64)
+                                                .clamp(0.0, 1.0 - origin.w),
+                                            y: (origin.y + delta.y as f64)
+                                                .clamp(0.0, 1.0 - origin.h),
+                                            w: origin.w,
+                                            h: origin.h,
+                                        };
+                                        *region = snap_region(next, self.snap_to_grid);
+                                        sync_node_pos_from_region(node);
+                                        self.mark_dirty();
+                                    }
                                 }
                             }
                             DragState::RegionResize {
@@ -3017,38 +3200,42 @@ impl PhantomGui {
                                 origin,
                                 start_mouse,
                             } => {
-                                if let Some(Node::MouseCamera { region, .. }) = self
+                                if let Some(node) = self
                                     .profile
                                     .as_mut()
                                     .and_then(|profile| profile.nodes.get_mut(*idx))
                                 {
-                                    let delta = (mouse - *start_mouse)
-                                        / Vec2::new(content.width(), content.height());
-                                    let mut next = *origin;
-                                    match handle {
-                                        RegionHandle::TopLeft => {
-                                            next.x = origin.x + delta.x as f64;
-                                            next.y = origin.y + delta.y as f64;
-                                            next.w = origin.w - delta.x as f64;
-                                            next.h = origin.h - delta.y as f64;
+                                    if let Some(region) = node_region_mut(node) {
+                                        let delta = (mouse - *start_mouse)
+                                            / Vec2::new(content.width(), content.height());
+                                        let mut next = *origin;
+                                        match handle {
+                                            RegionHandle::TopLeft => {
+                                                next.x = origin.x + delta.x as f64;
+                                                next.y = origin.y + delta.y as f64;
+                                                next.w = origin.w - delta.x as f64;
+                                                next.h = origin.h - delta.y as f64;
+                                            }
+                                            RegionHandle::TopRight => {
+                                                next.y = origin.y + delta.y as f64;
+                                                next.w = origin.w + delta.x as f64;
+                                                next.h = origin.h - delta.y as f64;
+                                            }
+                                            RegionHandle::BottomLeft => {
+                                                next.x = origin.x + delta.x as f64;
+                                                next.w = origin.w - delta.x as f64;
+                                                next.h = origin.h + delta.y as f64;
+                                            }
+                                            RegionHandle::BottomRight => {
+                                                next.w = origin.w + delta.x as f64;
+                                                next.h = origin.h + delta.y as f64;
+                                            }
                                         }
-                                        RegionHandle::TopRight => {
-                                            next.y = origin.y + delta.y as f64;
-                                            next.w = origin.w + delta.x as f64;
-                                            next.h = origin.h - delta.y as f64;
-                                        }
-                                        RegionHandle::BottomLeft => {
-                                            next.x = origin.x + delta.x as f64;
-                                            next.w = origin.w - delta.x as f64;
-                                            next.h = origin.h + delta.y as f64;
-                                        }
-                                        RegionHandle::BottomRight => {
-                                            next.w = origin.w + delta.x as f64;
-                                            next.h = origin.h + delta.y as f64;
-                                        }
+                                        *region =
+                                            snap_region(clamp_region(next), self.snap_to_grid);
+                                        sync_node_pos_from_region(node);
+                                        self.mark_dirty();
                                     }
-                                    *region = snap_region(clamp_region(next), self.snap_to_grid);
-                                    self.mark_dirty();
                                 }
                             }
                         }
@@ -3111,6 +3298,34 @@ fn load_studio_prefs() -> StudioPrefs {
     }
 }
 
+fn available_profile_paths() -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+    let dir = config::profiles_dir();
+    let Ok(read_dir) = std::fs::read_dir(&dir) else {
+        return entries;
+    };
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") && path.is_file() {
+            entries.push(path);
+        }
+    }
+
+    entries.sort_by_key(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    });
+    entries
+}
+
+fn profile_menu_label(path: &Path) -> String {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().replace('-', " "))
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 fn hotkey_label(value: Option<Key>) -> String {
     match value {
         Some(key) => format!("{:?}", key),
@@ -3166,6 +3381,7 @@ fn find_phantom_binary() -> Option<PathBuf> {
 #[derive(Clone, Copy)]
 enum HitTarget {
     Point(usize),
+    DragEnd(usize),
     Region(usize),
     RegionHandle(usize, RegionHandle),
 }
@@ -3173,7 +3389,10 @@ enum HitTarget {
 impl HitTarget {
     fn idx(self) -> usize {
         match self {
-            HitTarget::Point(idx) | HitTarget::Region(idx) | HitTarget::RegionHandle(idx, _) => idx,
+            HitTarget::Point(idx)
+            | HitTarget::DragEnd(idx)
+            | HitTarget::Region(idx)
+            | HitTarget::RegionHandle(idx, _) => idx,
         }
     }
 }
@@ -3185,7 +3404,13 @@ fn hit_test(
     selected: Option<usize>,
 ) -> Option<HitTarget> {
     if let Some(idx) = selected {
-        if let Some(Node::MouseCamera { region, .. }) = profile.nodes.get(idx) {
+        if let Some(Node::Drag { end, .. }) = profile.nodes.get(idx) {
+            let end_point = to_canvas_pos(content, end);
+            if (end_point - mouse).length() <= 14.0 {
+                return Some(HitTarget::DragEnd(idx));
+            }
+        }
+        if let Some(region) = profile.nodes.get(idx).and_then(node_region) {
             let rect = region_rect(content, region);
             for (handle, handle_rect) in region_handles(rect) {
                 if handle_rect.contains(mouse) {
@@ -3200,15 +3425,16 @@ fn hit_test(
 
     let mut best = None;
     for (idx, node) in profile.nodes.iter().enumerate() {
+        if let Some(region) = node_region(node) {
+            if region_rect(content, region).contains(mouse) {
+                return Some(HitTarget::Region(idx));
+            }
+        }
         if let Some(pos) = node_pos(node) {
             let point = to_canvas_pos(content, pos);
             let distance = (point - mouse).length();
             if distance <= 22.0 && best.is_none_or(|(_, best_distance)| distance < best_distance) {
                 best = Some((idx, distance));
-            }
-        } else if let Node::MouseCamera { region, .. } = node {
-            if region_rect(content, region).contains(mouse) {
-                return Some(HitTarget::Region(idx));
             }
         }
     }
@@ -3229,7 +3455,7 @@ fn draw_node(
     } else {
         Color32::WHITE
     };
-    if let Node::MouseCamera { region, .. } = node {
+    if let Some(region) = node_region(node) {
         let rect = region_rect(content, region);
         painter.rect_filled(rect, 8.0, color.gamma_multiply(0.08));
         painter.rect_stroke(
@@ -3241,6 +3467,27 @@ fn draw_node(
             ),
             StrokeKind::Outside,
         );
+        if let Node::Joystick { radius, .. } = node {
+            let center = to_canvas_pos(content, &region_center(region));
+            let radius_px = (*radius as f32 * content.width()).max(16.0);
+            painter.circle_stroke(
+                center,
+                radius_px,
+                Stroke::new(2.0, color.gamma_multiply(0.65)),
+            );
+            let marker_radius = if selected { 16.0 } else { 12.0 };
+            painter.circle_filled(center, marker_radius, color);
+            if selected || layer_active {
+                painter.circle_stroke(center, marker_radius + 3.0, Stroke::new(2.0, accent));
+            }
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                marker_glyph(node),
+                egui::FontId::proportional(12.0),
+                Color32::BLACK,
+            );
+        }
         if selected {
             for (_, handle_rect) in region_handles(rect) {
                 painter.rect_filled(handle_rect, 2.0, accent);
@@ -3260,6 +3507,15 @@ fn draw_node(
         return;
     };
     let point = to_canvas_pos(content, pos);
+
+    if let Node::Drag { end, .. } = node {
+        let end_point = to_canvas_pos(content, end);
+        painter.line_segment(
+            [point, end_point],
+            Stroke::new(if selected { 3.0 } else { 2.0 }, color.gamma_multiply(0.8)),
+        );
+        painter.circle_stroke(end_point, 8.0, Stroke::new(2.0, color.gamma_multiply(0.9)));
+    }
 
     if let Node::Joystick { radius, .. } = node {
         let radius_px = (*radius as f32 * content.width()).max(16.0);
@@ -3299,6 +3555,7 @@ fn display_type(node: &Node) -> &'static str {
         Node::HoldTap { .. } => "Hold Button",
         Node::ToggleTap { .. } => "Toggle Button",
         Node::Joystick { .. } => "Left Stick",
+        Node::Drag { .. } => "Drag Gesture",
         Node::MouseCamera { .. } => "Mouse Look",
         Node::RepeatTap { .. } => "Rapid Tap",
         Node::Macro { .. } => "Macro",
@@ -3311,6 +3568,7 @@ fn display_binding(node: &Node) -> String {
         Node::Tap { key, .. }
         | Node::HoldTap { key, .. }
         | Node::ToggleTap { key, .. }
+        | Node::Drag { key, .. }
         | Node::RepeatTap { key, .. }
         | Node::Macro { key, .. }
         | Node::LayerShift { key, .. } => key.clone(),
@@ -3339,10 +3597,47 @@ fn node_color(node: &Node) -> Color32 {
         Node::HoldTap { .. } => COLOR_HOLD,
         Node::ToggleTap { .. } => COLOR_TOGGLE,
         Node::Joystick { .. } => COLOR_JOYSTICK,
+        Node::Drag { .. } => COLOR_DRAG,
         Node::MouseCamera { .. } => COLOR_LOOK,
         Node::RepeatTap { .. } => COLOR_REPEAT,
         Node::Macro { .. } => COLOR_MACRO,
         Node::LayerShift { .. } => COLOR_LAYER,
+    }
+}
+
+fn node_region(node: &Node) -> Option<&Region> {
+    match node {
+        Node::Joystick {
+            mode: JoystickMode::Floating,
+            region: Some(region),
+            ..
+        }
+        | Node::MouseCamera { region, .. } => Some(region),
+        _ => None,
+    }
+}
+
+fn node_region_mut(node: &mut Node) -> Option<&mut Region> {
+    match node {
+        Node::Joystick {
+            mode: JoystickMode::Floating,
+            region: Some(region),
+            ..
+        }
+        | Node::MouseCamera { region, .. } => Some(region),
+        _ => None,
+    }
+}
+
+fn sync_node_pos_from_region(node: &mut Node) {
+    if let Node::Joystick {
+        mode: JoystickMode::Floating,
+        pos,
+        region: Some(region),
+        ..
+    } = node
+    {
+        *pos = region_center(region);
     }
 }
 
@@ -3352,6 +3647,7 @@ fn marker_glyph(node: &Node) -> &'static str {
         Node::HoldTap { .. } => "H",
         Node::ToggleTap { .. } => "G",
         Node::Joystick { .. } => "J",
+        Node::Drag { .. } => "D",
         Node::MouseCamera { .. } => "M",
         Node::RepeatTap { .. } => "R",
         Node::Macro { .. } => "C",
@@ -3364,9 +3660,20 @@ fn node_pos(node: &Node) -> Option<&RelPos> {
         Node::Tap { pos, .. }
         | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
-        | Node::Joystick { pos, .. }
+        | Node::Drag { start: pos, .. }
         | Node::RepeatTap { pos, .. } => Some(pos),
-        Node::MouseCamera { .. } | Node::Macro { .. } | Node::LayerShift { .. } => None,
+        Node::Joystick {
+            mode: JoystickMode::Fixed,
+            pos,
+            ..
+        } => Some(pos),
+        Node::Joystick {
+            mode: JoystickMode::Floating,
+            ..
+        }
+        | Node::MouseCamera { .. }
+        | Node::Macro { .. }
+        | Node::LayerShift { .. } => None,
     }
 }
 
@@ -3375,9 +3682,20 @@ fn node_pos_mut(node: &mut Node) -> Option<&mut RelPos> {
         Node::Tap { pos, .. }
         | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
-        | Node::Joystick { pos, .. }
+        | Node::Drag { start: pos, .. }
         | Node::RepeatTap { pos, .. } => Some(pos),
-        Node::MouseCamera { .. } | Node::Macro { .. } | Node::LayerShift { .. } => None,
+        Node::Joystick {
+            mode: JoystickMode::Fixed,
+            pos,
+            ..
+        } => Some(pos),
+        Node::Joystick {
+            mode: JoystickMode::Floating,
+            ..
+        }
+        | Node::MouseCamera { .. }
+        | Node::Macro { .. }
+        | Node::LayerShift { .. } => None,
     }
 }
 
@@ -3387,6 +3705,7 @@ fn set_node_id(node: &mut Node, id: String) {
         | Node::HoldTap { id: field, .. }
         | Node::ToggleTap { id: field, .. }
         | Node::Joystick { id: field, .. }
+        | Node::Drag { id: field, .. }
         | Node::MouseCamera { id: field, .. }
         | Node::RepeatTap { id: field, .. }
         | Node::Macro { id: field, .. }
@@ -3401,6 +3720,7 @@ fn tool_label(tool: Tool) -> &'static str {
         Tool::Place(NodeTemplate::HoldTap) => "hold button",
         Tool::Place(NodeTemplate::ToggleTap) => "toggle button",
         Tool::Place(NodeTemplate::Joystick) => "left stick",
+        Tool::Place(NodeTemplate::Drag) => "drag gesture",
         Tool::Place(NodeTemplate::MouseLook) => "mouse look region",
         Tool::Place(NodeTemplate::RepeatTap) => "rapid tap button",
         Tool::Place(NodeTemplate::Macro) => "macro",
@@ -3673,6 +3993,22 @@ fn rel_to_pixels(pos: &RelPos, screen: &ScreenOverride) -> (i32, i32) {
     )
 }
 
+fn region_center(region: &Region) -> RelPos {
+    RelPos {
+        x: round3(region.x + region.w / 2.0),
+        y: round3(region.y + region.h / 2.0),
+    }
+}
+
+fn default_joystick_region(center: RelPos) -> Region {
+    clamp_region(Region {
+        x: center.x - 0.18,
+        y: center.y - 0.18,
+        w: 0.36,
+        h: 0.36,
+    })
+}
+
 fn region_rect(content: Rect, region: &Region) -> Rect {
     Rect::from_min_size(
         to_canvas_pos(
@@ -3801,6 +4137,7 @@ fn node_id_prefix(node: &Node) -> &'static str {
         Node::HoldTap { .. } => "hold",
         Node::ToggleTap { .. } => "toggle",
         Node::Joystick { .. } => "stick",
+        Node::Drag { .. } => "drag",
         Node::MouseCamera { .. } => "look",
         Node::RepeatTap { .. } => "rapid",
         Node::Macro { .. } => "macro",
@@ -3833,12 +4170,63 @@ fn draw_hover_card(
         Node::Tap { pos, .. }
         | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
-        | Node::Joystick { pos, .. }
         | Node::RepeatTap { pos, .. } => {
             lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
             if let Some(screen) = screen {
                 let (px, py) = rel_to_pixels(pos, screen);
                 lines.push(format!("Pixels: {}, {}", px, py));
+            }
+        }
+        Node::Joystick {
+            pos,
+            radius,
+            mode,
+            region,
+            ..
+        } => {
+            lines.push(format!(
+                "Mode: {}",
+                match mode {
+                    JoystickMode::Fixed => "fixed",
+                    JoystickMode::Floating => "floating",
+                }
+            ));
+            lines.push(format!("Radius: {:.3}", radius));
+            match (mode, region) {
+                (JoystickMode::Fixed, _) => {
+                    lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
+                    if let Some(screen) = screen {
+                        let (px, py) = rel_to_pixels(pos, screen);
+                        lines.push(format!("Pixels: {}, {}", px, py));
+                    }
+                }
+                (JoystickMode::Floating, Some(region)) => {
+                    lines.push(format!(
+                        "Zone: {:.3}, {:.3}, {:.3}, {:.3}",
+                        region.x, region.y, region.w, region.h
+                    ));
+                }
+                (JoystickMode::Floating, None) => {
+                    lines.push("Zone: missing".into());
+                }
+            }
+        }
+        Node::Drag {
+            start,
+            end,
+            duration_ms,
+            ..
+        } => {
+            lines.push(format!("Start: {:.3}, {:.3}", start.x, start.y));
+            lines.push(format!("End: {:.3}, {:.3}", end.x, end.y));
+            lines.push(format!("Duration: {} ms", duration_ms));
+            if let Some(screen) = screen {
+                let (start_x, start_y) = rel_to_pixels(start, screen);
+                let (end_x, end_y) = rel_to_pixels(end, screen);
+                lines.push(format!(
+                    "Pixels: {} , {} -> {} , {}",
+                    start_x, start_y, end_x, end_y
+                ));
             }
         }
         Node::MouseCamera {
@@ -4048,14 +4436,14 @@ fn main() -> eframe::Result<()> {
             .with_inner_size([1440.0, 920.0])
             .with_min_inner_size([1200.0, 760.0])
             .with_title(format!(
-                "Phantom Studio {} — Mapping Studio",
+                "Phantom GUI {} — Mapping GUI",
                 env!("CARGO_PKG_VERSION")
             )),
         ..Default::default()
     };
 
     eframe::run_native(
-        "phantom-studio",
+        "phantom-gui",
         options,
         Box::new(|cc| Ok(Box::new(PhantomGui::new(cc)))),
     )
@@ -4076,9 +4464,9 @@ fn should_print_version() -> bool {
 fn print_help() {
     let binary = current_gui_binary_name();
     println!(
-        r#"Phantom Studio {version}
+        r#"Phantom GUI {version}
 
-Fullscreen mapping studio and runtime control surface for Phantom.
+Fullscreen mapping GUI and runtime control surface for Phantom.
 
 USAGE:
     {binary}
@@ -4094,7 +4482,7 @@ FLAGS:
 
 fn print_version() {
     println!(
-        "Phantom Studio {} ({})",
+        "Phantom GUI {} ({})",
         env!("CARGO_PKG_VERSION"),
         current_gui_binary_name()
     );

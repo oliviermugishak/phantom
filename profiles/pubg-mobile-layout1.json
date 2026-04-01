@@ -1,0 +1,88 @@
+{
+  "name": "PUBG Mobile Layout 1",
+  "version": 1,
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
+  "global_sensitivity": 1.0,
+  "nodes": [
+    {
+      "id": "move",
+      "type": "joystick",
+      "slot": 0,
+      "pos": { "x": 0.158, "y": 0.789 },
+      "radius": 0.082,
+      "mode": "fixed",
+      "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
+    },
+    {
+      "id": "sprint_lock",
+      "type": "drag",
+      "slot": 1,
+      "start": { "x": 0.158, "y": 0.789 },
+      "end": { "x": 0.158, "y": 0.294 },
+      "key": "LeftShift",
+      "duration_ms": 110
+    },
+    {
+      "id": "camera",
+      "type": "mouse_camera",
+      "slot": 2,
+      "region": { "x": 0.34, "y": 0.0, "w": 0.66, "h": 1.0 },
+      "sensitivity": 1.15,
+      "activation_mode": "while_held",
+      "activation_key": "MouseRight",
+      "invert_y": false
+    },
+    {
+      "id": "fire",
+      "type": "hold_tap",
+      "slot": 3,
+      "pos": { "x": 0.861, "y": 0.782 },
+      "key": "MouseLeft"
+    },
+    {
+      "id": "free_look",
+      "type": "hold_tap",
+      "slot": 4,
+      "pos": { "x": 0.819, "y": 0.412 },
+      "key": "LeftAlt"
+    },
+    {
+      "id": "interact",
+      "type": "tap",
+      "slot": 5,
+      "pos": { "x": 0.720, "y": 0.532 },
+      "key": "F"
+    },
+    {
+      "id": "jump",
+      "type": "tap",
+      "slot": 6,
+      "pos": { "x": 0.966, "y": 0.793 },
+      "key": "Space"
+    },
+    {
+      "id": "crouch",
+      "type": "tap",
+      "slot": 7,
+      "pos": { "x": 0.944, "y": 0.911 },
+      "key": "C"
+    },
+    {
+      "id": "prone",
+      "type": "tap",
+      "slot": 8,
+      "pos": { "x": 0.846, "y": 0.911 },
+      "key": "Z"
+    },
+    {
+      "id": "grenade",
+      "type": "tap",
+      "slot": 9,
+      "pos": { "x": 0.767, "y": 0.892 },
+      "key": "G"
+    }
+  ]
+}

@@ -51,7 +51,7 @@ Important requests:
 ### `load_profile`
 
 ```json
-{"cmd":"load_profile","path":"~/.config/phantom/profiles/pubg.json"}
+{"cmd":"load_profile","path":"~/.config/phantom/profiles/pubg-mobile-layout1.json"}
 ```
 
 ### `enter_capture`

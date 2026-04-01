@@ -18,6 +18,8 @@ fn pubg_profile() -> Profile {
                 slot: 0,
                 pos: RelPos { x: 0.18, y: 0.72 },
                 radius: 0.07,
+                mode: JoystickMode::Fixed,
+                region: None,
                 keys: JoystickKeys {
                     up: "W".into(),
                     down: "S".into(),
@@ -616,6 +618,8 @@ fn simultaneous_tap_and_joystick() {
                 slot: 0,
                 pos: RelPos { x: 0.2, y: 0.7 },
                 radius: 0.07,
+                mode: JoystickMode::Fixed,
+                region: None,
                 keys: JoystickKeys {
                     up: "W".into(),
                     down: "S".into(),
