@@ -1,50 +1,40 @@
 # Total Scope
 
-This document is the current product scope for Phantom after the runtime and GUI rebuild.
+This file is the product charter for Phantom as it exists now.
 
-## 1. Product Definition
+## Product Definition
 
-Phantom is a native fullscreen Waydroid gaming mapper for one Linux device and one known touch resolution.
+Phantom is a Waydroid-focused fullscreen game mapper.
 
-It is not trying to be:
+It maps Linux keyboard and mouse input into Android multi-touch gestures for one known Android surface size.
 
-- a generic Android automation platform
-- a desktop cursor remapper
-- a compositor plugin
-- a full Android emulator
+## Primary Architecture
 
-That narrower shape is intentional.
+Primary path:
 
-## 2. Current Implemented Scope
+- host `evdev` capture
+- host profile engine
+- Android-side touch injection through `app_process`
 
-### 2.1 Runtime
+Compatibility path:
 
-Implemented:
+- host `uinput` virtual touchscreen injection
 
-- evdev keyboard and mouse capture
-- exclusive `EVIOCGRAB`
-- uinput direct-touch injection
-- fixed fullscreen screen contract
-- live profile load from disk
-- live in-memory profile push over IPC
-- capture enter and exit at runtime
-- pause and resume at runtime
-- layer switching
-- toggle touch nodes
+The primary path is the one maintainers should optimize, document, and extend first.
 
-Daemon control paths:
+## Supported Scope
 
-- CLI
-- IPC
-- GUI toolbar
-- runtime hotkeys
+Implemented and supported:
 
-Daemon hotkeys:
+- one local machine
+- one fullscreen Waydroid target
+- explicit screen contract
+- live daemon control
+- live GUI profile editing
+- Android framework touch injection
+- fallback `uinput` injection
 
-- `F8` toggles capture
-- `F9` toggles pause
-
-### 2.2 Supported Mapping Primitives
+Supported mapping primitives:
 
 - `tap`
 - `hold_tap`
@@ -55,191 +45,47 @@ Daemon hotkeys:
 - `macro`
 - `layer_shift`
 
-In product language, `mouse_camera` is presented as `Mouse Look`.
+## Deliberately Out Of Scope
 
-### 2.3 GUI
+Not product goals:
 
-The GUI is now a real mapper workflow, not just a JSON editor.
-
-Implemented:
-
-- native desktop app with `egui`
-- open, create, save, save-as
-- built-in template loading
-- screenshot-first canvas
-- placement tools for common control types
-- direct drag editing for points
-- direct drag and resize handles for mouse-look regions
-- zoom, pan, and snapping on the canvas
-- hover cards and right-click context actions
-- inline rename
-- key capture by pressing keyboard or mouse input
-- undo and redo
-- copy, paste, duplicate, and reorder
-- pixel coordinate feedback in the editor
-- layer editing
-- macro step editing
-- runtime status panel
-- active-layer highlighting from daemon status
-- `Push Live`
-- capture buttons
-- pause/resume buttons through daemon requests
-
-### 2.4 Screen Contract
-
-This is now enforced.
-
-Rules:
-
-- daemon startup requires a known screen size from config or default profile
-- real profiles require a `screen` block
-- profile load fails if the daemon `screen` and profile `screen` do not match
-
-This is the right design for the target use case.
-
-## 3. What The Product Can Realistically Do Now
-
-For fixed-layout mobile games, Phantom can now cover the normal gameplay loop well.
-
-### 3.1 PUBG-like Layouts
-
-Supported well:
-
-- WASD movement
-- mouse look
-- fire
-- jump
-- crouch
-- reload
-- repeat taps
-- alternate control layers
-- toggle actions
-
-### 3.2 eFootball-like Layouts
-
-Supported well:
-
-- left stick movement
-- pass
-- through pass
-- shoot
-- switch
-- sprint or pressure holds
-
-### 3.3 General Rule
-
-If the game control can be expressed as:
-
-- a fixed tap
-- a hold
-- a toggle hold
-- a fixed joystick
-- a bounded swipe region
-- a repeated tap
-- a short scripted macro
-
-then Phantom can map it.
-
-## 4. What Is Still Hard Or Missing
-
-### 4.1 Still Not Solved
-
-- dynamic or floating joystick detection
-- automatic UI recognition
-- windowed-mode transform handling
+- dynamic UI recognition
+- floating joystick discovery
+- generic Android automation
+- cursor-level desktop remapping
 - multi-monitor correctness
-- rotation-aware remapping
-- hotplug rescan for new keyboards or mice
-- compositor-driven cursor hiding
+- orientation-aware transformation logic
+- compositor plugins
 
-### 4.2 Current Mouse Lock Reality
+## Quality Bar
 
-The gameplay lock model is now usable:
+The project should prefer:
 
-- capture on -> desktop loses the grabbed mouse and keyboard
-- capture off -> desktop input returns
+- deterministic behavior over heuristics
+- explicit config over implicit guessing
+- maintainable architecture over hacks
+- good docs over tribal knowledge
+- debuggable runtime state over hidden magic
 
-What is still not done:
+## Documentation Requirement
 
-- compositor-native cursor hiding
-- a runtime overlay
-- a separate lightweight gameplay HUD process
+The codebase is not considered maintainable unless these stay current:
 
-### 4.3 Current UI Gaps
+- top-level README
+- install and rebuild path from a clean machine
+- architecture and design decisions
+- operations and test flow
+- profile schema
+- backend protocol reference
 
-The editor is much better now, but still not final-polish.
+## Near-Term Direction
 
-Still missing:
+The next layers of value are:
 
-- conflict visualization while editing
-- full modifier-combination bindings such as `Ctrl+F`
-- calibration wizard
-- a richer preset browser
-- drag-from-palette placement instead of toolbar-first placement
+- better gameplay workflows
+- stronger templates
+- clearer runtime state
+- better testing and diagnostics
+- cleaner maintainer docs
 
-## 5. Why This Is Closer To Emulator Keymappers
-
-GameLoop-style tools feel smooth because they own:
-
-- the guest display size
-- the render surface
-- the capture lifecycle
-- the mapper UI
-
-Phantom still does not own the emulator itself, but it now covers the host-side qualities that matter most:
-
-- deterministic resolution
-- explicit capture and release
-- live profile push
-- mouse look
-- layers
-- toggles
-- a real visual editor
-
-That is the right equivalent for the Waydroid architecture.
-
-## 6. Current Product Direction
-
-Do not broaden the scope.
-
-The correct direction is:
-
-- fullscreen only
-- one configured resolution
-- native UI
-- game-first mapping workflow
-- strong runtime controls
-
-That is how Phantom becomes a practical immersive tool instead of a permanently unfinished “general mapper.”
-
-## 7. Next Roadmap
-
-### P0: Finish The Fullscreen Gaming Loop
-
-- add a dedicated overlay or HUD for capture state
-- add full modifier-combination binding support
-- add conflict warnings in the editor
-- add more complete starter profiles for PUBG and eFootball
-
-### P1: Improve Placement And Tuning
-
-- add calibration workflow
-- add richer macro editing presets
-- add palette drag-and-drop placement
-
-### P2: Runtime Polish
-
-- add a lightweight launcher flow
-- add better diagnostics when Waydroid does not expose the device
-- add optional profile auto-push on selected edit operations instead of only save or button press
-
-## 8. Bottom Line
-
-Phantom is now on the right architecture for the stated goal:
-
-- fullscreen Waydroid gaming
-- locked screen size
-- keyboard and mouse touch mapping
-- live editor workflow
-
-The remaining work is mostly polish, templates, and runtime UX. The core product shape is no longer the blocker.
+The core architecture is no longer the blocker. Maintainability, usability, and profile quality are now the center of work.

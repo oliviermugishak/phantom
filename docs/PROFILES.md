@@ -1,10 +1,12 @@
-# Profile Format
+# Profiles
 
-Profiles are JSON files stored in `~/.config/phantom/profiles/`.
+Profiles are JSON files stored in:
 
-They map keyboard and mouse input to one fixed Android touch surface.
+- `~/.config/phantom/profiles/`
 
-## Top-Level Schema
+They describe how physical keyboard and mouse input should become Android touch behavior.
+
+## 1. Top-Level Schema
 
 ```json
 {
@@ -16,63 +18,77 @@ They map keyboard and mouse input to one fixed Android touch surface.
 }
 ```
 
-| Field | Required | Notes |
-|---|---|---|
-| `name` | yes | profile display name |
-| `version` | yes | must be `1` |
-| `screen` | yes | required fullscreen touch contract |
-| `global_sensitivity` | no | default `1.0`, must be positive |
-| `nodes` | yes | must not be empty |
+Fields:
 
-## Coordinates
+- `name`
+  Human-readable profile name.
+- `version`
+  Must be `1`.
+- `screen`
+  Required screen contract for the profile.
+- `global_sensitivity`
+  Multiplier applied to mouse-look sensitivity.
+- `nodes`
+  Control definitions.
+
+## 2. Screen Contract
+
+The profile `screen` must match the daemon `screen`.
+
+Why:
+
+- Phantom does not guess transforms at runtime
+- profile coordinates are normalized against this explicit surface
+
+If the profile and daemon disagree, profile load is rejected.
+
+## 3. Coordinates
 
 All positions are normalized to `[0.0, 1.0]`.
 
 ```text
 (0.0, 0.0) ---------------- (1.0, 0.0)
    |                             |
-   |        touch surface        |
+   |        Android surface      |
    |                             |
 (0.0, 1.0) ---------------- (1.0, 1.0)
 ```
 
-At runtime:
+Runtime conversion:
 
 ```text
 pixel_x = rel_x * screen_width
 pixel_y = rel_y * screen_height
 ```
 
-This only works when the daemon `screen` and the profile `screen` match the real Waydroid surface.
+## 4. Slot Rules
 
-## `screen`
+Slot-bearing nodes use touch slots `0..9`.
+
+Rules:
+
+- slot-bearing nodes must use unique slots
+- joysticks use one slot for the whole stick
+- `mouse_camera` also consumes one slot
+
+This is why `phantom audit` is so important.
+
+## 5. Layers
+
+Action nodes may include:
 
 ```json
-"screen": { "width": 1920, "height": 1080 }
+"layer": "combat"
 ```
 
 Rules:
 
-- width and height must be greater than zero
-- the values must match the daemon touchscreen resolution
-- Phantom rejects the load if the profile and daemon disagree
+- empty layer means base layer
+- `layer_shift` activates named layers
+- a base-layer key may not also be reused in a non-base layer
+- the same key may be reused across different non-base layers
 
-## Layer Model
-
-Action nodes can carry an optional `layer` string.
-
-Rules:
-
-- empty `layer` means base layer
-- `layer_shift` nodes activate named layers
-- base-layer keys cannot be reused in alternate layers
-- reusing the same key across two non-base layers is allowed
-
-This is how you build alternate game states without turning the editor into a scripting system.
-
-## Node Types
-
-Slot-bearing nodes use slots `0..9`. Those slots must stay unique across all slot-bearing nodes.
+## 6. Node Types
 
 ### `tap`
 
@@ -88,8 +104,8 @@ Slot-bearing nodes use slots `0..9`. Those slots must stay unique across all slo
 
 Behavior:
 
-- key press -> touch down
-- key release -> touch up
+- key press -> `TouchDown`
+- key release -> `TouchUp`
 
 ### `hold_tap`
 
@@ -105,9 +121,9 @@ Behavior:
 
 Behavior:
 
-- key press -> touch down
-- key held -> finger stays down
-- key release -> touch up
+- key press -> `TouchDown`
+- key held -> finger remains down
+- key release -> `TouchUp`
 
 ### `toggle_tap`
 
@@ -123,11 +139,9 @@ Behavior:
 
 Behavior:
 
-- first key press -> touch down
-- next key press -> touch up
+- first press -> `TouchDown`
+- second press -> `TouchUp`
 - key release does nothing
-
-This is the simplest way to implement toggle-style holds.
 
 ### `joystick`
 
@@ -138,47 +152,75 @@ This is the simplest way to implement toggle-style holds.
   "slot": 0,
   "pos": { "x": 0.18, "y": 0.72 },
   "radius": 0.07,
-  "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
+  "keys": {
+    "up": "W",
+    "down": "S",
+    "left": "A",
+    "right": "D"
+  }
 }
 ```
 
 Behavior:
 
-- first direction key -> touch down at `pos`, then move to the offset
-- direction changes -> touch move
-- all direction keys released -> touch up
+- first direction press -> finger down at stick center, then move to the offset
+- direction changes -> `TouchMove`
+- all directions released -> `TouchUp`
 
 Notes:
 
 - diagonals are normalized
 - opposing directions cancel
-- this is a fixed-center joystick
+- joystick center is fixed
 
 ### `mouse_camera`
 
 ```json
 {
-  "id": "look",
+  "id": "camera",
   "type": "mouse_camera",
   "slot": 1,
   "region": { "x": 0.35, "y": 0.0, "w": 0.65, "h": 1.0 },
   "sensitivity": 1.2,
+  "activation_mode": "while_held",
+  "activation_key": "MouseRight",
   "invert_y": false
 }
 ```
 
-In the UI this is shown as `Mouse Look`.
+In the GUI this appears as `Mouse Look`.
+
+Fields:
+
+- `region`
+  Bounded normalized swipe region.
+- `sensitivity`
+  Node-local multiplier.
+- `activation_mode`
+  One of:
+  - `always_on`
+  - `while_held`
+  - `toggle`
+- `activation_key`
+  Required for `while_held` and `toggle`, omitted for `always_on`.
+- `invert_y`
+  Inverts vertical mouse input.
 
 Behavior:
 
-- first mouse movement -> finger goes down near the region center
-- every mouse delta -> touch move inside the region
-- if mouse movement stops, the synthetic finger is released shortly afterward
+- `always_on`
+  - mouse movement immediately drives the look region while capture and mouse routing are active
+- `while_held`
+  - movement only drives the look region while the activation key is held
+- `toggle`
+  - the activation key toggles look mode on and off
+- when movement stops, the synthetic finger is released shortly afterward
+- disabling look mode emits an immediate `TouchUp`
 
-Notes:
+Important:
 
-- the final sensitivity is `node.sensitivity * global_sensitivity`
-- this is for look or swipe regions, not desktop pointer emulation
+- `mouse_camera` is camera/look emulation
+- it is not a desktop cursor or generic pointer
 
 ### `repeat_tap`
 
@@ -195,8 +237,8 @@ Notes:
 
 Behavior:
 
-- key press starts a repeating down/up cycle
-- key release stops the cycle and releases the slot
+- key press starts a repeating touch cycle
+- key release stops it and releases the slot
 
 ### `macro`
 
@@ -215,9 +257,8 @@ Behavior:
 Behavior:
 
 - key press starts the sequence
-- each step waits for `delay_ms` before running
-- `down` steps require `pos`
-- releasing the macro key stops the macro and lifts active slots
+- each step waits for its `delay_ms`
+- key release stops the macro and releases active slots
 
 ### `layer_shift`
 
@@ -233,72 +274,68 @@ Behavior:
 
 Behavior:
 
-- `mode: "hold"` activates the layer while the key is held
-- `mode: "toggle"` turns the layer on or off on each key press
-- deactivating a layer releases active touches owned by nodes in that layer
+- `hold` -> layer active while key is held
+- `toggle` -> layer active until pressed again
 
-## Common Optional Fields
+Deactivating a layer releases touches owned by nodes in that layer.
 
-Action nodes support:
+## 7. Validation Rules
 
-```json
-"layer": "combat"
-```
-
-If omitted, the node lives in the base layer.
-
-## Validation Rules
-
-Phantom rejects invalid profiles at load time.
+Profiles are rejected if they violate the schema or behavioral rules.
 
 Important rules:
 
 - `version == 1`
-- `screen` is required
+- `screen` required
 - `global_sensitivity > 0`
-- `nodes` must not be empty
-- node IDs must be unique
-- slot-bearing nodes must use unique slots in `0..9`
-- positions and regions must stay inside `[0, 1]`
-- `joystick.radius` must be in `(0, 1]`
-- `mouse_camera.sensitivity` must be positive
+- node IDs unique
+- slot-bearing nodes use unique slots in `0..9`
+- coordinates and regions stay within `[0, 1]`
+- joystick radius is in `(0, 1]`
+- `mouse_camera.sensitivity > 0`
+- `mouse_camera.activation_key` required for `while_held` and `toggle`
+- `mouse_camera.activation_key` omitted for `always_on`
 - macro `down` steps require `pos`
-- every bound key must be known to Phantom
-- base-layer keys cannot be duplicated in alternate layers
-- a `layer_shift` key cannot also be an action key
+- all key names must be known to Phantom
 
-## Common Key Names
+## 8. Common Key Names
 
 Examples:
 
-- keyboard: `W`, `A`, `S`, `D`, `Space`, `LeftShift`, `LeftCtrl`, `Enter`, `Esc`
+- keyboard: `W`, `A`, `S`, `D`, `Space`, `Enter`, `Esc`, `LeftShift`
 - mouse buttons: `MouseLeft`, `MouseRight`, `MouseMiddle`, `MouseBack`, `MouseForward`
-- mouse wheel: `WheelUp`, `WheelDown`
+- wheel: `WheelUp`, `WheelDown`
+- function keys: `F1` through `F12`
 
-Matching is case-insensitive.
+## 9. Profile Authoring Guidelines
 
-## Example Patterns
+Good practice:
 
-### PUBG Mobile
+- keep slot usage simple and explicit
+- keep the profile screen exact
+- prefer one control concept per node
+- use `phantom audit` after every meaningful edit
+- use `while_held` or `toggle` for `mouse_camera` when the game needs mode control
 
-- `joystick` on the left
-- `mouse_camera` on the right
-- `hold_tap` for fire
-- `toggle_tap` or `hold_tap` for scope
-- `tap` for jump, crouch, reload
-- `layer_shift` if you want alternate combat bindings
+## 10. Example Patterns
 
-### Genshin Impact
+### PUBG-like
 
-- `joystick`
-- `mouse_camera`
-- `repeat_tap` for attack spam
+- one joystick
+- one `mouse_camera`
+- one `hold_tap` for fire
+- one `hold_tap` or `toggle_tap` for ADS
+- `mouse_camera` mode chosen to match the aiming workflow
+
+### Genshin-like
+
+- one joystick
+- one `mouse_camera`
+- `repeat_tap` for repeated attacks
 - `tap` for skill and burst
 
-### eFootball
+### Football-like
 
-- `joystick` for movement
-- `tap` for pass, through pass, shoot, switch
+- one joystick
+- `tap` for pass, shoot, switch
 - `hold_tap` for sprint or pressure
-
-Use `profiles/efootball-template.json` as a base and tune it in the GUI.

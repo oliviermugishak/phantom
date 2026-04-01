@@ -31,6 +31,9 @@ pub enum IpcRequest {
     EnterCapture,
     ExitCapture,
     ToggleCapture,
+    GrabMouse,
+    ReleaseMouse,
+    ToggleMouse,
     Shutdown,
 }
 
@@ -53,6 +56,10 @@ pub struct IpcResponse {
     pub paused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture_active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse_grabbed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyboard_grabbed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sensitivity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,6 +246,10 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
         }
         IpcRequest::Status => {
             let engine = state.engine.read().await;
+            let (mouse_grabbed, keyboard_grabbed) = match current_grab_state(state) {
+                Ok(state) => state,
+                Err(e) => return error_response(e.to_string()),
+            };
             IpcResponse {
                 ok: true,
                 error: None,
@@ -254,6 +265,8 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 slots: Some(engine.slots()),
                 paused: Some(engine.is_paused()),
                 capture_active: Some(state.capture_active.load(Ordering::Acquire)),
+                mouse_grabbed: Some(mouse_grabbed),
+                keyboard_grabbed: Some(keyboard_grabbed),
                 sensitivity: None,
                 screen_width: Some(state.screen_width),
                 screen_height: Some(state.screen_height),
@@ -266,9 +279,14 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 return error_response("sensitivity must be in (0, 10]".into());
             }
             state.engine.write().await.set_sensitivity(value);
+            let (mouse_grabbed, keyboard_grabbed) = match current_grab_state(state) {
+                Ok(state) => state,
+                Err(e) => return error_response(e.to_string()),
+            };
             ok_response()
                 .with_sensitivity(value)
                 .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                .with_grab_state(mouse_grabbed, keyboard_grabbed)
         }
         IpcRequest::ListProfiles => {
             let dir = config::profiles_dir();
@@ -303,6 +321,8 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 slots: None,
                 paused: None,
                 capture_active: Some(state.capture_active.load(Ordering::Acquire)),
+                mouse_grabbed: None,
+                keyboard_grabbed: None,
                 sensitivity: None,
                 screen_width: None,
                 screen_height: None,
@@ -318,40 +338,102 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
             if let Err(e) = apply_commands(state, &cmds) {
                 return error_response(e.to_string());
             }
+            let (mouse_grabbed, keyboard_grabbed) = match current_grab_state(state) {
+                Ok(state) => state,
+                Err(e) => return error_response(e.to_string()),
+            };
             ok_response()
                 .with_message("paused")
                 .with_paused(true)
                 .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                .with_grab_state(mouse_grabbed, keyboard_grabbed)
         }
         IpcRequest::Resume => {
             state.engine.write().await.resume();
+            let (mouse_grabbed, keyboard_grabbed) = match current_grab_state(state) {
+                Ok(state) => state,
+                Err(e) => return error_response(e.to_string()),
+            };
             ok_response()
                 .with_message("resumed")
                 .with_paused(false)
                 .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                .with_grab_state(mouse_grabbed, keyboard_grabbed)
         }
         IpcRequest::EnterCapture => match set_capture_active(state, true).await {
-            Ok(()) => ok_response()
-                .with_message("capture enabled")
-                .with_capture_active(true),
+            Ok(()) => match current_grab_state(state) {
+                Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
+                    .with_message("capture enabled")
+                    .with_capture_active(true)
+                    .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                Err(e) => error_response(e.to_string()),
+            },
             Err(e) => error_response(e.to_string()),
         },
         IpcRequest::ExitCapture => match set_capture_active(state, false).await {
-            Ok(()) => ok_response()
-                .with_message("capture disabled")
-                .with_capture_active(false),
+            Ok(()) => match current_grab_state(state) {
+                Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
+                    .with_message("capture disabled")
+                    .with_capture_active(false)
+                    .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                Err(e) => error_response(e.to_string()),
+            },
             Err(e) => error_response(e.to_string()),
         },
         IpcRequest::ToggleCapture => {
             let next = !state.capture_active.load(Ordering::Acquire);
             match set_capture_active(state, next).await {
-                Ok(()) => ok_response()
-                    .with_message(if next {
-                        "capture enabled"
-                    } else {
-                        "capture disabled"
-                    })
-                    .with_capture_active(next),
+                Ok(()) => match current_grab_state(state) {
+                    Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
+                        .with_message(if next {
+                            "capture enabled"
+                        } else {
+                            "capture disabled"
+                        })
+                        .with_capture_active(next)
+                        .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                    Err(e) => error_response(e.to_string()),
+                },
+                Err(e) => error_response(e.to_string()),
+            }
+        }
+        IpcRequest::GrabMouse => match set_mouse_routed(state, true).await {
+            Ok(()) => match current_grab_state(state) {
+                Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
+                    .with_message("mouse routed to game")
+                    .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                    .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                Err(e) => error_response(e.to_string()),
+            },
+            Err(e) => error_response(e.to_string()),
+        },
+        IpcRequest::ReleaseMouse => match set_mouse_routed(state, false).await {
+            Ok(()) => match current_grab_state(state) {
+                Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
+                    .with_message("mouse released to desktop")
+                    .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                    .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                Err(e) => error_response(e.to_string()),
+            },
+            Err(e) => error_response(e.to_string()),
+        },
+        IpcRequest::ToggleMouse => {
+            let currently_grabbed = match current_grab_state(state) {
+                Ok((mouse_grabbed, _)) => mouse_grabbed,
+                Err(e) => return error_response(e.to_string()),
+            };
+            match set_mouse_routed(state, !currently_grabbed).await {
+                Ok(()) => match current_grab_state(state) {
+                    Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
+                        .with_message(if mouse_grabbed {
+                            "mouse routed to game"
+                        } else {
+                            "mouse released to desktop"
+                        })
+                        .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                        .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                    Err(e) => error_response(e.to_string()),
+                },
                 Err(e) => error_response(e.to_string()),
             }
         }
@@ -402,6 +484,7 @@ async fn load_profile_into_state(
     if let Some(path) = &path {
         *state.profile_path.write().await = Some(std::path::PathBuf::from(path));
     }
+    let (mouse_grabbed, keyboard_grabbed) = current_grab_state(state)?;
 
     Ok(IpcResponse {
         ok: true,
@@ -413,6 +496,8 @@ async fn load_profile_into_state(
         slots: Some(slots),
         paused: Some(was_paused),
         capture_active: Some(state.capture_active.load(Ordering::Acquire)),
+        mouse_grabbed: Some(mouse_grabbed),
+        keyboard_grabbed: Some(keyboard_grabbed),
         sensitivity: None,
         screen_width: Some(state.screen_width),
         screen_height: Some(state.screen_height),
@@ -442,6 +527,31 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
     Ok(())
 }
 
+pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<()> {
+    if !state.capture_active.load(Ordering::Acquire) {
+        return Err(PhantomError::Ipc(
+            "capture must be enabled before toggling mouse routing".into(),
+        ));
+    }
+
+    let (current_mouse, _) = current_grab_state(state)?;
+    if current_mouse == routed {
+        return Ok(());
+    }
+
+    if !routed {
+        let cmds = {
+            let mut engine = state.engine.write().await;
+            engine.release_mouse_inputs()
+        };
+        apply_commands(state, &cmds)?;
+    }
+
+    let mut capture = lock_capture(state)?;
+    capture.set_grabbed_mouse_only(routed)?;
+    Ok(())
+}
+
 fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()> {
     if cmds.is_empty() {
         return Ok(());
@@ -449,6 +559,11 @@ fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()>
 
     let mut device = lock_touch_device(state)?;
     device.apply_commands(cmds)
+}
+
+fn current_grab_state(state: &Arc<DaemonState>) -> Result<(bool, bool)> {
+    let capture = lock_capture(state)?;
+    Ok((capture.mouse_grabbed(), capture.keyboard_grabbed()))
 }
 
 pub fn lock_touch_device(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, Box<dyn TouchDevice>>> {
@@ -482,6 +597,8 @@ fn error_response(error: String) -> IpcResponse {
         slots: None,
         paused: None,
         capture_active: None,
+        mouse_grabbed: None,
+        keyboard_grabbed: None,
         sensitivity: None,
         screen_width: None,
         screen_height: None,
@@ -501,6 +618,8 @@ fn ok_response() -> IpcResponse {
         slots: None,
         paused: None,
         capture_active: None,
+        mouse_grabbed: None,
+        keyboard_grabbed: None,
         sensitivity: None,
         screen_width: None,
         screen_height: None,
@@ -522,6 +641,12 @@ impl IpcResponse {
 
     fn with_capture_active(mut self, capture_active: bool) -> Self {
         self.capture_active = Some(capture_active);
+        self
+    }
+
+    fn with_grab_state(mut self, mouse_grabbed: bool, keyboard_grabbed: bool) -> Self {
+        self.mouse_grabbed = Some(mouse_grabbed);
+        self.keyboard_grabbed = Some(keyboard_grabbed);
         self
     }
 

@@ -1,96 +1,46 @@
-# IPC Protocol
+# IPC
 
-Phantom exposes a Unix domain socket for CLI and GUI control.
+Phantom exposes a Unix domain socket for local daemon control.
 
-## Socket Location
+Clients:
 
-Path selection:
+- CLI
+- GUI
 
-1. `$XDG_RUNTIME_DIR/phantom.sock`
-2. `dirs::runtime_dir()/phantom.sock`
-3. `/tmp/phantom-<uid>.sock`
-
-Socket permissions are `0600`.
-
-## Transport
+Transport:
 
 - newline-delimited JSON
-- one request per connection
-- one response per connection
-- 5 second read timeout
-- 5 second write timeout
-- 64 KiB maximum request or response line
 
-## Response Shape
+## 1. Purpose
 
-Success:
+IPC exists so the daemon can stay long-lived while:
 
-```json
-{"ok": true, ...}
-```
+- profiles change
+- capture changes
+- runtime toggles change
+- the GUI remains separate from the daemon
 
-Failure:
+## 2. Request Model
 
-```json
-{"ok": false, "error": "human readable message"}
-```
+Important requests:
 
-Status-style responses may also include:
+- `load_profile`
+- `load_profile_data`
+- `reload`
+- `status`
+- `pause`
+- `resume`
+- `enter_capture`
+- `exit_capture`
+- `toggle_capture`
+- `grab_mouse`
+- `release_mouse`
+- `toggle_mouse`
+- `set_sensitivity`
+- `list_profiles`
+- `shutdown`
 
-- `profile`
-- `profile_path`
-- `paused`
-- `capture_active`
-- `screen_width`
-- `screen_height`
-
-## Commands
-
-### `load_profile`
-
-```json
-{"cmd":"load_profile","path":"~/.config/phantom/profiles/pubg.json"}
-```
-
-Loads a profile from disk and installs it into the running engine.
-
-Current behavior:
-
-- active touches are released before the swap
-- the profile `screen` must match the daemon `screen`
-- the remembered `profile_path` is updated
-
-### `load_profile_data`
-
-```json
-{
-  "cmd": "load_profile_data",
-  "profile": {
-    "name": "PUBG Mobile",
-    "version": 1,
-    "screen": { "width": 1920, "height": 1080 },
-    "global_sensitivity": 1.0,
-    "nodes": []
-  }
-}
-```
-
-This is the GUI live-edit path.
-
-Behavior:
-
-- validates the in-memory profile
-- releases active touches
-- swaps the running engine
-- does not need the profile to exist on disk
-
-### `reload`
-
-```json
-{"cmd":"reload"}
-```
-
-Reloads the currently remembered on-disk profile.
+## 3. Example Requests
 
 ### `status`
 
@@ -98,18 +48,22 @@ Reloads the currently remembered on-disk profile.
 {"cmd":"status"}
 ```
 
-Example:
+### `load_profile`
 
 ```json
-{
-  "ok": true,
-  "profile": "PUBG Mobile",
-  "profile_path": "/home/user/.config/phantom/profiles/pubg.json",
-  "paused": false,
-  "capture_active": true,
-  "screen_width": 1920,
-  "screen_height": 1080
-}
+{"cmd":"load_profile","path":"~/.config/phantom/profiles/pubg.json"}
+```
+
+### `enter_capture`
+
+```json
+{"cmd":"enter_capture"}
+```
+
+### `toggle_mouse`
+
+```json
+{"cmd":"toggle_mouse"}
 ```
 
 ### `pause`
@@ -118,76 +72,78 @@ Example:
 {"cmd":"pause"}
 ```
 
-Behavior:
-
-- releases active touches
-- keeps the daemon alive
-- does not automatically disable capture
-
-### `resume`
-
-```json
-{"cmd":"resume"}
-```
-
-Resumes engine processing.
-
-### `enter_capture`
-
-```json
-{"cmd":"enter_capture"}
-```
-
-Behavior:
-
-- enables exclusive `EVIOCGRAB` on keyboard and mouse devices
-- keeps the current profile and engine
-
-### `exit_capture`
-
-```json
-{"cmd":"exit_capture"}
-```
-
-Behavior:
-
-- releases active touches
-- releases exclusive grabs
-- lets the desktop receive input again
-
-### `toggle_capture`
-
-```json
-{"cmd":"toggle_capture"}
-```
-
-Toggles between exclusive gameplay capture and released desktop control.
-
 ### `set_sensitivity`
 
 ```json
 {"cmd":"set_sensitivity","value":1.25}
 ```
 
-Allowed range is `(0, 10]`.
+## 4. Response Model
 
-### `list_profiles`
+Responses can include:
 
-```json
-{"cmd":"list_profiles"}
-```
+- `ok`
+- `message`
+- `error`
+- `profile`
+- `nodes`
+- `slots`
+- `paused`
+- `capture_active`
+- `mouse_grabbed`
+- `keyboard_grabbed`
+- `sensitivity`
+- `screen_width`
+- `screen_height`
+- `active_layers`
 
-Scans `~/.config/phantom/profiles` and returns profile names with paths.
+The CLI and GUI do not need identical formatting, but they do rely on the same response fields.
 
-### `shutdown`
+## 5. Runtime Semantics
 
-```json
-{"cmd":"shutdown"}
-```
+### `enter_capture`
 
-Gracefully stops the daemon.
+Effect:
 
-## CLI Mapping
+- capture becomes active
+- input devices are grabbed for gameplay
+
+### `exit_capture`
+
+Effect:
+
+- active touches are released
+- capture is disabled
+- device grabs are released
+
+### `grab_mouse`
+
+Effect:
+
+- mouse-originated gameplay events are forwarded into the engine
+
+### `release_mouse`
+
+Effect:
+
+- active mouse-driven touches are released
+- future mouse-originated gameplay events are suppressed
+- capture may remain active
+
+### `pause`
+
+Effect:
+
+- active touches are released
+- engine stops producing new touch output
+
+### `resume`
+
+Effect:
+
+- engine resumes normal processing
+
+## 6. CLI Mapping
 
 ```bash
 phantom --daemon
@@ -199,22 +155,33 @@ phantom resume
 phantom enter-capture
 phantom exit-capture
 phantom toggle-capture
+phantom grab-mouse
+phantom release-mouse
+phantom toggle-mouse
 phantom sensitivity <value>
 phantom list
 phantom shutdown
 ```
 
-## Runtime Hotkeys
+## 7. Runtime Hotkeys
 
-These are handled directly by the daemon:
+Daemon hotkeys are configured separately in:
 
-- `F1` toggles mouse grab while capture is already active
-- `F8` toggles capture
-- `F9` toggles pause
+- `config.toml`
+- `[runtime_hotkeys]`
 
-## Behavior Notes
+Defaults:
 
-- stale sockets are removed on daemon startup if they are not connectable
-- `~` expansion is supported for `load_profile`
-- `load_profile`, `load_profile_data`, `reload`, `pause`, and `exit_capture` all release active touches before changing runtime state
-- the daemon can still observe hotkeys before capture is enabled because evdev supports shared readers without `EVIOCGRAB`
+- `F1` -> toggle mouse routing
+- `F8` -> toggle capture
+- `F9` -> toggle pause
+- `F2` -> shutdown
+
+These are handled in the daemon itself, not through the IPC socket.
+
+## 8. Behavior Notes
+
+- stale sockets are removed on daemon startup if they are no longer connectable
+- `~` is expanded for profile paths
+- runtime state changes that invalidate active touches release them before switching modes
+- disabling mouse routing releases active mouse-driven touches immediately

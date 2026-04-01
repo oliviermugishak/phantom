@@ -1,148 +1,95 @@
 # Testing
 
-This guide is the practical bring-up and validation checklist for Phantom.
+This is the practical validation guide for Phantom.
 
-The important split is backend choice:
+It is organized around the current primary backend:
 
-- `uinput`: host-kernel virtual touchscreen
-- `android_socket`: Android framework injection through `app_process`
+- `android_socket`
 
-Do not use the same verification signals for both. They are different pipelines.
+The `uinput` backend is covered at the end as a compatibility appendix.
 
-## Backend Summary
+## 1. Test Layers
 
-| Backend | Start order | Main health signal | Main failure surface |
-|---|---|---|---|
-| `uinput` | start Phantom, then start or restart Waydroid | `getevent` / `dumpsys input` show Phantom device | Waydroid / kernel input bridge |
-| `android_socket` | start Waydroid, make sure the container is unfrozen, then start Phantom | Phantom connects to `host:port` and server log shows client connected | Waydroid shell launch, container frozen state, framework injection |
+Treat testing in three layers:
 
-## Common Preconditions
+1. build correctness
+2. backend bring-up
+3. gameplay behavior
 
-Before testing either backend:
+Do not skip straight to gameplay if the backend is not healthy.
 
-1. Build the daemon:
+## 2. Build Validation
 
-```bash
-cargo build --release -p phantom
-```
-
-2. Confirm your config has the real Android surface size:
-
-```toml
-[screen]
-width = 1920
-height = 1080
-```
-
-3. Confirm the daemon can read host input devices:
+Run:
 
 ```bash
-ls -l /dev/input/event*
+cargo fmt --all
+cargo test --quiet
+cargo build --release
+./contrib/android-server/build.sh
 ```
 
-4. Confirm your profile `screen` matches the daemon `screen`.
+Expected:
 
-If the profile and daemon disagree, Phantom will reject the profile load.
+- Rust tests pass
+- release build completes
+- Android server jar is rebuilt
 
-5. Audit the profile once before runtime:
+The Android jar must contain `classes.dex`.
+
+## 3. Profile Preflight
+
+Before live runtime tests, audit the target profile:
 
 ```bash
 ./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
 ```
 
-What to look for:
+Look for:
 
-- the controls you want to hold simultaneously are on distinct `slot` lines
-- layered controls are in the layer you expect
-- joystick directions share one slot by design
-- `mouse_camera` consumes one slot and is triggered by `MouseMove`
+- distinct slots for controls you expect to hold simultaneously
+- correct layer ownership
+- `mouse_camera` mode and activation key
+- no accidental slot reuse
 
-## `android_socket` Bring-Up
+This is the fastest way to catch profile mistakes before involving Waydroid.
 
-This is the recommended path for the Waydroid case where Phantom already proves it can hold multiple active slots, but Android still behaves as if only one touch exists.
+## 4. `android_socket` Bring-Up
 
-### One-Time Build
+### Preconditions
 
-The Android server jar is built from:
+Confirm:
 
-- [build.sh](/home/kaza/Workspace/ttplayer/contrib/android-server/build.sh)
-- [PhantomServer.java](/home/kaza/Workspace/ttplayer/contrib/android-server/src/com/phantom/server/PhantomServer.java)
+- Waydroid session started
+- Waydroid container unfrozen
+- Phantom config points at the built Android server jar
 
-Build it:
-
-```bash
-./contrib/android-server/build.sh
-```
-
-Expected output:
-
-- [phantom-server.jar](/home/kaza/Workspace/ttplayer/contrib/android-server/build/phantom-server.jar)
-
-That jar must be a dex jar for `app_process`, not a plain `.class` jar. Phantom now checks this before auto-launch.
-
-### Config
-
-Minimal config:
-
-```toml
-touch_backend = "android_socket"
-
-[screen]
-width = 1920
-height = 1080
-
-[android]
-auto_launch = true
-server_jar = "/home/kaza/Workspace/ttplayer/contrib/android-server/build/phantom-server.jar"
-server_class = "com.phantom.server.PhantomServer"
-container_bind_host = "0.0.0.0"
-port = 27183
-container_server_jar = "/data/local/tmp/phantom-server.jar"
-container_log_path = "/data/local/tmp/phantom-server.log"
-
-[waydroid]
-work_dir = "/var/lib/waydroid"
-```
-
-### Start Order
-
-For `android_socket`, Waydroid must already be running and the container must be unfrozen before the daemon starts, because the daemon launches the Android server through `waydroid shell` and then waits for a live `PING` reply.
-
-Bring-up sequence:
+Start sequence:
 
 ```bash
 waydroid session start
 waydroid show-full-ui
+sudo waydroid status
 sudo ./target/release/phantom --trace --daemon
 ```
 
-If `waydroid status` shows `Container: FROZEN`, Phantom will reject startup with a direct error telling you to open the Waydroid UI or launch the game first.
+Required Waydroid state:
 
-Because Phantom now resolves config and IPC paths from the invoking user, the daemon can be started with `sudo` while the normal user still uses:
+- `Session: RUNNING`
+- `Container: RUNNING`
 
-```bash
-./target/release/phantom status
-./target/release/phantom load ~/.config/phantom/profiles/pubg.json
-./target/release/phantom enter-capture
-```
+If the container is `FROZEN`, do not trust a socket or listener alone. Phantom's readiness check depends on a real response from the Android side.
 
-### Expected Startup Logs
+### Expected Daemon Signals
 
-On a healthy first start, expect some or all of:
+Healthy startup usually includes:
 
-- `touch backend ready` with `backend=android_socket`
 - `android touch server unavailable, attempting auto-launch`
 - `launching android touch server`
 - `connected to android touch server`
-- `IPC server listening on .../phantom.sock`
+- `touch backend ready`
 
-### Expected Files
-
-Container-visible artifacts:
-
-- staged server jar: `/data/local/tmp/phantom-server.jar`
-- server log: `/data/local/tmp/phantom-server.log`
-- TCP listener: `0.0.0.0:27183` by default
+### Expected Container Signals
 
 Useful checks:
 
@@ -152,92 +99,171 @@ sudo waydroid shell -- sh -c 'tail -n 50 /data/local/tmp/phantom-server.log'
 sudo waydroid shell -- sh -c 'ss -ltnp | grep 27183 || true'
 ```
 
-Expected server log lines:
+Healthy signals:
 
-- `phantom-server starting host=0.0.0.0 port=27183`
-- `phantom-server client connected`
+- staged jar exists
+- server log shows startup
+- server log shows client connected
+- port `27183` is listening
 
-### What Not To Expect
+## 5. Runtime Smoke Test
 
-For `android_socket`, these older checks are no longer authoritative:
+After the daemon is alive:
 
-- `getevent -lp` showing `Phantom Virtual Touch`
-- `dumpsys input` showing a new touchscreen device
-- IDC files affecting touch classification
+```bash
+./target/release/phantom status
+./target/release/phantom load ~/.config/phantom/profiles/pubg.json
+./target/release/phantom enter-capture
+```
 
-Those belong to the `uinput` path. `android_socket` injects at the Android framework level, not through a new kernel input device.
+Verify in `phantom status`:
 
-## `android_socket` Test Matrix
+- profile name
+- capture state
+- mouse routed state
+- keyboard routed state
+- screen contract
+
+## 6. Gameplay Validation Matrix
 
 Run these in order:
 
-1. Single tap
-2. Hold one control
-3. Hold one control and tap another
-4. Hold two controls at once
-5. Double-tap style action
-6. Joystick plus button
-7. Mouse-look plus button
-8. Layer switch or macro if your profile uses them
+1. single tap
+2. hold one control
+3. hold one control and tap another
+4. hold two controls at once
+5. hold three controls at once, if the profile supports it
+6. double-tap style action
+7. joystick plus button
+8. mouse-look plus button
+9. mouse-look mode transition
+10. layer shift or macro, if used
 
-Suggested workflow:
+Why this order:
 
-1. Start Waydroid.
-2. Start Phantom with `--trace`.
-3. Audit the target profile.
-4. Load the target profile.
-5. Enter capture.
-6. Open the target game.
-7. Run the matrix above slowly first, then at game speed.
+- it validates the backend incrementally
+- it isolates profile mistakes from transport mistakes
 
-### Success Criteria
+## 7. Mouse Look Validation
 
-You want to see:
+Test according to the configured mode.
 
-- the daemon receives the physical key events
-- the daemon keeps emitting concurrent touch commands
-- the game accepts the touches as separate simultaneous contacts
+### `always_on`
 
-For example, when holding one button and pressing another, the daemon trace should show:
+Expected:
 
-- both key events translated
-- both events forwarded to the engine
-- two `TouchDown` commands on different slots
-- `active_touches=2`
+- once capture is active and mouse routing is enabled, mouse movement produces look drag immediately
 
-And the game should continue to behave as if two fingers are down.
+### `while_held`
 
-### Failure Signatures
+Expected:
 
-If the daemon never reaches `connected to android touch server`:
+- mouse movement does nothing while the activation key is not held
+- pressing the activation key enables look
+- releasing the activation key emits a clean `TouchUp`
 
-- Waydroid session is not running
-- Waydroid is running but `Container: FROZEN`
-- `waydroid shell` failed
-- the staged jar path is wrong
-- the TCP host or port is wrong
+### `toggle`
 
-If the daemon starts but the server log never shows `client connected`:
+Expected:
 
-- the server failed during `app_process` startup
-- the container never reached a responsive state
-- the daemon is connecting to the wrong Waydroid IP or port
+- first press of the activation key enables look
+- second press disables look
+- disabling emits a clean `TouchUp`
 
-If the daemon connects and the server log is healthy but the game still ignores touches:
+## 8. Success Signals
 
-- the issue is inside Android/game dispatch, not the host evdev path
-- inspect the exact action pattern being injected next
+A healthy run looks like this:
 
-If the Android server dies after startup:
+- daemon sees the physical input
+- engine emits the expected `TouchCommand`s
+- multiple active slots stay alive concurrently
+- the game reacts as if the touches are truly simultaneous
 
-- restart the Phantom daemon
-- current implementation does not yet reconnect to a restarted server mid-session
+For concurrent touch tests, the trace should show:
 
-## `uinput` Bring-Up
+- multiple distinct slots
+- `TouchDown` for each active control
+- no unexpected `TouchUp`
 
-Use this only if you want the host-kernel virtual touchscreen path.
+For mouse-look mode tests, the trace should show:
 
-Start order:
+- no look touch while disabled
+- look touch starts when enabled
+- look touch ends immediately when disabled
+
+## 9. Failure Mapping
+
+### Daemon Never Connects To Android Server
+
+Likely causes:
+
+- Waydroid session not running
+- container frozen
+- wrong jar path
+- server launch failure
+- wrong container IP or port
+
+Check:
+
+- `waydroid status`
+- Phantom daemon logs
+- `/data/local/tmp/phantom-server.log`
+
+### Server Starts But Game Does Not React
+
+Likely causes:
+
+- profile mismatch
+- wrong screen contract
+- wrong region or position placement
+- game-specific behavior
+
+Check:
+
+- `phantom audit`
+- profile screen vs daemon screen
+- visible Android touch feedback if enabled
+
+### Mouse Look Feels Broken
+
+Likely causes:
+
+- wrong activation mode
+- wrong activation key
+- mouse routing disabled
+- region too small or misplaced
+- sensitivity too low or too high
+
+Check:
+
+- GUI properties panel
+- `phantom status`
+- trace logs for `TouchDown`, `TouchMove`, `TouchUp`
+
+### Touch Gets Stuck
+
+Likely causes:
+
+- profile bug
+- runtime transition not releasing state
+- crash during active touch sequence
+
+Recovery:
+
+```bash
+./target/release/phantom pause
+./target/release/phantom resume
+./target/release/phantom exit-capture
+./target/release/phantom enter-capture
+```
+
+If needed, restart the daemon.
+
+## 10. `uinput` Appendix
+
+Use this only if you intentionally test the legacy backend.
+
+Recommended order:
 
 ```bash
 sudo ./target/release/phantom --trace --daemon
@@ -245,7 +271,7 @@ waydroid session stop
 waydroid session start
 ```
 
-Main checks:
+Checks:
 
 ```bash
 grep -A5 "Phantom Virtual Touch" /proc/bus/input/devices
@@ -253,4 +279,4 @@ waydroid shell getevent -lp | grep -A10 "Phantom"
 waydroid shell dumpsys input | grep -A20 "Phantom"
 ```
 
-These checks are valid for `uinput`, not for `android_socket`.
+Those checks do not apply to `android_socket`.

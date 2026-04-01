@@ -2,6 +2,8 @@ use serde::Deserialize;
 use std::ffi::CStr;
 use std::path::PathBuf;
 
+use crate::input::Key;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -10,6 +12,8 @@ pub struct Config {
     pub log_level: String,
     #[serde(default)]
     pub touch_backend: TouchBackendKind,
+    #[serde(default)]
+    pub runtime_hotkeys: RuntimeHotkeysConfig,
     #[serde(default)]
     pub android: AndroidConfig,
     #[serde(default)]
@@ -20,6 +24,26 @@ pub struct Config {
 pub struct ScreenConfig {
     pub width: Option<u32>,
     pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuntimeHotkeysConfig {
+    #[serde(default = "default_mouse_toggle_hotkey")]
+    pub mouse_toggle: String,
+    #[serde(default = "default_capture_toggle_hotkey")]
+    pub capture_toggle: String,
+    #[serde(default = "default_pause_toggle_hotkey")]
+    pub pause_toggle: String,
+    #[serde(default = "default_shutdown_hotkey")]
+    pub shutdown: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeHotkeys {
+    pub mouse_toggle: Option<Key>,
+    pub capture_toggle: Option<Key>,
+    pub pause_toggle: Option<Key>,
+    pub shutdown: Option<Key>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -65,6 +89,7 @@ impl Default for Config {
             screen: ScreenConfig::default(),
             log_level: "info".into(),
             touch_backend: TouchBackendKind::default(),
+            runtime_hotkeys: RuntimeHotkeysConfig::default(),
             android: AndroidConfig::default(),
             waydroid: WaydroidConfig::default(),
         }
@@ -88,8 +113,46 @@ impl Default for AndroidConfig {
     }
 }
 
+impl Default for RuntimeHotkeysConfig {
+    fn default() -> Self {
+        Self {
+            mouse_toggle: default_mouse_toggle_hotkey(),
+            capture_toggle: default_capture_toggle_hotkey(),
+            pause_toggle: default_pause_toggle_hotkey(),
+            shutdown: default_shutdown_hotkey(),
+        }
+    }
+}
+
+impl Default for RuntimeHotkeys {
+    fn default() -> Self {
+        Self {
+            mouse_toggle: Some(Key::F1),
+            capture_toggle: Some(Key::F8),
+            pause_toggle: Some(Key::F9),
+            shutdown: Some(Key::F2),
+        }
+    }
+}
+
 fn default_android_server_class() -> String {
     "com.phantom.server.PhantomServer".into()
+}
+
+fn default_mouse_toggle_hotkey() -> String {
+    "F1".into()
+}
+
+fn default_capture_toggle_hotkey() -> String {
+    "F8".into()
+}
+
+fn default_pause_toggle_hotkey() -> String {
+    "F9".into()
+}
+
+fn default_shutdown_hotkey() -> String {
+    "F2".into()
 }
 
 pub fn config_dir() -> PathBuf {
@@ -129,6 +192,39 @@ pub fn load_config() -> Config {
             Config::default()
         }
     }
+}
+
+pub fn resolved_runtime_hotkeys(config: &Config) -> RuntimeHotkeys {
+    let defaults = RuntimeHotkeys::default();
+    let resolved = RuntimeHotkeys {
+        mouse_toggle: parse_hotkey(
+            "runtime_hotkeys.mouse_toggle",
+            &config.runtime_hotkeys.mouse_toggle,
+            defaults.mouse_toggle,
+        ),
+        capture_toggle: parse_hotkey(
+            "runtime_hotkeys.capture_toggle",
+            &config.runtime_hotkeys.capture_toggle,
+            defaults.capture_toggle,
+        ),
+        pause_toggle: parse_hotkey(
+            "runtime_hotkeys.pause_toggle",
+            &config.runtime_hotkeys.pause_toggle,
+            defaults.pause_toggle,
+        ),
+        shutdown: parse_hotkey(
+            "runtime_hotkeys.shutdown",
+            &config.runtime_hotkeys.shutdown,
+            defaults.shutdown,
+        ),
+    };
+
+    if has_duplicate_hotkeys(&resolved) {
+        tracing::warn!("runtime hotkeys contain duplicates; falling back to defaults F1/F8/F9/F2");
+        return defaults;
+    }
+
+    resolved
 }
 
 pub fn socket_path() -> PathBuf {
@@ -220,5 +316,80 @@ fn passwd_buf_len() -> usize {
         suggested as usize
     } else {
         16 * 1024
+    }
+}
+
+fn parse_hotkey(field: &str, raw: &str, default: Option<Key>) -> Option<Key> {
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return None;
+    }
+
+    match value.parse::<Key>() {
+        Ok(key) => Some(key),
+        Err(_) => {
+            tracing::warn!(
+                "invalid {} '{}', falling back to {}",
+                field,
+                raw,
+                default
+                    .map(|key| format!("{:?}", key))
+                    .unwrap_or_else(|| "disabled".into())
+            );
+            default
+        }
+    }
+}
+
+fn has_duplicate_hotkeys(hotkeys: &RuntimeHotkeys) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    for key in [
+        hotkeys.mouse_toggle,
+        hotkeys.capture_toggle,
+        hotkeys.pause_toggle,
+        hotkeys.shutdown,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !seen.insert(key) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_hotkeys_default_to_current_bindings() {
+        let resolved = resolved_runtime_hotkeys(&Config::default());
+        assert_eq!(resolved.mouse_toggle, Some(Key::F1));
+        assert_eq!(resolved.capture_toggle, Some(Key::F8));
+        assert_eq!(resolved.pause_toggle, Some(Key::F9));
+        assert_eq!(resolved.shutdown, Some(Key::F2));
+    }
+
+    #[test]
+    fn runtime_hotkeys_accept_none_and_custom_keys() {
+        let mut config = Config::default();
+        config.runtime_hotkeys.mouse_toggle = "none".into();
+        config.runtime_hotkeys.capture_toggle = "F7".into();
+
+        let resolved = resolved_runtime_hotkeys(&config);
+        assert_eq!(resolved.mouse_toggle, None);
+        assert_eq!(resolved.capture_toggle, Some(Key::F7));
+    }
+
+    #[test]
+    fn runtime_hotkeys_reject_duplicates_by_falling_back() {
+        let mut config = Config::default();
+        config.runtime_hotkeys.mouse_toggle = "F8".into();
+        config.runtime_hotkeys.capture_toggle = "F8".into();
+
+        let resolved = resolved_runtime_hotkeys(&config);
+        assert_eq!(resolved, RuntimeHotkeys::default());
     }
 }

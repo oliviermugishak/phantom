@@ -1,192 +1,372 @@
 # Architecture
 
-Phantom has five runtime pieces:
+This document describes the current Phantom architecture as it exists today.
 
-1. evdev capture
-2. keymap engine
-3. touch injector backend
-4. IPC control plane
-5. native mapper GUI
+The primary design is:
 
-## Data Flow
+- Linux-side input capture and mapping
+- Android-side touch injection
+
+`uinput` still exists, but it is the fallback path, not the center of the design.
+
+## 1. High-Level Goal
+
+Phantom exists to solve one problem well:
+
+- turn local keyboard and mouse input into predictable Android gameplay touches for fullscreen Waydroid
+
+That leads to four architectural decisions:
+
+1. explicit screen contract
+2. explicit runtime state
+3. profile-driven touch synthesis
+4. Android framework injection as the primary backend
+
+## 2. System Diagram
 
 ```text
-/dev/input/event* -> Phantom input capture -> keymap engine -> injector backend
-                                                ^                    ^
-                                                |                    |
-                                            profile data         touch events
-                                                ^
-                                                |
-                                      CLI / GUI / IPC requests
+Host Linux
+─────────────────────────────────────────────────────────────────────
+ physical keyboard/mouse
+          │
+          ▼
+  evdev capture
+  phantom/src/input.rs
+          │
+          ▼
+  InputEvent stream
+          │
+          ▼
+  keymap engine
+  phantom/src/engine.rs
+          │
+          ▼
+  TouchCommand stream
+          │
+          ├───────────────────────────────┐
+          │                               │
+          ▼                               ▼
+ android_socket backend               uinput backend
+ phantom/src/android_inject.rs        phantom/src/inject.rs
+          │                               │
+          ▼                               ▼
+     TCP connection                  /dev/uinput device
+          │                               │
+          ▼                               ▼
 
-uinput path:
-  injector backend -> /dev/uinput -> Waydroid kernel input bridge
-
-android_socket path:
-  injector backend -> TCP -> app_process server -> InputManager.injectInputEvent()
+Waydroid Android container
+─────────────────────────────────────────────────────────────────────
+ app_process server
+ contrib/android-server/src/com/phantom/server/PhantomServer.java
+          │
+          ▼
+ MotionEvent construction
+          │
+          ▼
+ InputManager.injectInputEvent()
+          │
+          ▼
+ Android input dispatch
+          │
+          ▼
+ game
 ```
 
-The GUI is still separate from the injector, but it is no longer disk-only. It can push live profiles and runtime commands over IPC.
+## 3. Main Components
 
-For static inspection, the CLI also exposes `phantom audit <profile.json>`, which renders the slot map directly from the profile model without starting the daemon.
+### 3.1 Input Capture
 
-## Input Capture
+File:
 
-Phantom scans `/dev/input/event*` on startup, classifies devices by capabilities, and reopens matching keyboard and mouse devices in nonblocking mode.
+- `phantom/src/input.rs`
 
-Current behavior:
+Responsibilities:
 
-- shared evdev reads on startup
-- edge-triggered `epoll`
-- key repeat filtered out
-- `SYN_DROPPED` buffered events discarded until the next `SYN_REPORT`, then key state is resynced with `EVIOCGKEY`
-- runtime grab control through IPC and `F8`
-- optional mouse-only release through `F1` while capture is active
-- no hotplug rescan for new devices
+- discover relevant `evdev` devices
+- classify keyboard vs mouse capability sets
+- read raw input events
+- translate them into Phantom `InputEvent`s
+- maintain runtime grab state for keyboard and mouse independently
+- recover key/button state after `SYN_DROPPED`
 
-Tradeoff:
+Why it matters:
 
-- hotkeys can still be observed before capture is enabled
-- compositor-independent on Wayland or X11
-- when capture is on, the grabbed devices do not control the desktop
+- everything downstream depends on clean, stable semantic input
+- the project needs to distinguish observation from routing
 
-## Keymap Engine
+### 3.2 Engine
 
-The engine is a synchronous state machine.
+File:
 
-Inputs:
+- `phantom/src/engine.rs`
 
-- key press
-- key release
-- mouse movement
+Responsibilities:
 
-Outputs:
+- load and execute profile semantics
+- maintain node state across time
+- consume `InputEvent`
+- emit `TouchCommand`
+
+The engine is intentionally synchronous and explicit. It is a state machine, not a rules DSL or scripting runtime.
+
+### 3.3 Profile Model
+
+File:
+
+- `phantom/src/profile.rs`
+
+Responsibilities:
+
+- profile schema
+- validation
+- audit output
+- semantic rules such as slot uniqueness and activation requirements
+
+This is the contract between the GUI, the daemon, and test tooling.
+
+### 3.4 IPC Control Plane
+
+File:
+
+- `phantom/src/ipc.rs`
+
+Responsibilities:
+
+- JSON-over-Unix-socket daemon control
+- status responses for CLI and GUI
+- runtime operations like load, capture, pause, and mouse routing
+
+This is what makes the GUI and CLI first-class runtime controls instead of file-only tools.
+
+### 3.5 Daemon Orchestration
+
+File:
+
+- `phantom/src/main.rs`
+
+Responsibilities:
+
+- startup
+- config load
+- backend selection
+- event loop
+- runtime hotkeys
+- command-line mode vs daemon mode
+
+This file is the runtime orchestrator, not the place where business logic should accumulate long term.
+
+### 3.6 Android Backend
+
+Files:
+
+- `phantom/src/android_inject.rs`
+- `phantom/src/waydroid.rs`
+- `contrib/android-server/src/com/phantom/server/PhantomServer.java`
+
+Responsibilities:
+
+- discover container reachability
+- stage the Android server jar into the container
+- launch `app_process`
+- maintain a TCP connection
+- encode and decode the touch protocol
+- reconstruct MotionEvents inside Android
+
+### 3.7 `uinput` Backend
+
+File:
+
+- `phantom/src/inject.rs`
+
+Responsibilities:
+
+- create a virtual touchscreen
+- translate `TouchCommand` into MT Protocol B events
+
+This backend remains important as:
+
+- a compatibility path
+- a low-level debugging path
+- a reference for the abstract touch interface
+
+But it is not the primary product path anymore.
+
+### 3.8 GUI
+
+File:
+
+- `phantom-gui/src/main.rs`
+
+Responsibilities:
+
+- visual editing
+- binding capture
+- canvas manipulation
+- live daemon control
+- runtime status display
+
+The GUI is a native editor with runtime awareness, not a thin JSON wrapper.
+
+## 4. Current Runtime State Model
+
+Phantom has these important runtime states:
+
+- daemon running
+- capture active
+- mouse routed
+- keyboard routed
+- engine paused
+- active layers
+
+These states are separated deliberately.
+
+Why:
+
+- capture determines whether gameplay input should flow at all
+- mouse routing determines whether mouse-originated events should reach the game
+- pause determines whether the engine should emit touch commands
+
+This separation is what makes the system usable instead of brittle.
+
+## 5. Touch Model
+
+The engine does not speak backend-specific events.
+
+It emits:
 
 - `TouchDown`
 - `TouchMove`
 - `TouchUp`
 
-Supported node types:
+That abstraction is the key boundary in the codebase.
 
-- `tap`
-- `hold_tap`
-- `toggle_tap`
-- `joystick`
-- `mouse_camera`
-- `repeat_tap`
-- `macro`
-- `layer_shift`
+Backends then decide how to realize those commands:
 
-Current timing:
+- `android_socket` -> MotionEvents
+- `uinput` -> kernel MT events
 
-- input polling every 4 ms
-- timer-driven nodes every 16 ms
+## 6. `mouse_camera` Design
 
-## Touch Injection Backends
+`mouse_camera` is the camera/look primitive.
 
-Phantom currently supports two injector targets behind one interface.
+It is not a general cursor.
 
-### `uinput`
+Current modes:
 
-Phantom creates a virtual direct-touch device through `/dev/uinput`.
+- `always_on`
+- `while_held`
+- `toggle`
 
-Key properties:
+The engine stores:
 
-- event types: `EV_ABS`, `EV_KEY`, `EV_SYN`
-- axes: `ABS_X`, `ABS_Y`, `ABS_PRESSURE`, `ABS_MT_TOUCH_MAJOR`, `ABS_MT_SLOT`, `ABS_MT_TRACKING_ID`, `ABS_MT_POSITION_X`, `ABS_MT_POSITION_Y`, `ABS_MT_PRESSURE`
-- key bits: `BTN_TOUCH`, `BTN_TOOL_FINGER`, `BTN_TOOL_DOUBLETAP`, `BTN_TOOL_TRIPLETAP`, `BTN_TOOL_QUADTAP`
-- property bit: `INPUT_PROP_DIRECT`
-- identity: `BUS_VIRTUAL`, stable vendor/product IDs, `"Phantom Virtual Touch"`
+- whether mouse look is enabled
+- whether a synthetic finger is currently down
+- current pointer position inside the region
+- last motion time
 
-Runtime touch model:
+Why the enabled state exists:
 
-- 10 slots, `0..9`
-- tracking IDs are monotonic and independent from slot numbers
-- pointer-emulation state is updated alongside MT slot state
-- touch commands are batched into a single `SYN_REPORT`
-- safest startup order is Phantom first, then Waydroid session start or restart
+- `always_on` should behave continuously
+- `while_held` should behave like a temporary camera mode
+- `toggle` should preserve mode state across movement pauses
 
-### `android_socket`
+## 7. Why `android_socket` Is The Primary Backend
 
-Phantom can also send touch commands to a small `app_process` server inside Waydroid over TCP.
+The earlier `uinput` path has one structural weakness for Waydroid:
 
-Current shape:
+- the host is forced to emulate a kernel multitouch device exactly the way Android expects to consume it later
 
-- host daemon still owns evdev capture and keymap logic
-- Rust backend serializes `TouchDown`, `TouchMove`, and `TouchUp`
-- Android server reconstructs `MotionEvent`s and injects them through `InputManager.injectInputEvent()`
-- the daemon discovers the Waydroid container IP from `waydroid status`
-- the daemon stages `phantom-server.jar` into `/data/local/tmp/` through `waydroid shell` stdin
-- the Android server binds `0.0.0.0:27183` by default
-- `uinput` remains available as a fallback backend
-- Waydroid session must already be running before the daemon starts
-- the daemon launches the server through `waydroid shell`
-- the server is a single-client process today; if it dies, restart the daemon
+That is fragile.
 
-Health signals for this path:
+The Android backend avoids that by moving the final touch semantics into Android itself.
 
-- daemon log shows `backend=android_socket`
-- daemon log shows successful server connection
-- server log inside Waydroid shows client connected
-- container port `27183` is listening
+Benefits:
 
-Signals that do not apply here:
+- Android owns pointer bookkeeping
+- no kernel-device discovery requirement inside Waydroid
+- much better multi-touch behavior for real games
+- architecture closer to scrcpy-style injection
 
-- `getevent` showing `Phantom Virtual Touch`
-- `dumpsys input` showing a new kernel-level Phantom device
-- IDC classification effects
+## 8. Why `app_process`
 
-## Resolution Handling
+The Android server is launched with `app_process` because the project needs to execute inside Android's own runtime and call framework APIs directly.
 
-Phantom now uses a strict fullscreen contract.
+That gives Phantom access to:
 
-Resolution source of truth:
+- `MotionEvent`
+- `InputManager.injectInputEvent()`
 
-1. `[screen]` in `config.toml`
-2. `screen` in the default profile
+without turning the project into a rooted system modification exercise.
 
-If neither exists, daemon startup fails. Phantom no longer silently guesses from host framebuffer state.
+## 9. Why TCP
 
-## IPC
+The current host-to-container transport is TCP.
 
-IPC is newline-delimited JSON over a Unix socket.
+Reasons:
 
-It is used for:
+- easy to debug with normal tools
+- explicit listener and connection lifecycle
+- no dependence on a shared filesystem path contract
+- good enough latency for this use case
 
-- loading profiles from disk
-- pushing in-memory profiles live
-- querying runtime status
-- pause and resume
-- capture on and off
-- sensitivity changes
-- shutdown
+The transport is deliberately simple because the interesting logic is not the framing. The interesting logic is the input state and Android injection semantics.
 
-## GUI
+## 10. Why The Screen Contract Is Explicit
 
-`phantom-gui` is a native `eframe` / `egui` mapper.
+Phantom requires a known screen size because the mapper is not trying to guess layout transforms at runtime.
 
-Current capabilities:
+That decision removes an entire class of drift:
 
-- screenshot-first canvas
-- point placement tools
-- region resize handles
-- live key capture
-- inline rename
-- macro editing
-- layer switch editing
-- daemon status and live push
+- wrong scaling
+- wrong coordinate transforms
+- silent mismatch between profile and runtime
 
-## Operational Limits
+## 11. Why `uinput` Still Exists
 
-Phantom is still intentionally narrow:
+`uinput` is still worth keeping because:
 
-- no hotplug rescan
-- no compositor protocol integration
-- no automatic floating joystick discovery
-- no multi-monitor or rotation management
+- it provides a compatibility path
+- it is useful for low-level comparison and debugging
+- it keeps the abstract touch model honest
 
-Best fit:
+But project decisions should be driven by the Android backend first.
 
-- one known fullscreen Waydroid surface
-- one configured touch resolution
-- manually tuned profiles
+## 12. File Ownership By Concern
+
+If you need to change:
+
+- input capture: `phantom/src/input.rs`
+- profile schema: `phantom/src/profile.rs`
+- control semantics: `phantom/src/engine.rs`
+- runtime commands: `phantom/src/ipc.rs` and `phantom/src/main.rs`
+- Android backend transport: `phantom/src/android_inject.rs`
+- Android launch behavior: `phantom/src/waydroid.rs`
+- GUI editing or runtime widgets: `phantom-gui/src/main.rs`
+- Android container server behavior: `contrib/android-server/src/com/phantom/server/PhantomServer.java`
+
+## 13. Operational Boundaries
+
+The architecture explicitly does not solve:
+
+- floating joystick discovery
+- UI recognition
+- monitor transforms
+- rotation transforms
+- hotplug rescans
+- generic automation workflows
+
+Those are outside the intended system boundary.
+
+## 14. Maintainability Rule
+
+Any behavioral change that affects:
+
+- startup order
+- profile schema
+- runtime state meaning
+- backend protocol
+- operator workflow
+
+must update the docs in the same change.
+
+That is not optional if the project is to stay maintainable.

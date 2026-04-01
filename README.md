@@ -1,287 +1,269 @@
 # Phantom
 
-Keyboard and mouse to virtual multitouch mapper for fullscreen Waydroid play.
+Phantom is a Linux keyboard-and-mouse to Android multitouch mapper for fullscreen Waydroid play.
 
-Phantom reads host input through Linux `evdev`, can enter exclusive capture on demand, maps it through a profile-driven state machine, and injects touches through a selectable backend:
+The current recommended architecture is:
 
-- `uinput` for a host-kernel virtual touchscreen
-- `android_socket` for an Android-side `app_process` touch server inside Waydroid over TCP
+- host-side `evdev` capture for keyboard and mouse
+- host-side profile engine that turns input into abstract touch commands
+- Android-side touch injection through `app_process` and `InputManager.injectInputEvent()`
 
-The backends have different startup orders and different health checks. Read [docs/TESTING.md](docs/TESTING.md) before validating one of them.
+That path is exposed as the `android_socket` backend and is the primary backend for this project.
 
-## Product Shape
+The older `uinput` backend still exists as a compatibility backend, but it is no longer the main design center of the project.
+
+## What Phantom Is
 
 Phantom is intentionally narrow:
 
-- one Linux device
-- one fullscreen Waydroid surface
-- one fixed touch resolution
-- manual per-game profiles
+- one known Linux machine
+- one known Waydroid instance
+- one fixed fullscreen Android surface
+- manual, game-specific profiles
 
-That is the supported path. The daemon now treats the touch resolution as a first-class contract instead of guessing.
+That is not a limitation by accident. It is the design that makes the mapper understandable, debuggable, and maintainable.
 
-## Supported Control Types
+## What Phantom Is Not
+
+Phantom is not trying to be:
+
+- a general Android automation system
+- a compositor plugin
+- a desktop cursor remapper
+- a generic emulator frontend
+- a UI-recognition tool
+
+## Current Product Shape
+
+Runtime features:
+
+- `evdev` keyboard and mouse capture
+- runtime capture on/off
+- runtime mouse routing on/off while capture stays active
+- pause/resume without shutting the daemon down
+- live profile load and reload
+- live in-memory profile push from the GUI
+- Android-side touch injection through `app_process`
+- `uinput` fallback backend
+
+Supported profile primitives:
 
 - `tap`
 - `hold_tap`
 - `toggle_tap`
 - `joystick`
-- `mouse_camera` in JSON, shown as `Mouse Look` in the UI
+- `mouse_camera`
 - `repeat_tap`
 - `macro`
 - `layer_shift`
 
-This covers the normal control patterns for PUBG-like, Genshin-like, and eFootball-like games:
+GUI features:
 
-- WASD movement
-- locked mouse look
-- mouse or keyboard bound taps and holds
-- repeated clicks
-- toggle-style holds
-- alternate layers or modes
+- screenshot-first editor
+- direct control placement
+- drag editing for point controls
+- drag/resize editing for mouse-look regions
+- runtime status chips
+- live `Push Live`
+- runtime capture/pause/mouse-routing buttons
+- key capture from real keyboard and mouse input
+- mouse-look activation mode editing
 
-## Runtime Features
+## Recommended Backend
 
-- strict profile `screen` matching
-- shared evdev observation on startup
-- `F8` toggles capture on or off inside the daemon
-- `F1` toggles mouse grab while capture is already active
-- `F9` toggles pause or resume inside the daemon
-- live profile push over IPC
-- profile reload from disk
-- layer switching and toggle nodes
+For Waydroid in the current project state, use:
 
-## GUI Features
+- `touch_backend = "android_socket"`
 
-`phantom-gui` is now a native mapper, not just a raw JSON editor.
+Use `uinput` only if:
 
-It supports:
+- you explicitly want the legacy path
+- you are debugging low-level kernel device behavior
+- your environment cannot use the Android-side server path
 
-- screenshot-first canvas editing
-- bundled templates for PUBG, Genshin, and eFootball
-- direct placement tools
-- drag editing for points
-- drag and resize handles for mouse-look regions
-- mouse-wheel zoom and space-drag panning
-- grid and node snapping for placement
-- hover cards and right-click canvas actions
-- on-the-fly key capture
-- undo and redo
-- copy, paste, and duplicate controls
-- inline rename
-- control reordering from the left panel
-- pixel coordinate feedback in the properties panel
-- active-layer highlighting
-- macro step editing
-- layer switch editing
-- live daemon status
-- one-click `Push Live`
-- runtime buttons for capture and pause control
+Why:
+
+- Android framework injection handles multi-touch state correctly inside Android
+- Waydroid no longer has to discover a new virtual touchscreen device
+- the project now matches how scrcpy-style input injection works
+
+## Documentation Map
+
+Start here, in this order:
+
+1. [docs/INSTALL.md](docs/INSTALL.md)
+   Full clean-machine setup, including Android SDK, build, config, permissions, and first startup.
+2. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+   Current system design, data flow, file ownership, state model, and design decisions.
+3. [docs/OPERATIONS.md](docs/OPERATIONS.md)
+   Daily use: daemon commands, hotkeys, GUI workflow, capture semantics, and recommended game workflows.
+4. [docs/TESTING.md](docs/TESTING.md)
+   Bring-up and validation matrix for `android_socket` and `uinput`.
+5. [docs/PROFILES.md](docs/PROFILES.md)
+   Profile schema, node behavior, validation rules, and mapping guidelines.
+
+Reference documents:
+
+- [docs/IPC.md](docs/IPC.md)
+- [docs/ANDROID_SOCKET_PROTOCOL.md](docs/ANDROID_SOCKET_PROTOCOL.md)
+- [docs/PROTOCOL.md](docs/PROTOCOL.md)
+- [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+- [TOTAL_SCOPE.md](TOTAL_SCOPE.md)
+- [contrib/android-server/README.md](contrib/android-server/README.md)
 
 ## Quick Start
 
-Choose the backend first:
+This is the short version. The full version is in [docs/INSTALL.md](docs/INSTALL.md).
 
-- `uinput`: Waydroid should see a new kernel touchscreen device
-- `android_socket`: Waydroid keeps no new kernel device; Phantom talks to an Android-side server over TCP
-
-1. Build:
+1. Build the Rust binaries:
 
 ```bash
 cargo build --release
 ```
 
-2. Enable input-device access. If you want the `uinput` backend, also enable `/dev/uinput`:
+2. Build the Android touch server:
 
 ```bash
-sudo modprobe uinput
-echo uinput | sudo tee /etc/modules-load.d/uinput.conf
-
-sudo cp contrib/99-phantom.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-sudo usermod -aG input "$USER"
+./contrib/android-server/build.sh
 ```
 
-Log out and back in after changing groups.
-
-3. Install config and profiles:
+3. Copy the example config:
 
 ```bash
 mkdir -p ~/.config/phantom/profiles
 cp config.example.toml ~/.config/phantom/config.toml
 cp profiles/*.json ~/.config/phantom/profiles/
-cp profiles/pubg.json ~/.config/phantom/profiles/default.json
 ```
 
-4. Set the real fullscreen Waydroid resolution in `~/.config/phantom/config.toml`:
+4. Set the real Android screen size and the Android server jar path.
 
-```toml
-log_level = "info"
-
-[screen]
-width = 1920
-height = 1080
-```
-
-Default backend:
-
-```toml
-touch_backend = "uinput"
-```
-
-5. Start using the backend-specific order:
-
-For `uinput`:
-
-```bash
-./target/release/phantom --daemon
-waydroid session stop
-waydroid session start
-```
-
-For `android_socket`:
+5. Start Waydroid and make sure the container is not frozen:
 
 ```bash
 waydroid session start
 waydroid show-full-ui
-sudo ./target/release/phantom --daemon
+sudo waydroid status
 ```
 
-6. Check status or load another profile:
+6. Start Phantom:
 
 ```bash
-./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
-./target/release/phantom status
-./target/release/phantom load ~/.config/phantom/profiles/pubg.json
+sudo ./target/release/phantom --trace --daemon
 ```
 
-7. Open the GUI:
+7. Verify status and load a profile:
+
+```bash
+./target/release/phantom status
+./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
+./target/release/phantom load ~/.config/phantom/profiles/pubg.json
+./target/release/phantom enter-capture
+```
+
+8. Open the editor:
 
 ```bash
 ./target/release/phantom-gui
 ```
 
-8. Enter gameplay capture when you are ready to play:
+## Runtime Model
 
-```bash
-./target/release/phantom enter-capture
+Phantom runtime state is easiest to reason about as four switches:
+
+- daemon running or not
+- capture enabled or not
+- mouse routed to game or not
+- engine paused or not
+
+Important distinction:
+
+- capture enabled means Phantom owns the input path for gameplay
+- mouse routed means mouse-originated events are actually forwarded into the game
+
+That distinction is what makes desktop adjustments, menu interaction, and future PUBG-like aim workflows possible.
+
+## Runtime Hotkeys
+
+Daemon hotkeys are configurable in `~/.config/phantom/config.toml`:
+
+```toml
+[runtime_hotkeys]
+mouse_toggle = "F1"
+capture_toggle = "F8"
+pause_toggle = "F9"
+shutdown = "F2"
 ```
 
-Runtime workflow:
+Use `""` or `"none"` to disable a hotkey.
 
-- daemon start: Phantom observes keyboard and mouse but does not seize desktop input
-- `F8`: enter or leave exclusive gameplay capture
-- `F1`: temporarily release or re-grab only the mouse while staying in capture mode
-- `F9`: pause or resume touch injection without shutting the daemon down
+Default meaning:
 
-Editor workflow:
+- `F8`: enter or leave capture
+- `F1`: toggle mouse routing while staying in capture
+- `F9`: pause or resume touch injection
+- `F2`: stop the daemon
 
-- use `Bind` in the properties panel as the primary key-binding flow
-- use `Templates` to start from a shipped layout instead of mapping from scratch
-- use the mouse wheel to zoom and hold `Space` while dragging to pan
-- right-click controls on the canvas for bind, copy, duplicate, delete, and reorder
+## Mouse Look Modes
 
-Editor shortcuts:
+`mouse_camera` is Phantom's mouse-look primitive. It is touch-drag camera emulation, not desktop pointer emulation.
 
-- `Ctrl+N`, `Ctrl+O`, `Ctrl+S`, `Ctrl+Shift+S`
-- `Ctrl+R` to push live
-- `Ctrl+Z`, `Ctrl+Shift+Z`, `Ctrl+Y`
-- `Ctrl+C`, `Ctrl+V`, `Ctrl+D`
-- `Delete`
-- `1` to `7` for Select, Tap, Hold, Toggle, Left Stick, Mouse Look, Rapid Tap
+Supported activation modes:
+
+- `always_on`
+- `while_held`
+- `toggle`
+
+Use cases:
+
+- `always_on`
+  Good for games where capture should always steer the camera.
+- `while_held`
+  Good for games where a key should both enter a mode and enable look, such as aim-down-sights.
+- `toggle`
+  Good for games where you want to explicitly turn camera mode on and off.
 
 ## Common Commands
 
 ```bash
 phantom --daemon
 phantom audit <profile.json>
+phantom status
 phantom load <profile.json>
 phantom reload
-phantom status
-phantom pause
-phantom resume
 phantom enter-capture
 phantom exit-capture
 phantom toggle-capture
+phantom grab-mouse
+phantom release-mouse
+phantom toggle-mouse
+phantom pause
+phantom resume
 phantom sensitivity <value>
 phantom list
 phantom shutdown
 ```
 
-Use `phantom audit <profile.json>` before live testing when you need to confirm that the controls you care about land on distinct touch slots. This is the quickest way to answer questions like "can this profile really hold 5 mapped touches at once?" without involving Waydroid or the game yet.
+`phantom audit` is the fastest way to confirm whether a profile can actually hold multiple mapped touches at once, because it shows the slot layout directly from the profile model.
 
 ## Example Profiles
+
+Shipped starter profiles:
 
 - `profiles/pubg.json`
 - `profiles/genshin.json`
 - `profiles/efootball-template.json`
 
-The eFootball profile is still a starter layout. Expect to tune it in the GUI for your device.
+Treat them as starting points, not final universal layouts.
 
-## Documentation
+## Current Direction
 
-- [docs/INSTALL.md](docs/INSTALL.md)
-- [docs/TESTING.md](docs/TESTING.md)
-- [docs/ANDROID_SOCKET_PROTOCOL.md](docs/ANDROID_SOCKET_PROTOCOL.md)
-- [docs/PROFILES.md](docs/PROFILES.md)
-- [docs/IPC.md](docs/IPC.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/PROTOCOL.md](docs/PROTOCOL.md)
-- [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
-- [TOTAL_SCOPE.md](TOTAL_SCOPE.md)
+The correct direction for Phantom is:
 
-## Android Backend
+- keep the architecture explicit
+- keep the project Waydroid-focused
+- keep profiles deterministic
+- prefer debuggable systems over magic
+- expand usability and documentation before adding scope
 
-The `android_socket` backend is intended for the Waydroid case where host-side `uinput` multitouch is accepted by Phantom but still collapses downstream inside Android.
-
-Build the Android server:
-
-```bash
-./contrib/android-server/build.sh
-```
-
-`build.sh` auto-detects the newest installed SDK platform `android.jar` from `ANDROID_JAR`, `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or `~/Android/Sdk`.
-It also uses `d8` to build a dex jar for `app_process`; a plain Java `.class` jar is not valid for this backend.
-
-Then point Phantom at the built jar:
-
-```toml
-touch_backend = "android_socket"
-
-[android]
-auto_launch = true
-server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
-```
-
-What changes when `android_socket` is enabled:
-
-- start Waydroid first, make sure `waydroid status` shows `Container: RUNNING`, then start Phantom
-- starting the daemon with `sudo` is fine; Phantom resolves config and IPC paths from the invoking user
-- the daemon stages a jar into the container and launches it with `waydroid shell`
-- `getevent` and `dumpsys input` no longer show a new Phantom touchscreen device
-- the meaningful health signals become the Phantom daemon log, the container TCP listener, and the Android server log
-
-Current Android backend artifacts:
-
-- staged jar inside the container: `/data/local/tmp/phantom-server.jar`
-- server log inside the container: `/data/local/tmp/phantom-server.log`
-- listener port inside Waydroid: `27183` by default
-
-Important runtime note:
-
-- `Session: RUNNING` with `Container: FROZEN` is not enough for `android_socket`
-- if the container is frozen, open Waydroid with `waydroid show-full-ui` or launch the game before starting Phantom
-
-## Testing
-
-```bash
-cargo test
-cargo clippy --workspace --all-targets
-```
-
-Ignored tests still require a real `/dev/uinput`.
-
-## License
-
-MIT
+That is how the project stays maintainable.

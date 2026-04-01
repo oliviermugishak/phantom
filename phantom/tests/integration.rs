@@ -36,6 +36,8 @@ fn pubg_profile() -> Profile {
                     h: 1.0,
                 },
                 sensitivity: 1.2,
+                activation_mode: MouseCameraActivationMode::AlwaysOn,
+                activation_key: None,
                 invert_y: false,
             },
             Node::HoldTap {

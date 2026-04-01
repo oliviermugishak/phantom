@@ -29,6 +29,15 @@ pub enum LayerMode {
     Toggle,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseCameraActivationMode {
+    #[default]
+    AlwaysOn,
+    WhileHeld,
+    Toggle,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
@@ -72,6 +81,13 @@ pub enum Node {
         slot: u8,
         region: Region,
         sensitivity: f64,
+        #[serde(
+            default,
+            skip_serializing_if = "is_default_mouse_camera_activation_mode"
+        )]
+        activation_mode: MouseCameraActivationMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activation_key: Option<String>,
         #[serde(default)]
         invert_y: bool,
     },
@@ -180,6 +196,10 @@ fn is_default_layer(layer: &str) -> bool {
     layer.trim().is_empty()
 }
 
+fn is_default_mouse_camera_activation_mode(mode: &MouseCameraActivationMode) -> bool {
+    matches!(mode, MouseCameraActivationMode::AlwaysOn)
+}
+
 impl Node {
     pub fn kind(&self) -> &'static str {
         match self {
@@ -246,7 +266,9 @@ impl Node {
                 keys.left.as_str(),
                 keys.right.as_str(),
             ],
-            Node::MouseCamera { .. } => vec![],
+            Node::MouseCamera { activation_key, .. } => {
+                activation_key.as_deref().into_iter().collect()
+            }
         }
     }
 
@@ -258,7 +280,8 @@ impl Node {
             | Node::RepeatTap { key, .. }
             | Node::Macro { key, .. }
             | Node::LayerShift { key, .. } => Some(key),
-            Node::Joystick { .. } | Node::MouseCamera { .. } => None,
+            Node::Joystick { .. } => None,
+            Node::MouseCamera { activation_key, .. } => activation_key.as_deref(),
         }
     }
 
@@ -276,7 +299,13 @@ impl Node {
                 keys.left.clone(),
                 keys.right.clone(),
             ],
-            Node::MouseCamera { .. } => vec!["MouseMove".into()],
+            Node::MouseCamera { activation_key, .. } => {
+                let mut bindings = vec!["MouseMove".into()];
+                if let Some(key) = activation_key {
+                    bindings.push(key.clone());
+                }
+                bindings
+            }
         }
     }
 
@@ -286,11 +315,24 @@ impl Node {
             Node::MouseCamera {
                 region,
                 sensitivity,
+                activation_mode,
+                activation_key,
                 invert_y,
                 ..
             } => Some(format!(
-                "region=({:.3},{:.3},{:.3},{:.3}) sensitivity={:.3} invert_y={}",
-                region.x, region.y, region.w, region.h, sensitivity, invert_y
+                "region=({:.3},{:.3},{:.3},{:.3}) sensitivity={:.3} mode={} key={} invert_y={}",
+                region.x,
+                region.y,
+                region.w,
+                region.h,
+                sensitivity,
+                match activation_mode {
+                    MouseCameraActivationMode::AlwaysOn => "always_on",
+                    MouseCameraActivationMode::WhileHeld => "while_held",
+                    MouseCameraActivationMode::Toggle => "toggle",
+                },
+                activation_key.as_deref().unwrap_or("-"),
+                invert_y
             )),
             Node::Macro { sequence, .. } => Some(format!("steps={}", sequence.len())),
             Node::LayerShift {
@@ -522,6 +564,8 @@ fn validate_node(node: &Node) -> Result<()> {
         Node::MouseCamera {
             region,
             sensitivity,
+            activation_mode,
+            activation_key,
             ..
         } => {
             validate_region(region, &format!("nodes.{id}.region"))?;
@@ -530,6 +574,29 @@ fn validate_node(node: &Node) -> Result<()> {
                     field: format!("nodes.{id}.sensitivity"),
                     message: "sensitivity must be positive".into(),
                 });
+            }
+            match activation_mode {
+                MouseCameraActivationMode::AlwaysOn => {
+                    if activation_key.is_some() {
+                        return Err(PhantomError::ProfileValidation {
+                            field: format!("nodes.{id}.activation_key"),
+                            message:
+                                "activation_key must be omitted when activation_mode is always_on"
+                                    .into(),
+                        });
+                    }
+                }
+                MouseCameraActivationMode::WhileHeld | MouseCameraActivationMode::Toggle => {
+                    let Some(key) = activation_key.as_ref() else {
+                        return Err(PhantomError::ProfileValidation {
+                            field: format!("nodes.{id}.activation_key"),
+                            message:
+                                "activation_key is required when activation_mode is while_held or toggle"
+                                    .into(),
+                        });
+                    };
+                    validate_key_name(key, &format!("nodes.{id}.activation_key"))?;
+                }
             }
         }
         Node::Macro { key, sequence, .. } => {
@@ -796,6 +863,50 @@ mod tests {
                 h: 1.0,
             },
             sensitivity: 1.0,
+            activation_mode: MouseCameraActivationMode::AlwaysOn,
+            activation_key: None,
+            invert_y: false,
+        }];
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_mouse_look_toggle_without_activation_key() {
+        let mut p = valid_profile();
+        p.nodes = vec![Node::MouseCamera {
+            id: "cam".into(),
+            layer: default_layer(),
+            slot: 0,
+            region: Region {
+                x: 0.0,
+                y: 0.0,
+                w: 0.5,
+                h: 1.0,
+            },
+            sensitivity: 1.0,
+            activation_mode: MouseCameraActivationMode::Toggle,
+            activation_key: None,
+            invert_y: false,
+        }];
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_mouse_look_activation_key_when_always_on() {
+        let mut p = valid_profile();
+        p.nodes = vec![Node::MouseCamera {
+            id: "cam".into(),
+            layer: default_layer(),
+            slot: 0,
+            region: Region {
+                x: 0.0,
+                y: 0.0,
+                w: 0.5,
+                h: 1.0,
+            },
+            sensitivity: 1.0,
+            activation_mode: MouseCameraActivationMode::AlwaysOn,
+            activation_key: Some("MouseRight".into()),
             invert_y: false,
         }];
         assert!(p.validate().is_err());

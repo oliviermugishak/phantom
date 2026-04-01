@@ -7,15 +7,10 @@ use tracing_subscriber::EnvFilter;
 use phantom::config;
 use phantom::engine::KeymapEngine;
 use phantom::error::{PhantomError, Result};
-use phantom::input::{InputCapture, InputEvent, Key};
+use phantom::input::{InputCapture, InputEvent};
 use phantom::ipc::{self, DaemonState, IpcRequest};
 use phantom::profile::Profile;
 use phantom::touch;
-
-const CAPTURE_TOGGLE_KEY: Key = Key::F8;
-const PAUSE_TOGGLE_KEY: Key = Key::F9;
-const MOUSE_TOGGLE_KEY: Key = Key::F1;
-const RELEASE_ALL_KEY: Key = Key::F2;
 
 fn print_help() {
     eprintln!(
@@ -32,15 +27,18 @@ USAGE:
     phantom enter-capture             Enable exclusive gameplay capture
     phantom exit-capture              Release exclusive gameplay capture
     phantom toggle-capture            Toggle gameplay capture
+    phantom grab-mouse                Route mouse input into the game
+    phantom release-mouse             Release mouse input back to desktop
+    phantom toggle-mouse              Toggle mouse routing while capture is active
     phantom sensitivity <value>       Set global sensitivity
     phantom list                      List available profiles
     phantom shutdown                  Graceful shutdown
 
-KEYS (while daemon running):
-    F2   Shutdown daemon (kills everything, restart to play again)
-    F1   Toggle mouse grab (free mouse for desktop)
-    F8   Toggle capture mode (game mode on/off)
-    F9   Toggle pause (freeze touch injection)
+KEYS (while daemon running, configurable in config.toml [runtime_hotkeys]):
+    F2   Shutdown daemon (default)
+    F1   Toggle mouse grab (default)
+    F8   Toggle capture mode (default)
+    F9   Toggle pause (default)
 
 FLAGS:
     --daemon      Run as daemon (requires root)
@@ -200,6 +198,7 @@ async fn run_daemon() -> Result<()> {
     });
 
     let (screen_w, screen_h) = detect_resolution(&config, default_profile.as_ref())?;
+    let runtime_hotkeys = config::resolved_runtime_hotkeys(&config);
     let touch = touch::create_touch_device(&config, screen_w, screen_h)?;
     let capture = InputCapture::discover()?;
     tracing::info!(
@@ -254,7 +253,13 @@ async fn run_daemon() -> Result<()> {
         flag.store(true, Ordering::Release);
     });
 
-    tracing::info!("daemon ready, entering event loop (F1 mouse toggle, F8 capture, F9 pause)");
+    tracing::info!(
+        mouse_toggle = ?runtime_hotkeys.mouse_toggle,
+        capture_toggle = ?runtime_hotkeys.capture_toggle,
+        pause_toggle = ?runtime_hotkeys.pause_toggle,
+        shutdown = ?runtime_hotkeys.shutdown,
+        "daemon ready, entering event loop"
+    );
 
     let mut input_interval = tokio::time::interval(Duration::from_millis(1));
     input_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -297,9 +302,28 @@ async fn run_daemon() -> Result<()> {
                         tracing::trace!(events = ?input_events, "translated input batch");
 
                         let mut gameplay_events = Vec::new();
+                        let (mut mouse_routed, mut keyboard_routed) = match ipc::lock_capture(&state)
+                        {
+                            Ok(capture) => (capture.mouse_grabbed(), capture.keyboard_grabbed()),
+                            Err(e) => {
+                                tracing::warn!("input capture lock error: {}", e);
+                                continue;
+                            }
+                        };
                         for event in input_events {
-                            match handle_runtime_shortcut(&state, &event).await {
-                                Ok(true) => continue,
+                            match handle_runtime_shortcut(&state, &event, &runtime_hotkeys).await {
+                                Ok(true) => {
+                                    match ipc::lock_capture(&state) {
+                                        Ok(capture) => {
+                                            mouse_routed = capture.mouse_grabbed();
+                                            keyboard_routed = capture.keyboard_grabbed();
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("input capture lock error: {}", e);
+                                        }
+                                    }
+                                    continue;
+                                }
                                 Ok(false) => {}
                                 Err(e) => {
                                     tracing::warn!("runtime shortcut error: {}", e);
@@ -307,6 +331,23 @@ async fn run_daemon() -> Result<()> {
                                 }
                             }
                             if state.capture_active.load(Ordering::Acquire) {
+                                // Capture and routing are intentionally separate.
+                                // We may still be in gameplay capture while the user has
+                                // temporarily released only the mouse back to the desktop.
+                                if event.is_mouse_input() && !mouse_routed {
+                                    tracing::trace!(
+                                        event = ?event,
+                                        "dropping gameplay event because mouse routing is disabled"
+                                    );
+                                    continue;
+                                }
+                                if event.is_keyboard_input() && !keyboard_routed {
+                                    tracing::trace!(
+                                        event = ?event,
+                                        "dropping gameplay event because keyboard routing is disabled"
+                                    );
+                                    continue;
+                                }
                                 gameplay_events.push(event);
                             } else {
                                 tracing::trace!(event = ?event, "dropping gameplay event because capture is inactive");
@@ -388,15 +429,19 @@ async fn run_daemon() -> Result<()> {
     Ok(())
 }
 
-async fn handle_runtime_shortcut(state: &Arc<DaemonState>, event: &InputEvent) -> Result<bool> {
+async fn handle_runtime_shortcut(
+    state: &Arc<DaemonState>,
+    event: &InputEvent,
+    hotkeys: &config::RuntimeHotkeys,
+) -> Result<bool> {
     match event {
-        InputEvent::KeyPress(key) if *key == CAPTURE_TOGGLE_KEY => {
+        InputEvent::KeyPress(key) if hotkeys.capture_toggle == Some(*key) => {
             let next = !state.capture_active.load(Ordering::Acquire);
             ipc::set_capture_active(state, next).await?;
             tracing::info!("capture {}", if next { "enabled" } else { "disabled" });
             Ok(true)
         }
-        InputEvent::KeyPress(key) if *key == PAUSE_TOGGLE_KEY => {
+        InputEvent::KeyPress(key) if hotkeys.pause_toggle == Some(*key) => {
             let cmds = {
                 let mut engine = state.engine.write().await;
                 if engine.is_paused() {
@@ -414,24 +459,28 @@ async fn handle_runtime_shortcut(state: &Arc<DaemonState>, event: &InputEvent) -
             }
             Ok(true)
         }
-        InputEvent::KeyPress(key) if *key == MOUSE_TOGGLE_KEY => {
+        InputEvent::KeyPress(key) if hotkeys.mouse_toggle == Some(*key) => {
             if !state.capture_active.load(Ordering::Acquire) {
-                tracing::info!("F1 mouse toggle ignored (not in capture mode)");
+                tracing::info!("mouse toggle ignored (not in capture mode)");
                 return Ok(true);
             }
-            let mut capture = ipc::lock_capture(state)?;
-            let currently_grabbed = capture.mouse_grabbed();
-            if currently_grabbed {
-                capture.set_grabbed_mouse_only(false)?;
-                tracing::info!("mouse released to desktop (F1)");
-            } else {
-                capture.set_grabbed_mouse_only(true)?;
-                tracing::info!("mouse grabbed for gameplay (F1)");
-            }
+            let currently_grabbed = {
+                let capture = ipc::lock_capture(state)?;
+                capture.mouse_grabbed()
+            };
+            ipc::set_mouse_routed(state, !currently_grabbed).await?;
+            tracing::info!(
+                "{}",
+                if currently_grabbed {
+                    "mouse released to desktop"
+                } else {
+                    "mouse grabbed for gameplay"
+                }
+            );
             Ok(true)
         }
-        InputEvent::KeyPress(key) if *key == RELEASE_ALL_KEY => {
-            tracing::info!("F2: shutting down daemon");
+        InputEvent::KeyPress(key) if hotkeys.shutdown == Some(*key) => {
+            tracing::info!("shutdown hotkey pressed");
             // Signal shutdown — cleanup happens in the main loop
             state.shutdown_tx.send(()).ok();
             Ok(true)
@@ -467,6 +516,9 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
         "enter-capture" => IpcRequest::EnterCapture,
         "exit-capture" => IpcRequest::ExitCapture,
         "toggle-capture" => IpcRequest::ToggleCapture,
+        "grab-mouse" => IpcRequest::GrabMouse,
+        "release-mouse" => IpcRequest::ReleaseMouse,
+        "toggle-mouse" => IpcRequest::ToggleMouse,
         "shutdown" => IpcRequest::Shutdown,
         "list" => IpcRequest::ListProfiles,
         "sensitivity" => {
@@ -514,6 +566,12 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
         }
         if let Some(capture_active) = response.capture_active {
             eprintln!("capture: {}", capture_active);
+        }
+        if let Some(mouse_grabbed) = response.mouse_grabbed {
+            eprintln!("mouse routed: {}", mouse_grabbed);
+        }
+        if let Some(keyboard_grabbed) = response.keyboard_grabbed {
+            eprintln!("keyboard routed: {}", keyboard_grabbed);
         }
         if let Some(sensitivity) = response.sensitivity {
             eprintln!("sensitivity: {}", sensitivity);

@@ -1,31 +1,67 @@
 # Android Touch Server
 
-This directory contains the Android-side `app_process` server used by the `android_socket` Phantom backend.
+This directory contains the Android-side server used by Phantom's primary backend.
+
+It is launched with:
+
+- `app_process`
+
+It receives:
+
+- touch frames from the host daemon over TCP
+
+It injects:
+
+- Android `MotionEvent`s through `InputManager.injectInputEvent()`
+
+## Why This Exists
+
+The server exists so Phantom can keep:
+
+- input capture
+- profile logic
+- control state
+
+on the Linux host, while moving the final touch injection into Android itself.
+
+That is the architecture the project is now built around.
 
 ## Build
 
-`build.sh` tries these in order:
-
-1. `ANDROID_JAR` if explicitly set
-2. `ANDROID_SDK_ROOT`
-3. `ANDROID_HOME`
-4. `~/Android/Sdk`
-
-It compiles the server against `android.jar`, then runs `d8` to produce a dex jar suitable for `app_process`. A plain `.class` jar will not boot inside Waydroid.
-
-It then picks the newest installed platform `android.jar`.
+Build with:
 
 ```bash
 ./contrib/android-server/build.sh
 ```
 
+`build.sh` does:
+
+1. find `android.jar`
+2. compile Java sources
+3. package classes
+4. run `d8`
+5. emit a dex jar suitable for `app_process`
+
 Output:
 
 - `contrib/android-server/build/phantom-server.jar`
 
-## Runtime
+If the jar does not contain `classes.dex`, it is not valid for this backend.
 
-The Rust daemon can stage and launch this jar automatically when these config fields are set:
+## SDK Detection
+
+`build.sh` checks these in order:
+
+1. `ANDROID_JAR`
+2. `ANDROID_SDK_ROOT`
+3. `ANDROID_HOME`
+4. `~/Android/Sdk`
+
+It uses the newest installed platform jar and build tools it can find.
+
+## Runtime Integration
+
+The daemon can auto-stage and auto-launch this server when configured:
 
 ```toml
 touch_backend = "android_socket"
@@ -35,34 +71,42 @@ auto_launch = true
 server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
 ```
 
-For the current implementation:
+Current runtime defaults:
 
-- Waydroid must already be running and unfrozen before the daemon starts
-- the daemon may need elevated privileges to stage the jar into `/var/lib/waydroid/data/local/tmp`
-- if the Android server dies after the daemon connects, restart the daemon
-
-The daemon now copies the jar into the container over `waydroid shell` and talks to the server over TCP, not a shared filesystem socket.
-
-The default runtime settings are:
-
-- host: Waydroid container IP from `waydroid status`
+- bind host: `0.0.0.0`
 - port: `27183`
-- staged jar inside the container: `/data/local/tmp/phantom-server.jar`
-- container log: `/data/local/tmp/phantom-server.log`
+- staged jar path: `/data/local/tmp/phantom-server.jar`
+- log path: `/data/local/tmp/phantom-server.log`
 
-Important:
+## Important Operational Rules
 
-- `waydroid status` must show `Container: RUNNING`
-- if it shows `Container: FROZEN`, open Waydroid with `waydroid show-full-ui` or launch the game first
+- Waydroid must already be running before the daemon starts
+- the container must be `RUNNING`, not `FROZEN`
+- if the server dies after the daemon connects, restart the daemon
 
-Manual launch inside the Waydroid container:
+## Manual Launch
+
+Manual launch inside the container:
 
 ```bash
 waydroid shell sh -c 'CLASSPATH=/data/local/tmp/phantom-server.jar app_process / com.phantom.server.PhantomServer --host 0.0.0.0 --port 27183'
 ```
 
-Log path inside the container:
+Manual log check:
 
 ```bash
 sudo waydroid shell -- sh -c 'tail -n 50 /data/local/tmp/phantom-server.log'
 ```
+
+## Debug Signals
+
+Good server signals:
+
+- `phantom-server starting host=0.0.0.0 port=27183`
+- `phantom-server client connected`
+
+Bad signs:
+
+- no log output
+- listener exists but Phantom ping fails
+- container still frozen

@@ -1,33 +1,46 @@
 # Phantom configuration
-# Place at ~/.config/phantom/config.toml
+# Copy this file to ~/.config/phantom/config.toml and adjust it for your machine.
 
 # Log level: trace, debug, info, warn, error
-# Use "trace" when debugging raw evdev input, engine decisions, and injected touch batches.
+# Use "trace" when debugging evdev capture, engine decisions, backend transport, or touch injection.
 log_level = "info"
 
-# Touch injection backend:
-# - "uinput" is the current host-kernel virtual touchscreen path
-# - "android_socket" sends touch commands to an app_process server inside Waydroid
-#   and expects the Waydroid session to already be running before daemon startup
-touch_backend = "uinput"
+# Recommended backend for Waydroid:
+# - "android_socket" is the primary backend and the recommended path
+# - "uinput" is the legacy compatibility backend
+touch_backend = "android_socket"
 
-# Fullscreen Waydroid touch resolution
-# Set both values. Phantom treats this as the runtime screen contract.
+# Fullscreen Android touch resolution.
+# This is the runtime screen contract used by the daemon.
 [screen]
 width = 1920
 height = 1080
 
-# Optional Android framework backend settings.
-# Enable these only after building contrib/android-server/build/phantom-server.jar.
-#[android]
-#auto_launch = true
-#server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
-#host = "192.168.240.112"
-#port = 27183
-#server_class = "com.phantom.server.PhantomServer"
-#container_bind_host = "0.0.0.0"
-#container_server_jar = "/data/local/tmp/phantom-server.jar"
-#container_log_path = "/data/local/tmp/phantom-server.log"
+# Android framework backend settings.
+# Build the server first with:
+#   ./contrib/android-server/build.sh
+[android]
+auto_launch = true
+server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
+server_class = "com.phantom.server.PhantomServer"
+container_bind_host = "0.0.0.0"
+port = 27183
+container_server_jar = "/data/local/tmp/phantom-server.jar"
+container_log_path = "/data/local/tmp/phantom-server.log"
 
-#[waydroid]
-#work_dir = "/var/lib/waydroid"
+# Optional explicit overrides. In normal use, the daemon derives these automatically.
+#host = "192.168.240.112"
+#socket_path = "/var/lib/waydroid/data/local/tmp/phantom.sock"
+#container_socket_path = "/data/local/tmp/phantom.sock"
+
+[waydroid]
+work_dir = "/var/lib/waydroid"
+
+# Optional daemon-level hotkeys.
+# Use a known key name like "F1" or "MouseRight".
+# Use "" or "none" to disable a hotkey entirely.
+[runtime_hotkeys]
+mouse_toggle = "F1"
+capture_toggle = "F8"
+pause_toggle = "F9"
+shutdown = "F2"

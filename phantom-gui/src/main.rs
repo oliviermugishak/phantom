@@ -7,7 +7,8 @@ use egui::{Align2, Color32, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec
 use phantom::config;
 use phantom::ipc::{self, IpcRequest, IpcResponse};
 use phantom::profile::{
-    JoystickKeys, LayerMode, MacroAction, MacroStep, Node, Profile, Region, RelPos, ScreenOverride,
+    JoystickKeys, LayerMode, MacroAction, MacroStep, MouseCameraActivationMode, Node, Profile,
+    Region, RelPos, ScreenOverride,
 };
 
 const COLOR_TAP: Color32 = Color32::from_rgb(66, 133, 244);
@@ -146,6 +147,7 @@ enum JoyDir {
 enum BindingTarget {
     Primary(usize),
     Joystick { idx: usize, dir: JoyDir },
+    MouseLookActivation(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -183,6 +185,8 @@ struct RuntimeState {
     profile: Option<String>,
     paused: bool,
     capture_active: bool,
+    mouse_grabbed: bool,
+    keyboard_grabbed: bool,
     screen: Option<(u32, u32)>,
     active_layers: Vec<String>,
     last_error: Option<String>,
@@ -499,6 +503,8 @@ impl PhantomGui {
         self.runtime.profile = response.profile.clone();
         self.runtime.paused = response.paused.unwrap_or(false);
         self.runtime.capture_active = response.capture_active.unwrap_or(false);
+        self.runtime.mouse_grabbed = response.mouse_grabbed.unwrap_or(false);
+        self.runtime.keyboard_grabbed = response.keyboard_grabbed.unwrap_or(false);
         self.runtime.active_layers = response.active_layers.clone().unwrap_or_default();
         self.runtime.screen = match (response.screen_width, response.screen_height) {
             (Some(w), Some(h)) => Some((w, h)),
@@ -809,6 +815,8 @@ impl PhantomGui {
                         h: height,
                     },
                     sensitivity: 1.0,
+                    activation_mode: MouseCameraActivationMode::AlwaysOn,
+                    activation_key: None,
                     invert_y: false,
                 }
             }
@@ -937,7 +945,11 @@ impl PhantomGui {
                         *key = binding;
                         true
                     }
-                    Node::Joystick { .. } | Node::MouseCamera { .. } => false,
+                    Node::Joystick { .. } => false,
+                    Node::MouseCamera { activation_key, .. } => {
+                        *activation_key = Some(binding);
+                        true
+                    }
                 }
             }
             BindingTarget::Joystick { idx, dir } => {
@@ -953,6 +965,16 @@ impl PhantomGui {
                     JoyDir::Left => keys.left = binding,
                     JoyDir::Right => keys.right = binding,
                 }
+                true
+            }
+            BindingTarget::MouseLookActivation(idx) => {
+                let Some(node) = profile.nodes.get_mut(*idx) else {
+                    return false;
+                };
+                let Node::MouseCamera { activation_key, .. } = node else {
+                    return false;
+                };
+                *activation_key = Some(binding);
                 true
             }
         }
@@ -1240,6 +1262,17 @@ impl PhantomGui {
                     if ui.button("Toggle Capture").clicked() {
                         self.send_runtime_request(IpcRequest::ToggleCapture, "capture toggled");
                     }
+                    let mouse_label = if self.runtime.mouse_grabbed {
+                        "Release Mouse"
+                    } else {
+                        "Grab Mouse"
+                    };
+                    if ui
+                        .add_enabled(self.runtime.capture_active, egui::Button::new(mouse_label))
+                        .clicked()
+                    {
+                        self.send_runtime_request(IpcRequest::ToggleMouse, "mouse routing toggled");
+                    }
                 });
 
                 ui.add_space(6.0);
@@ -1281,6 +1314,8 @@ impl PhantomGui {
                                 .color(Color32::from_rgb(255, 218, 121)),
                             );
                         }
+                        runtime_chip(ui, self.runtime.mouse_grabbed, "Mouse");
+                        runtime_chip(ui, self.runtime.keyboard_grabbed, "Keyboard");
                         runtime_chip(ui, self.runtime.capture_active, "Capture");
                         runtime_chip(ui, !self.runtime.paused, "Active");
                         runtime_chip(ui, self.runtime.connected, "Daemon");
@@ -1631,6 +1666,8 @@ impl PhantomGui {
                     }
                     Node::MouseCamera {
                         sensitivity,
+                        activation_mode,
+                        activation_key,
                         invert_y,
                         ..
                     } => {
@@ -1649,6 +1686,76 @@ impl PhantomGui {
                                 dirty = true;
                             }
                         });
+                        ui.horizontal(|ui| {
+                            ui.label("Activation");
+                            let selected = match activation_mode {
+                                MouseCameraActivationMode::AlwaysOn => "Always On",
+                                MouseCameraActivationMode::WhileHeld => "While Held",
+                                MouseCameraActivationMode::Toggle => "Toggle",
+                            };
+                            egui::ComboBox::from_id_salt(("mouse_activation_mode", idx))
+                                .selected_text(selected)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(
+                                                activation_mode,
+                                                MouseCameraActivationMode::AlwaysOn
+                                            ),
+                                            "Always On",
+                                        )
+                                        .clicked()
+                                    {
+                                        *activation_mode = MouseCameraActivationMode::AlwaysOn;
+                                        *activation_key = None;
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(
+                                                activation_mode,
+                                                MouseCameraActivationMode::WhileHeld
+                                            ),
+                                            "While Held",
+                                        )
+                                        .clicked()
+                                    {
+                                        *activation_mode = MouseCameraActivationMode::WhileHeld;
+                                        if activation_key.is_none() {
+                                            *activation_key = Some("MouseRight".into());
+                                        }
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(
+                                                activation_mode,
+                                                MouseCameraActivationMode::Toggle
+                                            ),
+                                            "Toggle",
+                                        )
+                                        .clicked()
+                                    {
+                                        *activation_mode = MouseCameraActivationMode::Toggle;
+                                        if activation_key.is_none() {
+                                            *activation_key = Some("MouseRight".into());
+                                        }
+                                        dirty = true;
+                                    }
+                                });
+                        });
+                        if !matches!(activation_mode, MouseCameraActivationMode::AlwaysOn) {
+                            let key = activation_key.get_or_insert_with(|| "MouseRight".into());
+                            binding_picker(
+                                ui,
+                                "Activation Key",
+                                key,
+                                &BindingTarget::MouseLookActivation(idx),
+                                self.pending_binding.as_ref(),
+                                &mut start_binding,
+                                &mut dirty,
+                            );
+                        }
                         if ui.checkbox(invert_y, "Invert Y").changed() {
                             dirty = true;
                         }
@@ -2354,7 +2461,19 @@ fn display_binding(node: &Node) -> String {
         Node::Joystick { keys, .. } => {
             format!("{}/{}/{}/{}", keys.up, keys.left, keys.down, keys.right)
         }
-        Node::MouseCamera { .. } => "Mouse Look".into(),
+        Node::MouseCamera {
+            activation_mode,
+            activation_key,
+            ..
+        } => match activation_mode {
+            MouseCameraActivationMode::AlwaysOn => "Mouse Look".into(),
+            MouseCameraActivationMode::WhileHeld => {
+                format!("Look: hold {}", activation_key.as_deref().unwrap_or("?"))
+            }
+            MouseCameraActivationMode::Toggle => {
+                format!("Look: toggle {}", activation_key.as_deref().unwrap_or("?"))
+            }
+        },
     }
 }
 
@@ -2442,6 +2561,7 @@ fn binding_target_label(target: &BindingTarget) -> &'static str {
             JoyDir::Left => "stick left",
             JoyDir::Right => "stick right",
         },
+        BindingTarget::MouseLookActivation(_) => "mouse look activator",
     }
 }
 
@@ -2865,11 +2985,29 @@ fn draw_hover_card(
                 lines.push(format!("Pixels: {}, {}", px, py));
             }
         }
-        Node::MouseCamera { region, .. } => {
+        Node::MouseCamera {
+            region,
+            activation_mode,
+            activation_key,
+            sensitivity,
+            ..
+        } => {
             lines.push(format!(
                 "Region: {:.3}, {:.3}, {:.3}, {:.3}",
                 region.x, region.y, region.w, region.h
             ));
+            lines.push(format!("Sensitivity: {:.2}", sensitivity));
+            lines.push(format!(
+                "Mode: {}",
+                match activation_mode {
+                    MouseCameraActivationMode::AlwaysOn => "always_on",
+                    MouseCameraActivationMode::WhileHeld => "while_held",
+                    MouseCameraActivationMode::Toggle => "toggle",
+                }
+            ));
+            if let Some(key) = activation_key {
+                lines.push(format!("Activation: {}", key));
+            }
         }
         Node::Macro { sequence, .. } => lines.push(format!("Steps: {}", sequence.len())),
         Node::LayerShift {

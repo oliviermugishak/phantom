@@ -1,118 +1,130 @@
-# Known Limits And Workarounds
+# Troubleshooting And Limits
 
-This file is intentionally practical. It documents what still requires user care.
+This document covers current operational limits and common failure cases.
 
-## Waydroid Does Not See The Touchscreen
+## 1. Waydroid Is Running But Phantom Still Fails
 
-Symptom:
+Check the container state, not just the session state.
 
-- the host shows `Phantom Virtual Touch`
-- Waydroid does not react
+Bad:
 
-Workaround:
+- `Session: RUNNING`
+- `Container: FROZEN`
 
-1. start Phantom first
-2. restart the Waydroid session
-3. verify with `waydroid shell getevent -lp`
+Good:
 
-Phantom cannot force Waydroid hotplug behavior from inside this repo.
+- `Session: RUNNING`
+- `Container: RUNNING`
 
-## Host Desktop Stops Receiving Keyboard And Mouse
+For the Android backend, `FROZEN` is not good enough.
 
-Expected behavior while capture is active.
+## 2. Android Server Times Out On Startup
 
-Reason:
+Likely causes:
 
-- Phantom uses `EVIOCGRAB` on the selected evdev devices
+- Waydroid was not running before Phantom started
+- the container was frozen
+- the Android jar path is wrong
+- the jar was not built as a dex jar
+- `app_process` startup failed
 
-Workaround:
+Check:
 
-- press `F8`
-- `phantom exit-capture`
-- `phantom pause`
-- `phantom shutdown`
-- a second TTY or SSH shell
+```bash
+sudo waydroid status
+sudo waydroid shell -- sh -c 'tail -n 100 /data/local/tmp/phantom-server.log'
+```
 
-## New Input Devices Are Ignored After Startup
+## 3. Wrong Touch Placement
 
-Current limitation.
+Usually means the screen contract is wrong.
 
-Reason:
+Check:
 
-- Phantom scans devices only once on daemon startup
+- daemon `screen`
+- profile `screen`
+- actual Waydroid surface size
 
-Workaround:
+Phantom is designed to fail fast on screen mismatch rather than silently stretch coordinates.
 
-- restart the daemon after plugging in a new keyboard or mouse
+## 4. Mouse Look Is Not A Desktop Cursor
 
-## Wrong Touch Positions
+`mouse_camera` is a bounded swipe region with a short-lived synthetic finger.
 
-Symptom:
+It is good for:
 
-- taps land offset from the visible Android buttons
+- FPS camera
+- action camera
+- driving camera
 
-Common cause:
+It is not a general-purpose Android cursor substitute.
 
-- Phantom's touchscreen resolution does not match the Waydroid surface you are aiming at
+## 5. Mouse Look Feels Wrong
 
-Workaround:
+Check:
 
-- set `[screen]` in `~/.config/phantom/config.toml`
-- or add a matching `screen` block to the profile
-- restart the daemon
+- region placement
+- node sensitivity
+- global sensitivity
+- activation mode
+- activation key
+- mouse routing state
 
-## Floating Or Dynamic Joysticks
+Good debugging path:
 
-Current limitation.
+1. test `always_on`
+2. confirm the region behaves
+3. then add `while_held` or `toggle`
 
-Phantom's `joystick` node is fixed-center. It works well when the game accepts a stable anchor point, but it does not detect or follow a joystick whose origin changes dynamically.
+## 6. Stuck Touches
 
-Workaround:
+Recovery options:
 
-- use games or layouts with a fixed joystick area
-- tune the center position manually
+```bash
+./target/release/phantom pause
+./target/release/phantom resume
+./target/release/phantom exit-capture
+./target/release/phantom enter-capture
+```
 
-## Mouse Camera Is Not Universal Pointer Emulation
+If needed, restart the daemon.
 
-`mouse_camera` is a bounded swipe region with a short-lived synthetic finger. In the GUI this is presented as `Mouse Look`. It is good for FPS or action-camera movement, but it is not a generic cursor replacement.
+## 7. Hotplug Rescan Is Not Implemented
 
-Workaround:
+Current limitation:
 
-- keep the region on the camera side of the UI
-- use `tap` and `hold_tap` for buttons rather than trying to click through mouse movement
+- Phantom does not dynamically rescan newly attached keyboards or mice after startup
 
-## `SYN_DROPPED` Still Drops Motion Packets
+If devices change, restart the daemon.
 
-Phantom now drops buffered events until the next `SYN_REPORT` after `SYN_DROPPED` and resyncs key/button state with `EVIOCGKEY`.
+## 8. Floating Joysticks Are Not Supported
 
-What it does not yet do:
+Current limitation:
 
-- recover lost relative mouse deltas during the overflow window
+- `joystick` is fixed-center
 
-Practical effect:
+Profiles must be built for games and layouts that tolerate a fixed joystick anchor.
 
-- if input overflow happens, held keys and mouse buttons recover cleanly
-- camera motion that happened during the overflow window is still lost
+## 9. Multi-Monitor And Rotation Handling Are Not Supported
 
-Workaround:
+Current limitation:
 
-- press `F9`
-- pause/resume the daemon
-- reload the profile
-- lower mouse DPI or polling rate if this happens repeatedly
-
-## Multi-Monitor, Rotation, And Windowed Transform Issues
-
-Current limitation.
-
-Phantom does not currently track:
-
-- per-monitor transforms
-- rotation changes
-- window scaling
-- Waydroid window movement across displays
+- Phantom assumes one known target surface
+- it does not manage monitor transforms or rotation transforms
 
 Best practice:
 
-- use one known Waydroid surface geometry
-- keep Waydroid fullscreen while tuning and using profiles
+- keep Waydroid fullscreen on one intended display
+- use one stable screen contract
+
+## 10. `uinput` Visibility Problems
+
+This only applies to the compatibility backend.
+
+If Phantom creates the virtual device but Waydroid does not react:
+
+- restart Waydroid after starting Phantom
+- verify `/dev/uinput` permissions
+- verify the device appears in host input listings
+
+This is one of the reasons the Android backend is now preferred.

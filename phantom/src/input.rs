@@ -152,6 +152,19 @@ pub enum Key {
 }
 
 impl Key {
+    pub fn is_mouse(self) -> bool {
+        matches!(
+            self,
+            Key::MouseLeft
+                | Key::MouseRight
+                | Key::MouseMiddle
+                | Key::MouseBack
+                | Key::MouseForward
+                | Key::WheelUp
+                | Key::WheelDown
+        )
+    }
+
     pub fn parse_name(s: &str) -> Option<Key> {
         let upper = s.to_uppercase();
         match upper.as_str() {
@@ -271,6 +284,22 @@ impl Key {
             "KP8" => Some(Key::KP8),
             "KP9" => Some(Key::KP9),
             _ => None,
+        }
+    }
+}
+
+impl InputEvent {
+    pub fn is_mouse_input(&self) -> bool {
+        match self {
+            InputEvent::MouseMove { .. } => true,
+            InputEvent::KeyPress(key) | InputEvent::KeyRelease(key) => key.is_mouse(),
+        }
+    }
+
+    pub fn is_keyboard_input(&self) -> bool {
+        match self {
+            InputEvent::MouseMove { .. } => false,
+            InputEvent::KeyPress(key) | InputEvent::KeyRelease(key) => !key.is_mouse(),
         }
     }
 }
@@ -844,6 +873,9 @@ impl InputCapture {
         let previous_keyboard = self.keyboard_grabbed;
         let previous_mouse = self.mouse_grabbed;
 
+        // Keyboard and mouse grabs are tracked independently so the daemon can
+        // stay in capture while temporarily returning only the mouse to the
+        // desktop. Apply them in a defined order and restore on failure.
         let result = if grabbed {
             self.set_grabbed_keyboard_only(true)
                 .and_then(|_| self.set_grabbed_mouse_only(true))
@@ -1022,5 +1054,15 @@ mod tests {
         assert!(matches!(events[0], InputEvent::MouseMove { dx: 1, dy: 2 }));
         assert!(matches!(events[1], InputEvent::KeyPress(Key::A)));
         assert!(matches!(events[2], InputEvent::MouseMove { dx: 3, dy: 4 }));
+    }
+
+    #[test]
+    fn input_origin_helpers_distinguish_mouse_and_keyboard() {
+        assert!(Key::MouseLeft.is_mouse());
+        assert!(!Key::A.is_mouse());
+        assert!(InputEvent::MouseMove { dx: 1, dy: 1 }.is_mouse_input());
+        assert!(InputEvent::KeyPress(Key::MouseRight).is_mouse_input());
+        assert!(InputEvent::KeyPress(Key::A).is_keyboard_input());
+        assert!(!InputEvent::KeyRelease(Key::MouseLeft).is_keyboard_input());
     }
 }
