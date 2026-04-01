@@ -5,6 +5,7 @@ use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 use phantom::config;
+use phantom::desktop_relay::DesktopKeyboardRelay;
 use phantom::engine::KeymapEngine;
 use phantom::error::{PhantomError, Result};
 use phantom::input::{InputCapture, InputEvent};
@@ -12,27 +13,33 @@ use phantom::ipc::{self, DaemonState, IpcRequest};
 use phantom::profile::Profile;
 use phantom::touch;
 
+const APP_NAME: &str = env!("CARGO_PKG_NAME");
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn print_help() {
-    eprintln!(
-        r#"phantom — virtual touchscreen for Waydroid
+    println!(
+        r#"{app_name} {app_version}
+
+Virtual touchscreen for Waydroid
 
 USAGE:
-    phantom --daemon                  Start the daemon
-    phantom audit <profile.json>      Audit slot and binding usage in a profile
-    phantom load <profile.json>       Load a profile
-    phantom status                    Show daemon status
-    phantom pause                     Pause input processing
-    phantom resume                    Resume input processing
-    phantom reload                    Reload current profile
-    phantom enter-capture             Enable exclusive gameplay capture
-    phantom exit-capture              Release exclusive gameplay capture
-    phantom toggle-capture            Toggle gameplay capture
-    phantom grab-mouse                Route mouse input into the game
-    phantom release-mouse             Release mouse input back to desktop
-    phantom toggle-mouse              Toggle mouse routing while capture is active
-    phantom sensitivity <value>       Set global sensitivity
-    phantom list                      List available profiles
-    phantom shutdown                  Graceful shutdown
+    {app_name} --daemon                  Start the daemon
+    {app_name} version                   Show version
+    {app_name} audit <profile.json>      Audit slot and binding usage in a profile
+    {app_name} load <profile.json>       Load a profile
+    {app_name} status                    Show daemon status
+    {app_name} pause                     Pause input processing
+    {app_name} resume                    Resume input processing
+    {app_name} reload                    Reload current profile
+    {app_name} enter-capture             Enable exclusive gameplay capture
+    {app_name} exit-capture              Release exclusive gameplay capture
+    {app_name} toggle-capture            Toggle gameplay capture
+    {app_name} grab-mouse                Route mouse input into the game
+    {app_name} release-mouse             Release mouse input back to desktop
+    {app_name} toggle-mouse              Toggle mouse routing while capture is active
+    {app_name} sensitivity <value>       Set global sensitivity
+    {app_name} list                      List available profiles
+    {app_name} shutdown                  Graceful shutdown
 
 KEYS (while daemon running, configurable in config.toml [runtime_hotkeys]):
     F2   Shutdown daemon (default)
@@ -44,12 +51,14 @@ FLAGS:
     --daemon      Run as daemon (requires root)
     --trace       Force trace logging for this run
     -h, --help    Show this help
-    -V, --version Show version"#
+    -V, --version Show version"#,
+        app_name = APP_NAME,
+        app_version = APP_VERSION,
     );
 }
 
 fn print_version() {
-    eprintln!("phantom {}", env!("CARGO_PKG_VERSION"));
+    println!("{} {}", APP_NAME, APP_VERSION);
 }
 
 fn expand_path(path: &str) -> String {
@@ -200,7 +209,10 @@ async fn run_daemon() -> Result<()> {
     let (screen_w, screen_h) = detect_resolution(&config, default_profile.as_ref())?;
     let runtime_hotkeys = config::resolved_runtime_hotkeys(&config);
     let touch = touch::create_touch_device(&config, screen_w, screen_h)?;
-    let capture = InputCapture::discover()?;
+    let desktop_keyboard = DesktopKeyboardRelay::new()?;
+    let mut capture = InputCapture::discover()?;
+    capture.set_grabbed_keyboard_only(true)?;
+    tracing::info!("keyboard grab enabled for runtime hotkeys");
     tracing::info!(
         devices = capture.device_count(),
         mouse = capture.has_mouse(),
@@ -225,7 +237,8 @@ async fn run_daemon() -> Result<()> {
         }
     };
 
-    let (state, mut shutdown_rx) = DaemonState::new(engine, touch, capture, screen_w, screen_h);
+    let (state, mut shutdown_rx) =
+        DaemonState::new(engine, touch, desktop_keyboard, capture, screen_w, screen_h);
     if let Some(path) = default_profile_path {
         *state.profile_path.write().await = Some(path);
     }
@@ -350,6 +363,11 @@ async fn run_daemon() -> Result<()> {
                                 }
                                 gameplay_events.push(event);
                             } else {
+                                if event.is_keyboard_input() {
+                                    if let Err(e) = ipc::relay_keyboard_event_to_desktop(&state, &event) {
+                                        tracing::warn!("desktop keyboard relay error: {}", e);
+                                    }
+                                }
                                 tracing::trace!(event = ?event, "dropping gameplay event because capture is inactive");
                             }
                         }
@@ -416,6 +434,12 @@ async fn run_daemon() -> Result<()> {
     }
 
     {
+        if let Ok(mut relay) = ipc::lock_desktop_keyboard(&state) {
+            let _ = relay.release_all();
+        }
+    }
+
+    {
         let mut capture = ipc::lock_capture(&state)?;
         capture.force_release_all();
     }
@@ -434,14 +458,22 @@ async fn handle_runtime_shortcut(
     event: &InputEvent,
     hotkeys: &config::RuntimeHotkeys,
 ) -> Result<bool> {
+    if let InputEvent::KeyRelease(key) = event {
+        if is_runtime_hotkey(*key, hotkeys) {
+            return Ok(true);
+        }
+    }
+
     match event {
         InputEvent::KeyPress(key) if hotkeys.capture_toggle == Some(*key) => {
+            tracing::info!(?key, "runtime hotkey pressed");
             let next = !state.capture_active.load(Ordering::Acquire);
             ipc::set_capture_active(state, next).await?;
             tracing::info!("capture {}", if next { "enabled" } else { "disabled" });
             Ok(true)
         }
         InputEvent::KeyPress(key) if hotkeys.pause_toggle == Some(*key) => {
+            tracing::info!(?key, "runtime hotkey pressed");
             let cmds = {
                 let mut engine = state.engine.write().await;
                 if engine.is_paused() {
@@ -460,6 +492,7 @@ async fn handle_runtime_shortcut(
             Ok(true)
         }
         InputEvent::KeyPress(key) if hotkeys.mouse_toggle == Some(*key) => {
+            tracing::info!(?key, "runtime hotkey pressed");
             if !state.capture_active.load(Ordering::Acquire) {
                 tracing::info!("mouse toggle ignored (not in capture mode)");
                 return Ok(true);
@@ -480,7 +513,7 @@ async fn handle_runtime_shortcut(
             Ok(true)
         }
         InputEvent::KeyPress(key) if hotkeys.shutdown == Some(*key) => {
-            tracing::info!("shutdown hotkey pressed");
+            tracing::info!(?key, "runtime hotkey pressed");
             // Signal shutdown — cleanup happens in the main loop
             state.shutdown_tx.send(()).ok();
             Ok(true)
@@ -489,17 +522,31 @@ async fn handle_runtime_shortcut(
     }
 }
 
+fn is_runtime_hotkey(key: phantom::input::Key, hotkeys: &config::RuntimeHotkeys) -> bool {
+    hotkeys.mouse_toggle == Some(key)
+        || hotkeys.capture_toggle == Some(key)
+        || hotkeys.pause_toggle == Some(key)
+        || hotkeys.shutdown == Some(key)
+}
+
 async fn run_cli_command(args: &[String]) -> Result<()> {
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("status");
 
-    if cmd == "audit" {
-        let path = args.get(1).ok_or_else(|| {
-            phantom::error::PhantomError::Ipc("audit requires a path argument".into())
-        })?;
-        let path = expand_path(path);
-        let profile = Profile::load(std::path::Path::new(&path))?;
-        print_profile_audit(&profile);
-        return Ok(());
+    match cmd {
+        "version" => {
+            print_version();
+            return Ok(());
+        }
+        "audit" => {
+            let path = args.get(1).ok_or_else(|| {
+                phantom::error::PhantomError::Ipc("audit requires a path argument".into())
+            })?;
+            let path = expand_path(path);
+            let profile = Profile::load(std::path::Path::new(&path))?;
+            print_profile_audit(&profile);
+            return Ok(());
+        }
+        _ => {}
     }
 
     let request = match cmd {
@@ -568,10 +615,10 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
             eprintln!("capture: {}", capture_active);
         }
         if let Some(mouse_grabbed) = response.mouse_grabbed {
-            eprintln!("mouse routed: {}", mouse_grabbed);
+            eprintln!("mouse grabbed: {}", mouse_grabbed);
         }
         if let Some(keyboard_grabbed) = response.keyboard_grabbed {
-            eprintln!("keyboard routed: {}", keyboard_grabbed);
+            eprintln!("keyboard grabbed: {}", keyboard_grabbed);
         }
         if let Some(sensitivity) = response.sensitivity {
             eprintln!("sensitivity: {}", sensitivity);
@@ -609,11 +656,15 @@ async fn main() {
     args.retain(|arg| arg != "--trace");
     init_logging(force_trace);
 
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    if args.first().map(|s| s.as_str()) == Some("help")
+        || args.iter().any(|a| a == "-h" || a == "--help")
+    {
         print_help();
         return;
     }
-    if args.iter().any(|a| a == "-V" || a == "--version") {
+    if args.first().map(|s| s.as_str()) == Some("version")
+        || args.iter().any(|a| a == "-V" || a == "--version")
+    {
         print_version();
         return;
     }

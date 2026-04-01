@@ -116,29 +116,15 @@ Reference documents:
 
 This is the short version. The full version is in [docs/INSTALL.md](docs/INSTALL.md).
 
-1. Build the Rust binaries:
+1. Install Phantom into your user environment:
 
 ```bash
-cargo build --release
+./install.sh
 ```
 
-2. Build the Android touch server:
+2. Edit `~/.config/phantom/config.toml` and set the real Android screen size.
 
-```bash
-./contrib/android-server/build.sh
-```
-
-3. Copy the example config:
-
-```bash
-mkdir -p ~/.config/phantom/profiles
-cp config.example.toml ~/.config/phantom/config.toml
-cp profiles/*.json ~/.config/phantom/profiles/
-```
-
-4. Set the real Android screen size and the Android server jar path.
-
-5. Start Waydroid and make sure the container is not frozen:
+3. Start Waydroid and make sure the container is not frozen:
 
 ```bash
 waydroid session start
@@ -146,40 +132,45 @@ waydroid show-full-ui
 sudo waydroid status
 ```
 
-6. Start Phantom:
+4. Start Phantom:
 
 ```bash
-sudo ./target/release/phantom --trace --daemon
+sudo phantom --trace --daemon
 ```
 
-7. Verify status and load a profile:
+5. Verify status and load a profile:
 
 ```bash
-./target/release/phantom status
-./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
-./target/release/phantom load ~/.config/phantom/profiles/pubg.json
-./target/release/phantom enter-capture
+phantom status
+phantom audit ~/.config/phantom/profiles/pubg.json
+phantom load ~/.config/phantom/profiles/pubg.json
+phantom enter-capture
 ```
 
-8. Open the editor:
+6. Open the studio:
 
 ```bash
-./target/release/phantom-gui
+phantom-studio
 ```
+
+Use the `Runtime` tab in Phantom Studio to inspect daemon state, start the daemon, push profiles live, toggle capture, and shut the daemon down.
 
 ## Runtime Model
 
-Phantom runtime state is easiest to reason about as four switches:
+Phantom runtime state is easiest to reason about as five switches:
 
 - daemon running or not
+- keyboard grabbed by daemon or not
 - capture enabled or not
-- mouse routed to game or not
+- mouse grabbed for gameplay or not
 - engine paused or not
 
 Important distinction:
 
-- capture enabled means Phantom owns the input path for gameplay
-- mouse routed means mouse-originated events are actually forwarded into the game
+- the daemon keeps the physical keyboard grabbed while it is alive so runtime hotkeys stay reliable
+- non-hotkey keyboard events are mirrored back into Linux through Phantom's virtual desktop keyboard while gameplay capture is off
+- capture enabled means Phantom is forwarding gameplay input into the engine
+- mouse grabbed means mouse-originated events are actually forwarded into the game
 
 That distinction is what makes desktop adjustments, menu interaction, and future PUBG-like aim workflows possible.
 
@@ -196,6 +187,13 @@ shutdown = "F2"
 ```
 
 Use `""` or `"none"` to disable a hotkey.
+
+The daemon keeps the physical keyboard grabbed while it is running so these hotkeys still work even when gameplay capture is currently off. Outside gameplay capture, normal non-hotkey keyboard events are passed back to Linux through Phantom's virtual desktop keyboard.
+
+Important keyboard note:
+
+- on many laptops and compact keyboards, the top row only sends standard `F1`/`F8`/`F9` key events when Fn Lock is enabled
+- if `F2` works but `F1` or `F8` do not, check Fn Lock first before assuming Phantom is broken
 
 Default meaning:
 
@@ -227,6 +225,7 @@ Use cases:
 
 ```bash
 phantom --daemon
+phantom version
 phantom audit <profile.json>
 phantom status
 phantom load <profile.json>
@@ -245,6 +244,12 @@ phantom shutdown
 ```
 
 `phantom audit` is the fastest way to confirm whether a profile can actually hold multiple mapped touches at once, because it shows the slot layout directly from the profile model.
+
+## Installation Notes
+
+- `./install.sh` builds the workspace, installs `phantom`, `phantom-gui`, and the preferred studio alias `phantom-studio` into `~/.local/bin`, installs the Android server jar into `~/.local/share/phantom/android/`, and creates `~/.config/phantom/config.toml` if it does not exist yet.
+- `./install.sh -u` removes the installed binaries and Android server jar, but leaves your config and profiles in `~/.config/phantom/`.
+- The daemon does not auto-write `~/.config/phantom/config.toml` by itself. If the file is missing, it runs with defaults. The installer is what creates the config file for you.
 
 ## Example Profiles
 

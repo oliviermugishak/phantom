@@ -42,7 +42,7 @@ The Android jar must contain `classes.dex`.
 Before live runtime tests, audit the target profile:
 
 ```bash
-./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
+phantom audit ~/.config/phantom/profiles/pubg.json
 ```
 
 Look for:
@@ -70,7 +70,7 @@ Start sequence:
 waydroid session start
 waydroid show-full-ui
 sudo waydroid status
-sudo ./target/release/phantom --trace --daemon
+sudo phantom --trace --daemon
 ```
 
 Required Waydroid state:
@@ -111,18 +111,24 @@ Healthy signals:
 After the daemon is alive:
 
 ```bash
-./target/release/phantom status
-./target/release/phantom load ~/.config/phantom/profiles/pubg.json
-./target/release/phantom enter-capture
+phantom status
+phantom load ~/.config/phantom/profiles/pubg.json
+phantom enter-capture
 ```
 
 Verify in `phantom status`:
 
 - profile name
 - capture state
-- mouse routed state
-- keyboard routed state
+- mouse grabbed state
+- keyboard grabbed state
 - screen contract
+
+Expected keyboard behavior:
+
+- runtime hotkeys remain available from daemon startup
+- outside capture, normal non-hotkey keyboard input should still work on the desktop
+- if top-row hotkeys do not react, verify Fn Lock is enabled on keyboards where the function row defaults to media keys
 
 ## 6. Gameplay Validation Matrix
 
@@ -251,10 +257,10 @@ Likely causes:
 Recovery:
 
 ```bash
-./target/release/phantom pause
-./target/release/phantom resume
-./target/release/phantom exit-capture
-./target/release/phantom enter-capture
+phantom pause
+phantom resume
+phantom exit-capture
+phantom enter-capture
 ```
 
 If needed, restart the daemon.
@@ -266,7 +272,7 @@ Use this only if you intentionally test the legacy backend.
 Recommended order:
 
 ```bash
-sudo ./target/release/phantom --trace --daemon
+sudo phantom --trace --daemon
 waydroid session stop
 waydroid session start
 ```

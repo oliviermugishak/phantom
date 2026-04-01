@@ -1,10 +1,14 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::{Align2, Color32, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
+use serde::{Deserialize, Serialize};
 
 use phantom::config;
+use phantom::input::Key;
 use phantom::ipc::{self, IpcRequest, IpcResponse};
 use phantom::profile::{
     JoystickKeys, LayerMode, MacroAction, MacroStep, MouseCameraActivationMode, Node, Profile,
@@ -205,6 +209,92 @@ struct EditorSnapshot {
     selected: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+enum LayerFilter {
+    #[default]
+    All,
+    Base,
+    Named(String),
+}
+
+impl LayerFilter {
+    fn label(&self) -> String {
+        match self {
+            LayerFilter::All => "All".into(),
+            LayerFilter::Base => "Base".into(),
+            LayerFilter::Named(name) => name.clone(),
+        }
+    }
+
+    fn matches_node(&self, node: &Node) -> bool {
+        match self {
+            LayerFilter::All => true,
+            LayerFilter::Base => node.layer().trim().is_empty(),
+            LayerFilter::Named(name) => {
+                if node.layer().trim() == name {
+                    return true;
+                }
+                matches!(
+                    node,
+                    Node::LayerShift { layer_name, .. } if layer_name.trim() == name
+                )
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LayerSummary {
+    filter: LayerFilter,
+    node_count: usize,
+    active: bool,
+    has_switch: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+struct StudioPrefs {
+    show_labels: bool,
+    auto_push_on_save: bool,
+    snap_to_grid: bool,
+    last_profile_path: Option<PathBuf>,
+    layer_filter: LayerFilter,
+    right_panel_tab: RightPanelTab,
+}
+
+impl Default for StudioPrefs {
+    fn default() -> Self {
+        Self {
+            show_labels: true,
+            auto_push_on_save: true,
+            snap_to_grid: true,
+            last_profile_path: None,
+            layer_filter: LayerFilter::All,
+            right_panel_tab: RightPanelTab::Overview,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+enum RightPanelTab {
+    #[default]
+    Overview,
+    Inspect,
+    Runtime,
+    Settings,
+}
+
+impl RightPanelTab {
+    fn label(self) -> &'static str {
+        match self {
+            RightPanelTab::Overview => "Overview",
+            RightPanelTab::Inspect => "Inspect",
+            RightPanelTab::Runtime => "Runtime",
+            RightPanelTab::Settings => "Settings",
+        }
+    }
+}
+
 pub struct PhantomGui {
     config: config::Config,
     profile: Option<Profile>,
@@ -221,6 +311,8 @@ pub struct PhantomGui {
     show_labels: bool,
     auto_push_on_save: bool,
     snap_to_grid: bool,
+    layer_filter: LayerFilter,
+    right_panel_tab: RightPanelTab,
     undo_stack: Vec<EditorSnapshot>,
     redo_stack: Vec<EditorSnapshot>,
     clipboard: Option<Node>,
@@ -231,7 +323,8 @@ pub struct PhantomGui {
 impl PhantomGui {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let config = config::load_config();
-        Self {
+        let prefs = load_studio_prefs();
+        let mut gui = Self {
             config,
             profile: None,
             profile_path: None,
@@ -244,15 +337,22 @@ impl PhantomGui {
             runtime: RuntimeState::default(),
             banner: None,
             dirty: false,
-            show_labels: true,
-            auto_push_on_save: true,
-            snap_to_grid: true,
+            show_labels: prefs.show_labels,
+            auto_push_on_save: prefs.auto_push_on_save,
+            snap_to_grid: prefs.snap_to_grid,
+            layer_filter: prefs.layer_filter,
+            right_panel_tab: prefs.right_panel_tab,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             clipboard: None,
             canvas_zoom: 1.0,
             canvas_pan: Vec2::ZERO,
+        };
+        if let Some(path) = prefs.last_profile_path.filter(|path| path.exists()) {
+            gui.load_profile(&path);
+            gui.set_banner(format!("Restored {}", path.display()), false);
         }
+        gui
     }
 
     fn set_banner(&mut self, text: impl Into<String>, is_error: bool) {
@@ -335,6 +435,472 @@ impl PhantomGui {
         self.dirty = true;
     }
 
+    fn studio_prefs(&self) -> StudioPrefs {
+        StudioPrefs {
+            show_labels: self.show_labels,
+            auto_push_on_save: self.auto_push_on_save,
+            snap_to_grid: self.snap_to_grid,
+            last_profile_path: self.profile_path.clone(),
+            layer_filter: self.layer_filter.clone(),
+            right_panel_tab: self.right_panel_tab,
+        }
+    }
+
+    fn persist_studio_prefs(&self) {
+        let path = studio_prefs_path();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("cannot create studio prefs dir {}: {}", parent.display(), e);
+                return;
+            }
+        }
+        match toml::to_string_pretty(&self.studio_prefs()) {
+            Ok(content) => {
+                if let Err(e) = std::fs::write(&path, content) {
+                    tracing::warn!("cannot write studio prefs {}: {}", path.display(), e);
+                }
+            }
+            Err(e) => tracing::warn!("cannot serialize studio prefs: {}", e),
+        }
+    }
+
+    fn focus_selection(&mut self, idx: usize) {
+        self.selected = Some(idx);
+        self.right_panel_tab = RightPanelTab::Inspect;
+    }
+
+    fn layer_summaries(&self) -> Vec<LayerSummary> {
+        let Some(profile) = &self.profile else {
+            return Vec::new();
+        };
+
+        let mut layers: BTreeMap<String, (usize, bool)> = BTreeMap::new();
+        let mut base_count = 0usize;
+
+        for node in &profile.nodes {
+            let layer = node.layer().trim();
+            if layer.is_empty() {
+                base_count += 1;
+            } else {
+                layers
+                    .entry(layer.to_string())
+                    .and_modify(|entry| entry.0 += 1)
+                    .or_insert((1, false));
+            }
+
+            if let Node::LayerShift { layer_name, .. } = node {
+                let layer_name = layer_name.trim();
+                if !layer_name.is_empty() {
+                    layers
+                        .entry(layer_name.to_string())
+                        .and_modify(|entry| entry.1 = true)
+                        .or_insert((0, true));
+                }
+            }
+        }
+
+        let mut summaries = vec![LayerSummary {
+            filter: LayerFilter::Base,
+            node_count: base_count,
+            active: false,
+            has_switch: false,
+        }];
+
+        summaries.extend(layers.into_iter().map(|(name, (node_count, has_switch))| {
+            LayerSummary {
+                active: self
+                    .runtime
+                    .active_layers
+                    .iter()
+                    .any(|layer| layer == &name),
+                filter: LayerFilter::Named(name),
+                node_count,
+                has_switch,
+            }
+        }));
+
+        summaries
+    }
+
+    fn filtered_controls_count(&self) -> usize {
+        self.profile
+            .as_ref()
+            .map(|profile| {
+                profile
+                    .nodes
+                    .iter()
+                    .filter(|node| self.layer_filter.matches_node(node))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    fn draw_layer_manager(&mut self, ui: &mut egui::Ui) {
+        let Some(profile) = &self.profile else {
+            return;
+        };
+
+        ui.separator();
+        ui.heading("Layers");
+        ui.add_space(6.0);
+
+        let all_selected = matches!(self.layer_filter, LayerFilter::All);
+        if ui
+            .selectable_label(all_selected, format!("All ({})", profile.nodes.len()))
+            .clicked()
+        {
+            self.layer_filter = LayerFilter::All;
+        }
+
+        for summary in self.layer_summaries() {
+            let mut line = format!("{} ({})", summary.filter.label(), summary.node_count);
+            if summary.has_switch {
+                line.push_str(" • switch");
+            }
+            if summary.active {
+                line.push_str(" • active");
+            }
+            let text = if summary.active {
+                RichText::new(line).color(Color32::from_rgb(255, 218, 121))
+            } else {
+                RichText::new(line)
+            };
+            if ui
+                .selectable_label(self.layer_filter == summary.filter, text)
+                .clicked()
+            {
+                self.layer_filter = summary.filter.clone();
+            }
+        }
+    }
+
+    fn draw_runtime_hotkeys(&self, ui: &mut egui::Ui) {
+        let hotkeys = config::resolved_runtime_hotkeys(&self.config);
+        ui.label(RichText::new("Daemon Hotkeys").strong());
+        ui.label(format!(
+            "Mouse routing: {}",
+            hotkey_label(hotkeys.mouse_toggle)
+        ));
+        ui.label(format!("Capture: {}", hotkey_label(hotkeys.capture_toggle)));
+        ui.label(format!("Pause: {}", hotkey_label(hotkeys.pause_toggle)));
+        ui.label(format!("Shutdown: {}", hotkey_label(hotkeys.shutdown)));
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Phantom keeps the keyboard grabbed while the daemon is running so these hotkeys stay reliable even when gameplay capture is off.",
+            )
+            .small()
+            .color(Color32::from_gray(170)),
+        );
+        ui.label(
+            RichText::new(
+                "Pause is mainly a debug shortcut. Set pause_toggle = \"none\" in config if it is not part of your workflow.",
+            )
+            .small()
+            .color(Color32::from_gray(170)),
+        );
+    }
+
+    fn draw_studio_overview(&self, ui: &mut egui::Ui) {
+        let Some(profile) = &self.profile else {
+            ui.label("No profile loaded");
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(
+                    "Open a profile or create a new one. The studio remembers the last saved profile you loaded.",
+                )
+                .small(),
+            );
+            ui.add_space(8.0);
+            self.draw_runtime_hotkeys(ui);
+            return;
+        };
+
+        ui.label(RichText::new("Studio Overview").strong());
+        ui.add_space(6.0);
+
+        let used_slots = profile.nodes.iter().filter_map(Node::slot).count();
+        let mouse_look_nodes: Vec<_> = profile
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::MouseCamera {
+                    id,
+                    activation_mode,
+                    activation_key,
+                    ..
+                } => Some((id, activation_mode, activation_key.as_deref())),
+                _ => None,
+            })
+            .collect();
+
+        ui.group(|ui| {
+            ui.label(RichText::new("Profile").strong());
+            ui.label(format!("Name: {}", profile.name));
+            ui.label(format!("Controls: {}", profile.nodes.len()));
+            ui.label(format!("Touch slots in use: {}", used_slots));
+            ui.label(format!(
+                "Current list filter: {}",
+                self.layer_filter.label()
+            ));
+            if let Some(path) = &self.profile_path {
+                ui.label(format!("Path: {}", path.display()));
+            } else {
+                ui.label("Path: unsaved template");
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.label(RichText::new("Mouse Look").strong());
+            if mouse_look_nodes.is_empty() {
+                ui.label("No Mouse Look node in this profile yet.");
+                ui.label(
+                    RichText::new(
+                        "Add a Mouse Look control, then select it to edit activation mode and activation key.",
+                    )
+                    .small(),
+                );
+            } else {
+                for (id, activation_mode, activation_key) in mouse_look_nodes {
+                    let mode = match activation_mode {
+                        MouseCameraActivationMode::AlwaysOn => "always_on",
+                        MouseCameraActivationMode::WhileHeld => "while_held",
+                        MouseCameraActivationMode::Toggle => "toggle",
+                    };
+                    let key_suffix = activation_key
+                        .map(|key| format!(" · key {}", key))
+                        .unwrap_or_default();
+                    ui.label(format!("{id}: {mode}{key_suffix}"));
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Mouse look is touch-drag camera emulation. It is not a desktop cursor or native raw mouse path.",
+                    )
+                    .small()
+                    .color(Color32::from_gray(170)),
+                );
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.label(RichText::new("Layers").strong());
+            for summary in self.layer_summaries() {
+                let mut line = format!("{} ({})", summary.filter.label(), summary.node_count);
+                if summary.has_switch {
+                    line.push_str(" • switch");
+                }
+                if summary.active {
+                    line.push_str(" • active");
+                }
+                ui.label(line);
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            self.draw_runtime_hotkeys(ui);
+        });
+
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(
+                "Select a control from the list or canvas to edit bindings, position, mouse-look behavior, and layer settings.",
+            )
+            .small()
+            .color(Color32::from_gray(170)),
+        );
+    }
+
+    fn draw_runtime_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Runtime").strong());
+        ui.add_space(6.0);
+
+        ui.group(|ui| {
+            ui.label(RichText::new("Daemon State").strong());
+            ui.label(format!(
+                "Connection: {}",
+                if self.runtime.connected {
+                    "connected"
+                } else {
+                    "disconnected"
+                }
+            ));
+            if let Some(profile) = &self.runtime.profile {
+                ui.label(format!("Loaded profile: {}", profile));
+            }
+            if let Some((w, h)) = self.runtime.screen {
+                ui.label(format!("Screen: {}x{}", w, h));
+            }
+            ui.label(format!(
+                "Capture: {}",
+                if self.runtime.capture_active {
+                    "on"
+                } else {
+                    "off"
+                }
+            ));
+            ui.label(format!(
+                "Mouse routing: {}",
+                if self.runtime.mouse_grabbed {
+                    "on"
+                } else {
+                    "off"
+                }
+            ));
+            ui.label(format!(
+                "Keyboard ownership: {}",
+                if self.runtime.keyboard_grabbed {
+                    "daemon holds keyboard for hotkeys"
+                } else {
+                    "released"
+                }
+            ));
+            ui.label(format!(
+                "Processing: {}",
+                if self.runtime.paused {
+                    "paused"
+                } else {
+                    "live"
+                }
+            ));
+            if self.runtime.active_layers.is_empty() {
+                ui.label("Active layers: none");
+            } else {
+                ui.label(format!(
+                    "Active layers: {}",
+                    self.runtime.active_layers.join(", ")
+                ));
+            }
+            if let Some(error) = &self.runtime.last_error {
+                ui.label(RichText::new(error).small().color(Color32::LIGHT_RED));
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.label(RichText::new("Daemon Control").strong());
+            ui.horizontal_wrapped(|ui| {
+                let start_label = if command_exists("pkexec") && !running_as_root() {
+                    "Start Daemon"
+                } else {
+                    "Start Daemon"
+                };
+                if ui
+                    .add_enabled(!self.runtime.connected, egui::Button::new(start_label))
+                    .clicked()
+                {
+                    self.start_daemon();
+                }
+                if ui
+                    .add_enabled(self.runtime.connected, egui::Button::new("Shutdown Daemon"))
+                    .clicked()
+                {
+                    self.send_runtime_request(IpcRequest::Shutdown, "shutting down");
+                }
+                if ui.button("Refresh").clicked() {
+                    self.refresh_status();
+                }
+            });
+            ui.label(
+                RichText::new(format!("Daemon log: {}", studio_daemon_log_path().display()))
+                    .small()
+                    .color(Color32::from_gray(170)),
+            );
+            let launch_note = if command_exists("pkexec") && !running_as_root() {
+                "Studio will prefer pkexec for daemon launch on systems that still need elevated input access."
+            } else {
+                "If daemon launch fails here, start `phantom --daemon` manually in a terminal and return to the studio."
+            };
+            ui.label(
+                RichText::new(launch_note)
+                    .small()
+                    .color(Color32::from_gray(170)),
+            );
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.label(RichText::new("Runtime Actions").strong());
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Push Live").clicked() {
+                    self.push_profile_live();
+                }
+                if ui.button("Pause").clicked() {
+                    self.send_runtime_request(IpcRequest::Pause, "paused");
+                }
+                if ui.button("Resume").clicked() {
+                    self.send_runtime_request(IpcRequest::Resume, "resumed");
+                }
+                if ui.button("Enter Capture").clicked() {
+                    self.send_runtime_request(IpcRequest::EnterCapture, "capture enabled");
+                }
+                if ui.button("Exit Capture").clicked() {
+                    self.send_runtime_request(IpcRequest::ExitCapture, "capture disabled");
+                }
+                if ui.button("Toggle Capture").clicked() {
+                    self.send_runtime_request(IpcRequest::ToggleCapture, "capture toggled");
+                }
+                let mouse_label = if self.runtime.mouse_grabbed {
+                    "Release Mouse"
+                } else {
+                    "Grab Mouse"
+                };
+                if ui
+                    .add_enabled(self.runtime.capture_active, egui::Button::new(mouse_label))
+                    .clicked()
+                {
+                    self.send_runtime_request(IpcRequest::ToggleMouse, "mouse routing toggled");
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            self.draw_runtime_hotkeys(ui);
+        });
+    }
+
+    fn draw_settings_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Studio Settings").strong());
+        ui.add_space(6.0);
+
+        ui.group(|ui| {
+            ui.label(RichText::new("Studio Preferences").strong());
+            ui.checkbox(&mut self.show_labels, "Show canvas labels");
+            ui.checkbox(&mut self.snap_to_grid, "Snap placement to grid");
+            ui.checkbox(&mut self.auto_push_on_save, "Push live after save");
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.label(RichText::new("Config Paths").strong());
+            ui.monospace(config::config_path().display().to_string());
+            ui.monospace(config::profiles_dir().display().to_string());
+            ui.monospace(studio_prefs_path().display().to_string());
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.label(RichText::new("Product Language").strong());
+            ui.label("This UI is the Phantom Studio.");
+            ui.label(
+                RichText::new(
+                    "The studio edits profiles, pushes them live, and helps you inspect runtime state. It is not an in-game overlay system.",
+                )
+                .small()
+                .color(Color32::from_gray(170)),
+            );
+        });
+
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            self.draw_runtime_hotkeys(ui);
+        });
+    }
+
     fn new_profile(&mut self) {
         self.profile = Some(Profile {
             name: "New Profile".into(),
@@ -348,6 +914,7 @@ impl PhantomGui {
         self.selected = None;
         self.dirty = true;
         self.tool = Tool::Select;
+        self.right_panel_tab = RightPanelTab::Overview;
         self.reset_history();
         self.canvas_zoom = 1.0;
         self.canvas_pan = Vec2::ZERO;
@@ -363,6 +930,7 @@ impl PhantomGui {
                 self.selected = None;
                 self.dirty = false;
                 self.tool = Tool::Select;
+                self.right_panel_tab = RightPanelTab::Overview;
                 self.reset_history();
                 self.canvas_zoom = 1.0;
                 self.canvas_pan = Vec2::ZERO;
@@ -382,6 +950,7 @@ impl PhantomGui {
                 self.selected = None;
                 self.dirty = true;
                 self.tool = Tool::Select;
+                self.right_panel_tab = RightPanelTab::Overview;
                 self.reset_history();
                 self.canvas_zoom = 1.0;
                 self.canvas_pan = Vec2::ZERO;
@@ -495,6 +1064,109 @@ impl PhantomGui {
                 self.runtime.connected = false;
                 self.runtime.last_error = Some(e.to_string());
                 self.runtime.last_checked = Some(Instant::now());
+            }
+        }
+    }
+
+    fn start_daemon(&mut self) {
+        if self.runtime.connected {
+            self.set_banner("Daemon already running", false);
+            return;
+        }
+
+        let Some(binary) = find_phantom_binary() else {
+            self.set_banner(
+                "Could not locate the phantom daemon binary. Install Phantom or build target/release/phantom first.",
+                true,
+            );
+            return;
+        };
+
+        let log_path = studio_daemon_log_path();
+        if let Some(parent) = log_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                self.set_banner(
+                    format!(
+                        "Cannot create daemon log directory {}: {}",
+                        parent.display(),
+                        e
+                    ),
+                    true,
+                );
+                return;
+            }
+        }
+
+        let stdout_log = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            Ok(file) => file,
+            Err(e) => {
+                self.set_banner(
+                    format!("Cannot open daemon log {}: {}", log_path.display(), e),
+                    true,
+                );
+                return;
+            }
+        };
+        let stderr_log = match stdout_log.try_clone() {
+            Ok(file) => file,
+            Err(e) => {
+                self.set_banner(
+                    format!(
+                        "Cannot prepare daemon stderr log {}: {}",
+                        log_path.display(),
+                        e
+                    ),
+                    true,
+                );
+                return;
+            }
+        };
+
+        let use_pkexec = !running_as_root() && command_exists("pkexec");
+        let mut command = if use_pkexec {
+            let mut command = Command::new("pkexec");
+            command.arg(&binary);
+            command
+        } else {
+            Command::new(&binary)
+        };
+        command
+            .arg("--daemon")
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout_log))
+            .stderr(Stdio::from(stderr_log));
+
+        match command.spawn() {
+            Ok(_) => {
+                self.runtime.connected = false;
+                self.runtime.last_error = None;
+                self.runtime.last_checked = None;
+                if use_pkexec {
+                    self.set_banner(
+                        format!(
+                            "Daemon launch requested via pkexec. Authenticate if prompted. Log: {}",
+                            log_path.display()
+                        ),
+                        false,
+                    );
+                } else {
+                    self.set_banner(
+                        format!(
+                            "Daemon launch requested. Studio will refresh automatically. Log: {}",
+                            log_path.display()
+                        ),
+                        false,
+                    );
+                }
+            }
+            Err(e) => {
+                self.runtime.connected = false;
+                self.runtime.last_error = Some(e.to_string());
+                self.set_banner(format!("Daemon launch failed: {}", e), true);
             }
         }
     }
@@ -658,7 +1330,9 @@ impl PhantomGui {
             return;
         };
         profile.nodes.push(node);
-        self.selected = Some(profile.nodes.len() - 1);
+        let idx = profile.nodes.len() - 1;
+        self.selected = Some(idx);
+        self.right_panel_tab = RightPanelTab::Inspect;
         self.mark_dirty();
         self.set_banner("Pasted control", false);
     }
@@ -685,6 +1359,7 @@ impl PhantomGui {
         };
         profile.nodes.insert(idx + 1, node);
         self.selected = Some(idx + 1);
+        self.right_panel_tab = RightPanelTab::Inspect;
         self.mark_dirty();
         self.set_banner("Duplicated control", false);
     }
@@ -706,6 +1381,7 @@ impl PhantomGui {
         };
         profile.nodes.swap(idx, target as usize);
         self.selected = Some(target as usize);
+        self.right_panel_tab = RightPanelTab::Inspect;
         self.mark_dirty();
     }
 
@@ -749,6 +1425,7 @@ impl PhantomGui {
         };
         profile.nodes.push(node);
         self.selected = Some(profile.nodes.len() - 1);
+        self.right_panel_tab = RightPanelTab::Inspect;
         self.mark_dirty();
     }
 
@@ -832,6 +1509,7 @@ impl PhantomGui {
         };
         profile.nodes.push(node);
         self.selected = Some(profile.nodes.len() - 1);
+        self.right_panel_tab = RightPanelTab::Inspect;
         self.mark_dirty();
         self.tool = Tool::Select;
     }
@@ -859,6 +1537,7 @@ impl PhantomGui {
     fn begin_binding_capture(&mut self, target: BindingTarget) {
         self.pending_binding = Some(target);
         self.pending_binding_started_at = Some(Instant::now());
+        self.right_panel_tab = RightPanelTab::Inspect;
         self.set_banner("Binding mode active. Press Esc to cancel.", false);
     }
 
@@ -1331,10 +2010,12 @@ impl PhantomGui {
             .show(ctx, |ui| {
                 let snapshot_before = self.snapshot();
                 let mut profile_changed = false;
-                ui.heading("Profile");
+                ui.heading("Studio");
+                ui.label(RichText::new("Profile").strong());
                 ui.add_space(6.0);
 
                 let default_screen = self.default_screen();
+                let has_profile = self.profile.is_some();
                 if let Some(profile) = &mut self.profile {
                     if ui.text_edit_singleline(&mut profile.name).changed() {
                         profile_changed = true;
@@ -1377,9 +2058,23 @@ impl PhantomGui {
                         }
                     });
                     ui.checkbox(&mut self.auto_push_on_save, "Push live after save");
+                } else {
+                    ui.label("Create or open a profile to start mapping.");
+                }
 
+                if has_profile {
+                    self.draw_layer_manager(ui);
                     ui.separator();
-                    ui.heading("Controls");
+                    let total_controls = self
+                        .profile
+                        .as_ref()
+                        .map(|profile| profile.nodes.len())
+                        .unwrap_or(0);
+                    ui.heading(format!(
+                        "Controls ({}/{})",
+                        self.filtered_controls_count(),
+                        total_controls
+                    ));
                     ui.add_space(6.0);
 
                     let mut clicked = None;
@@ -1387,83 +2082,87 @@ impl PhantomGui {
                     let mut move_down = None;
                     let mut duplicate = None;
                     let mut delete = None;
-                    for (idx, node) in profile.nodes.iter().enumerate() {
-                        let selected = self.selected == Some(idx);
-                        let text = format!("{}  {}", display_binding(node), display_type(node));
-                        let is_layer_active = !node.layer().trim().is_empty()
-                            && self
-                                .runtime
-                                .active_layers
-                                .iter()
-                                .any(|layer| layer == node.layer());
-                        let subtitle = match (node.slot(), node.layer().trim().is_empty()) {
-                            (Some(slot), true) => format!("slot {}", slot),
-                            (Some(slot), false) => {
-                                format!("slot {} • layer {}", slot, node.layer())
-                            }
-                            (None, true) => "runtime".into(),
-                            (None, false) => format!("layer {}", node.layer()),
-                        };
 
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                let response = ui.selectable_label(
-                                    selected,
-                                    RichText::new(text).color(node_color(node)).strong(),
-                                );
-                                if response.clicked() {
-                                    clicked = Some(idx);
+                    if let Some(profile) = &self.profile {
+                        for (idx, node) in profile.nodes.iter().enumerate() {
+                            if !self.layer_filter.matches_node(node) {
+                                continue;
+                            }
+                            let selected = self.selected == Some(idx);
+                            let text = format!("{}  {}", display_binding(node), display_type(node));
+                            let is_layer_active = !node.layer().trim().is_empty()
+                                && self
+                                    .runtime
+                                    .active_layers
+                                    .iter()
+                                    .any(|layer| layer == node.layer());
+                            let subtitle = match (node.slot(), node.layer().trim().is_empty()) {
+                                (Some(slot), true) => format!("slot {}", slot),
+                                (Some(slot), false) => {
+                                    format!("slot {} • layer {}", slot, node.layer())
                                 }
-                                if ui.small_button("↑").clicked() {
-                                    move_up = Some(idx);
-                                }
-                                if ui.small_button("↓").clicked() {
-                                    move_down = Some(idx);
-                                }
-                                if ui.small_button("⧉").clicked() {
-                                    duplicate = Some(idx);
-                                }
-                                if ui.small_button("✕").clicked() {
-                                    delete = Some(idx);
+                                (None, true) => "runtime".into(),
+                                (None, false) => format!("layer {}", node.layer()),
+                            };
+
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    let response = ui.selectable_label(
+                                        selected,
+                                        RichText::new(text).color(node_color(node)).strong(),
+                                    );
+                                    if response.clicked() {
+                                        clicked = Some(idx);
+                                    }
+                                    if ui.small_button("↑").clicked() {
+                                        move_up = Some(idx);
+                                    }
+                                    if ui.small_button("↓").clicked() {
+                                        move_down = Some(idx);
+                                    }
+                                    if ui.small_button("⧉").clicked() {
+                                        duplicate = Some(idx);
+                                    }
+                                    if ui.small_button("✕").clicked() {
+                                        delete = Some(idx);
+                                    }
+                                });
+                                let subtitle_color = if is_layer_active {
+                                    Color32::from_rgb(255, 218, 121)
+                                } else {
+                                    Color32::from_gray(150)
+                                };
+                                ui.label(RichText::new(subtitle).small().color(subtitle_color));
+                                if !node.id().is_empty() {
+                                    ui.label(RichText::new(node.id()).small().italics().weak());
                                 }
                             });
-                            let subtitle_color = if is_layer_active {
-                                Color32::from_rgb(255, 218, 121)
-                            } else {
-                                Color32::from_gray(150)
-                            };
-                            ui.label(RichText::new(subtitle).small().color(subtitle_color));
-                            if !node.id().is_empty() {
-                                ui.label(RichText::new(node.id()).small().italics().weak());
-                            }
-                        });
-                        ui.add_space(4.0);
+                            ui.add_space(4.0);
+                        }
                     }
                     if let Some(idx) = clicked {
-                        self.selected = Some(idx);
+                        self.focus_selection(idx);
                     }
                     if let Some(idx) = move_up {
-                        self.selected = Some(idx);
+                        self.focus_selection(idx);
                         self.move_selected(-1);
                     }
                     if let Some(idx) = move_down {
-                        self.selected = Some(idx);
+                        self.focus_selection(idx);
                         self.move_selected(1);
                     }
                     if let Some(idx) = duplicate {
-                        self.selected = Some(idx);
+                        self.focus_selection(idx);
                         self.duplicate_selected();
                     }
                     if let Some(idx) = delete {
-                        self.selected = Some(idx);
+                        self.focus_selection(idx);
                         self.delete_selected();
                     }
-                } else {
-                    ui.label("Create or open a profile to start mapping.");
                 }
 
                 ui.separator();
-                ui.heading("Runtime");
+                ui.heading("Runtime Snapshot");
                 ui.add_space(6.0);
                 let daemon_text = if self.runtime.connected {
                     "Connected"
@@ -1500,6 +2199,23 @@ impl PhantomGui {
                 if let Some(error) = &self.runtime.last_error {
                     ui.label(RichText::new(error).small().color(Color32::LIGHT_RED));
                 }
+                ui.label(
+                    RichText::new("Open the Runtime tab on the right for daemon control and full runtime actions.")
+                        .small()
+                        .color(Color32::from_gray(150)),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    if !self.runtime.connected {
+                        if ui.button("Start Daemon").clicked() {
+                            self.start_daemon();
+                        }
+                    } else if ui.button("Shutdown Daemon").clicked() {
+                        self.send_runtime_request(IpcRequest::Shutdown, "shutting down");
+                    }
+                    if ui.button("Open Runtime").clicked() {
+                        self.right_panel_tab = RightPanelTab::Runtime;
+                    }
+                });
                 if profile_changed {
                     self.push_history_snapshot(snapshot_before);
                     self.mark_dirty();
@@ -1510,18 +2226,60 @@ impl PhantomGui {
     fn draw_properties_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("properties_panel")
             .resizable(true)
-            .default_width(360.0)
+            .default_width(390.0)
             .show(ctx, |ui| {
                 let snapshot_before = self.snapshot();
-                ui.heading("Properties");
+                ui.heading("Phantom Studio");
                 ui.add_space(6.0);
 
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    for tab in [
+                        RightPanelTab::Overview,
+                        RightPanelTab::Inspect,
+                        RightPanelTab::Runtime,
+                        RightPanelTab::Settings,
+                    ] {
+                        if ui
+                            .selectable_label(self.right_panel_tab == tab, tab.label())
+                            .clicked()
+                        {
+                            self.right_panel_tab = tab;
+                        }
+                    }
+                });
+                ui.separator();
+
+                match self.right_panel_tab {
+                    RightPanelTab::Overview => {
+                        self.draw_studio_overview(ui);
+                        return;
+                    }
+                    RightPanelTab::Runtime => {
+                        self.draw_runtime_panel(ui);
+                        return;
+                    }
+                    RightPanelTab::Settings => {
+                        self.draw_settings_panel(ui);
+                        return;
+                    }
+                    RightPanelTab::Inspect => {}
+                }
+
                 let Some(profile) = &mut self.profile else {
-                    ui.label("No profile loaded");
+                    self.draw_studio_overview(ui);
                     return;
                 };
                 let Some(idx) = self.selected else {
-                    ui.label("Select a control from the list or canvas");
+                    ui.label("No control selected");
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(
+                            "Select a control from the list or canvas, or switch to Overview, Runtime, or Settings.",
+                        )
+                        .small()
+                        .color(Color32::from_gray(170)),
+                    );
                     return;
                 };
                 if idx >= profile.nodes.len() {
@@ -1744,6 +2502,22 @@ impl PhantomGui {
                                     }
                                 });
                         });
+                        let mode_hint = match activation_mode {
+                            MouseCameraActivationMode::AlwaysOn => {
+                                "Always On: mouse movement drives camera drag whenever capture and mouse routing are active."
+                            }
+                            MouseCameraActivationMode::WhileHeld => {
+                                "While Held: hold the activation key to enable camera drag. Good for ADS-style workflows."
+                            }
+                            MouseCameraActivationMode::Toggle => {
+                                "Toggle: press the activation key once to enable mouse look, then again to disable it."
+                            }
+                        };
+                        ui.label(
+                            RichText::new(mode_hint)
+                                .small()
+                                .color(Color32::from_gray(170)),
+                        );
                         if !matches!(activation_mode, MouseCameraActivationMode::AlwaysOn) {
                             let key = activation_key.get_or_insert_with(|| "MouseRight".into());
                             binding_picker(
@@ -2010,7 +2784,7 @@ impl PhantomGui {
 
             if response.secondary_clicked() {
                 if let Some(hit) = hovered_hit {
-                    self.selected = Some(hit.idx());
+                    self.focus_selection(hit.idx());
                 }
             }
 
@@ -2024,7 +2798,7 @@ impl PhantomGui {
 
             response.context_menu(|ui| {
                 if let Some(hit) = hovered_hit {
-                    self.selected = Some(hit.idx());
+                    self.focus_selection(hit.idx());
                     if let Some((label, has_primary_binding)) = hovered_summary.as_ref() {
                         ui.label(RichText::new(label).strong());
                         if *has_primary_binding && ui.button("Bind").clicked() {
@@ -2120,9 +2894,13 @@ impl PhantomGui {
                             }
                             Tool::Select => {
                                 if let Some(profile) = &self.profile {
-                                    self.selected =
+                                    if let Some(hit) =
                                         hit_test(profile, content, mouse, self.selected)
-                                            .map(|hit| hit.idx());
+                                    {
+                                        self.focus_selection(hit.idx());
+                                    } else {
+                                        self.selected = None;
+                                    }
                                 }
                             }
                         }
@@ -2295,6 +3073,7 @@ impl PhantomGui {
 
 impl eframe::App for PhantomGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let prefs_before = self.studio_prefs();
         self.handle_shortcuts(ctx);
         self.handle_binding_capture(ctx);
         self.maybe_poll_runtime();
@@ -2304,7 +3083,84 @@ impl eframe::App for PhantomGui {
         self.draw_left_panel(ctx);
         self.draw_properties_panel(ctx);
         self.draw_canvas(ctx);
+        if self.studio_prefs() != prefs_before {
+            self.persist_studio_prefs();
+        }
     }
+}
+
+fn studio_prefs_path() -> PathBuf {
+    config::config_dir().join("studio.toml")
+}
+
+fn studio_daemon_log_path() -> PathBuf {
+    config::config_dir().join("daemon.log")
+}
+
+fn load_studio_prefs() -> StudioPrefs {
+    let path = studio_prefs_path();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => match toml::from_str(&content) {
+            Ok(prefs) => prefs,
+            Err(e) => {
+                tracing::warn!("invalid studio prefs at {}: {}", path.display(), e);
+                StudioPrefs::default()
+            }
+        },
+        Err(_) => StudioPrefs::default(),
+    }
+}
+
+fn hotkey_label(value: Option<Key>) -> String {
+    match value {
+        Some(key) => format!("{:?}", key),
+        None => "disabled".into(),
+    }
+}
+
+fn running_as_root() -> bool {
+    std::env::var("USER").ok().as_deref() == Some("root")
+}
+
+fn command_exists(name: &str) -> bool {
+    find_binary_in_path(name).is_some()
+}
+
+fn find_binary_in_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn find_phantom_binary() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("phantom"));
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("target/release/phantom"));
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".local/bin/phantom"));
+    }
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    find_binary_in_path("phantom")
 }
 
 #[derive(Clone, Copy)]
@@ -3165,6 +4021,15 @@ fn egui_key_to_binding(key: egui::Key) -> Option<&'static str> {
 }
 
 fn main() -> eframe::Result<()> {
+    if should_print_help() {
+        print_help();
+        return Ok(());
+    }
+    if should_print_version() {
+        print_version();
+        return Ok(());
+    }
+
     let cfg = config::load_config();
     let default_level = if cfg.log_level.trim().is_empty() {
         "info"
@@ -3182,13 +4047,66 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 920.0])
             .with_min_inner_size([1200.0, 760.0])
-            .with_title("Phantom — Fullscreen Mapper"),
+            .with_title(format!(
+                "Phantom Studio {} — Mapping Studio",
+                env!("CARGO_PKG_VERSION")
+            )),
         ..Default::default()
     };
 
     eframe::run_native(
-        "phantom-gui",
+        "phantom-studio",
         options,
         Box::new(|cc| Ok(Box::new(PhantomGui::new(cc)))),
     )
+}
+
+fn should_print_help() -> bool {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    args.first().map(|arg| arg.as_str()) == Some("help")
+        || args.iter().any(|arg| arg == "-h" || arg == "--help")
+}
+
+fn should_print_version() -> bool {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    args.first().map(|arg| arg.as_str()) == Some("version")
+        || args.iter().any(|arg| arg == "-V" || arg == "--version")
+}
+
+fn print_help() {
+    let binary = current_gui_binary_name();
+    println!(
+        r#"Phantom Studio {version}
+
+Fullscreen mapping studio and runtime control surface for Phantom.
+
+USAGE:
+    {binary}
+    {binary} version
+
+FLAGS:
+    -h, --help       Show this help
+    -V, --version    Show version"#,
+        binary = binary,
+        version = env!("CARGO_PKG_VERSION"),
+    );
+}
+
+fn print_version() {
+    println!(
+        "Phantom Studio {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        current_gui_binary_name()
+    );
+}
+
+fn current_gui_binary_name() -> String {
+    std::env::args_os()
+        .next()
+        .and_then(|path| {
+            PathBuf::from(path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_NAME").to_string())
 }

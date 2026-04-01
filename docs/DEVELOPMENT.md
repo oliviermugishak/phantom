@@ -135,11 +135,54 @@ cargo test --quiet
 
 ### 6. Install Runtime Config
 
+Recommended:
+
+```bash
+./install.sh
+```
+
+That is the supported maintainer install path for a user-local setup.
+
+Manual alternative:
+
 ```bash
 mkdir -p ~/.config/phantom/profiles
 cp config.example.toml ~/.config/phantom/config.toml
 cp profiles/*.json ~/.config/phantom/profiles/
 ```
+
+## Versioning
+
+Phantom now uses workspace-level versioning.
+
+Version source of truth:
+
+- root `Cargo.toml`
+- `[workspace.package]`
+- `version = "..."`
+
+Both binaries inherit that shared version:
+
+- `phantom`
+- `phantom-gui`
+- `phantom-studio` (installed alias to `phantom-gui`)
+
+That means:
+
+- `phantom --version`
+- `phantom version`
+- `phantom-gui --version`
+- `phantom-gui version`
+- `phantom-studio --version`
+
+all stay in sync with one version bump.
+
+When making a release-style bump:
+
+1. update the workspace version in the root `Cargo.toml`
+2. run `cargo build --release`
+3. run `./install.sh` if you want the installed binaries to match
+4. confirm with `phantom --version` and `phantom-gui --version`
 
 ## Build Outputs
 

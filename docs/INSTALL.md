@@ -114,6 +114,31 @@ ls -l /dev/uinput
 
 ## 7. Build The Project
 
+Recommended user-local install:
+
+```bash
+./install.sh
+```
+
+That command:
+
+- builds the Rust binaries
+- builds the Android server jar
+- installs `phantom`, `phantom-gui`, and `phantom-studio` into `~/.local/bin`
+- installs `phantom-server.jar` into `~/.local/share/phantom/android/`
+- creates `~/.config/phantom/config.toml` if it does not already exist
+- copies starter profiles into `~/.config/phantom/profiles/` if they are missing
+
+Uninstall later with:
+
+```bash
+./install.sh -u
+```
+
+That removes the installed binaries and Android server jar, but keeps your config and profiles.
+
+Manual build remains available.
+
 Build the Rust binaries:
 
 ```bash
@@ -138,6 +163,12 @@ Artifact:
 That jar must contain `classes.dex`.
 
 ## 8. Install Config And Profiles
+
+If you used `./install.sh`, this step is already done.
+
+Phantom does not auto-create `~/.config/phantom/config.toml` during normal daemon startup. If the file is missing, it falls back to defaults. The installer is the supported way to create the initial config.
+
+If you want to install manually:
 
 ```bash
 mkdir -p ~/.config/phantom/profiles
@@ -186,6 +217,8 @@ pause_toggle = "F9"
 shutdown = "F2"
 ```
 
+On laptops and compact keyboards, enable Fn Lock if you want the top row to send real `F1`/`F8`/`F9` keys instead of media actions.
+
 ## 10. First Startup
 
 Start Waydroid first:
@@ -204,7 +237,7 @@ Before starting Phantom, confirm:
 Then start Phantom:
 
 ```bash
-sudo ./target/release/phantom --trace --daemon
+sudo phantom --trace --daemon
 ```
 
 If the container is `FROZEN`, the Android server may listen but fail readiness checks. Open the UI or the game first.
@@ -214,7 +247,7 @@ If the container is `FROZEN`, the Android server may listen but fail readiness c
 In a normal user shell:
 
 ```bash
-./target/release/phantom status
+phantom status
 ```
 
 Expected:
@@ -227,25 +260,25 @@ Expected:
 Audit a profile:
 
 ```bash
-./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
+phantom audit ~/.config/phantom/profiles/pubg.json
 ```
 
 Load a profile:
 
 ```bash
-./target/release/phantom load ~/.config/phantom/profiles/pubg.json
+phantom load ~/.config/phantom/profiles/pubg.json
 ```
 
 Enter capture:
 
 ```bash
-./target/release/phantom enter-capture
+phantom enter-capture
 ```
 
 ## 12. Launch The GUI
 
 ```bash
-./target/release/phantom-gui
+phantom-studio
 ```
 
 Recommended editor flow:
@@ -285,7 +318,7 @@ touch_backend = "uinput"
 Recommended startup order for that backend:
 
 ```bash
-sudo ./target/release/phantom --trace --daemon
+sudo phantom --trace --daemon
 waydroid session stop
 waydroid session start
 ```

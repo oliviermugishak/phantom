@@ -11,9 +11,10 @@ use tokio::net::UnixListener;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::config;
+use crate::desktop_relay::DesktopKeyboardRelay;
 use crate::engine::{KeymapEngine, TouchCommand};
 use crate::error::{PhantomError, Result};
-use crate::input::InputCapture;
+use crate::input::{InputCapture, InputEvent};
 use crate::profile::Profile;
 use crate::touch::TouchDevice;
 
@@ -82,6 +83,7 @@ pub struct DaemonState {
     pub engine: RwLock<KeymapEngine>,
     pub profile_path: RwLock<Option<PathBuf>>,
     pub touch: Mutex<Box<dyn TouchDevice>>,
+    pub desktop_keyboard: Mutex<DesktopKeyboardRelay>,
     pub capture: Mutex<InputCapture>,
     pub screen_width: u32,
     pub screen_height: u32,
@@ -93,6 +95,7 @@ impl DaemonState {
     pub fn new(
         engine: KeymapEngine,
         touch: Box<dyn TouchDevice>,
+        desktop_keyboard: DesktopKeyboardRelay,
         capture: InputCapture,
         width: u32,
         height: u32,
@@ -102,6 +105,7 @@ impl DaemonState {
             engine: RwLock::new(engine),
             profile_path: RwLock::new(None),
             touch: Mutex::new(touch),
+            desktop_keyboard: Mutex::new(desktop_keyboard),
             capture: Mutex::new(capture),
             screen_width: width,
             screen_height: height,
@@ -521,7 +525,10 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
 
     {
         let mut capture = lock_capture(state)?;
-        capture.set_grabbed_all(active)?;
+        // The daemon keeps the keyboard grabbed for its lifetime so runtime
+        // hotkeys stay reliable even when gameplay capture is not active.
+        capture.set_grabbed_keyboard_only(true)?;
+        capture.set_grabbed_mouse_only(active)?;
     }
     state.capture_active.store(active, Ordering::Release);
     Ok(())
@@ -576,6 +583,18 @@ pub fn lock_touch_device(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, Box<
     }
 }
 
+pub fn lock_desktop_keyboard(
+    state: &Arc<DaemonState>,
+) -> Result<MutexGuard<'_, DesktopKeyboardRelay>> {
+    match state.desktop_keyboard.lock() {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::warn!("desktop keyboard relay lock poisoned, recovering");
+            Ok(poisoned.into_inner())
+        }
+    }
+}
+
 pub fn lock_capture(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, InputCapture>> {
     match state.capture.lock() {
         Ok(guard) => Ok(guard),
@@ -583,6 +602,15 @@ pub fn lock_capture(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, InputCapt
             tracing::warn!("input capture lock poisoned, recovering");
             Ok(poisoned.into_inner())
         }
+    }
+}
+
+pub fn relay_keyboard_event_to_desktop(state: &Arc<DaemonState>, event: &InputEvent) -> Result<()> {
+    let mut relay = lock_desktop_keyboard(state)?;
+    match event {
+        InputEvent::KeyPress(key) if !key.is_mouse() => relay.relay_key_event(*key, true),
+        InputEvent::KeyRelease(key) if !key.is_mouse() => relay.relay_key_event(*key, false),
+        _ => Ok(()),
     }
 }
 

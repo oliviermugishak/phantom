@@ -81,15 +81,29 @@ Good debugging path:
 Recovery options:
 
 ```bash
-./target/release/phantom pause
-./target/release/phantom resume
-./target/release/phantom exit-capture
-./target/release/phantom enter-capture
+phantom pause
+phantom resume
+phantom exit-capture
+phantom enter-capture
 ```
 
 If needed, restart the daemon.
 
-## 7. Hotplug Rescan Is Not Implemented
+## 7. Top-Row Hotkeys Do Not Trigger
+
+Common cause:
+
+- the keyboard is not sending standard `F1`/`F8`/`F9` key events because Fn Lock is off
+
+Typical symptom:
+
+- `F2` works, but `F1` or `F8` appear dead
+
+Resolution:
+
+- enable Fn Lock or switch the keyboard firmware mode so the top row emits standard function keys
+
+## 8. Hotplug Rescan Is Not Implemented
 
 Current limitation:
 
@@ -97,7 +111,7 @@ Current limitation:
 
 If devices change, restart the daemon.
 
-## 8. Floating Joysticks Are Not Supported
+## 9. Floating Joysticks Are Not Supported
 
 Current limitation:
 
@@ -105,7 +119,7 @@ Current limitation:
 
 Profiles must be built for games and layouts that tolerate a fixed joystick anchor.
 
-## 9. Multi-Monitor And Rotation Handling Are Not Supported
+## 10. Multi-Monitor And Rotation Handling Are Not Supported
 
 Current limitation:
 
@@ -117,7 +131,7 @@ Best practice:
 - keep Waydroid fullscreen on one intended display
 - use one stable screen contract
 
-## 10. `uinput` Visibility Problems
+## 11. `uinput` Visibility Problems
 
 This only applies to the compatibility backend.
 

@@ -1,5 +1,6 @@
 # Phantom configuration
 # Copy this file to ~/.config/phantom/config.toml and adjust it for your machine.
+# `./install.sh` does that automatically on first install.
 
 # Log level: trace, debug, info, warn, error
 # Use "trace" when debugging evdev capture, engine decisions, backend transport, or touch injection.
@@ -21,6 +22,7 @@ height = 1080
 #   ./contrib/android-server/build.sh
 [android]
 auto_launch = true
+# `./install.sh` replaces this placeholder with the installed jar path automatically.
 server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
 server_class = "com.phantom.server.PhantomServer"
 container_bind_host = "0.0.0.0"

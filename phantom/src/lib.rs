@@ -1,5 +1,6 @@
 pub mod android_inject;
 pub mod config;
+pub mod desktop_relay;
 pub mod engine;
 pub mod error;
 pub mod inject;

@@ -47,6 +47,8 @@ When mouse routing is disabled:
 - mouse-originated gameplay events are suppressed
 - active mouse-driven touches are released
 - capture may remain active for keyboard-driven gameplay
+- the daemon still keeps the physical keyboard grabbed so runtime hotkeys continue to work
+- outside capture, non-hotkey keyboard events are replayed back to Linux through Phantom's virtual desktop keyboard
 
 This is the key distinction that makes menu interaction and hybrid workflows possible.
 
@@ -68,7 +70,7 @@ For the current recommended backend:
 waydroid session start
 waydroid show-full-ui
 sudo waydroid status
-sudo ./target/release/phantom --trace --daemon
+sudo phantom --trace --daemon
 ```
 
 Before starting Phantom, confirm:
@@ -83,6 +85,7 @@ If the container is `FROZEN`, open the UI or the game first.
 Common commands:
 
 ```bash
+phantom version
 phantom status
 phantom audit <profile.json>
 phantom load <profile.json>
@@ -99,6 +102,19 @@ phantom sensitivity <value>
 phantom shutdown
 ```
 
+## Studio Runtime Surface
+
+`phantom-studio` is now more than a profile editor. Its `Runtime` tab can:
+
+- request daemon launch
+- show daemon connection state
+- push the current profile live
+- enter or leave capture
+- toggle mouse routing
+- shut the daemon down
+
+If your system still requires elevated input access, the studio will prefer `pkexec` when it is available. Otherwise, start `phantom --daemon` manually and return to the studio.
+
 ## Runtime Hotkeys
 
 Configured in:
@@ -114,6 +130,8 @@ Default bindings:
 - `F2` -> shutdown daemon
 
 Use `""` or `"none"` to disable any of them.
+
+If `F2` works but `F1` or `F8` do not, check Fn Lock first. On many keyboards the top row only sends real function keys when Fn Lock is enabled.
 
 ## GUI Workflow
 
