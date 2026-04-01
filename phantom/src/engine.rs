@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use crate::error::Result;
-use crate::inject::UinputDevice;
 use crate::input::{InputEvent, Key};
 use crate::profile::{LayerMode, MacroAction, Node, Profile};
 
@@ -174,6 +172,16 @@ impl KeymapEngine {
 
     pub fn profile_name(&self) -> &str {
         &self.profile.name
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.profile.nodes.len()
+    }
+
+    pub fn slots(&self) -> Vec<u8> {
+        let mut slots: Vec<u8> = self.profile.nodes.iter().filter_map(Node::slot).collect();
+        slots.sort_unstable();
+        slots
     }
 
     pub fn active_layers(&self) -> impl Iterator<Item = &str> {
@@ -936,10 +944,6 @@ fn joystick_offset(up: bool, down: bool, left: bool, right: bool, radius: f64) -
         dy *= diagonal;
     }
     (dx, dy)
-}
-
-pub fn execute_commands(device: &mut UinputDevice, cmds: &[TouchCommand]) -> Result<()> {
-    device.apply_commands(cmds)
 }
 
 #[cfg(test)]

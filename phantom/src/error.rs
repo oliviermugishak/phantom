@@ -36,6 +36,9 @@ pub enum PhantomError {
     #[error("internal error: {0}")]
     Internal(String),
 
+    #[error("touch backend error: {0}")]
+    TouchBackend(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

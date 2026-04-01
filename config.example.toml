@@ -5,8 +5,29 @@
 # Use "trace" when debugging raw evdev input, engine decisions, and injected touch batches.
 log_level = "info"
 
+# Touch injection backend:
+# - "uinput" is the current host-kernel virtual touchscreen path
+# - "android_socket" sends touch commands to an app_process server inside Waydroid
+#   and expects the Waydroid session to already be running before daemon startup
+touch_backend = "uinput"
+
 # Fullscreen Waydroid touch resolution
 # Set both values. Phantom treats this as the runtime screen contract.
 [screen]
 width = 1920
 height = 1080
+
+# Optional Android framework backend settings.
+# Enable these only after building contrib/android-server/build/phantom-server.jar.
+#[android]
+#auto_launch = true
+#server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
+#host = "192.168.240.112"
+#port = 27183
+#server_class = "com.phantom.server.PhantomServer"
+#container_bind_host = "0.0.0.0"
+#container_server_jar = "/data/local/tmp/phantom-server.jar"
+#container_log_path = "/data/local/tmp/phantom-server.log"
+
+#[waydroid]
+#work_dir = "/var/lib/waydroid"

@@ -1,6 +1,8 @@
-# Uinput And MT Protocol Reference
+# Uinput Backend And MT Protocol Reference
 
-This document describes the kernel-facing contract Phantom relies on.
+This document describes the kernel-facing contract for Phantom's `uinput` backend only.
+
+If you are using `android_socket`, this document is not the primary verification path. Use [docs/ANDROID_SOCKET_PROTOCOL.md](docs/ANDROID_SOCKET_PROTOCOL.md) and [docs/TESTING.md](docs/TESTING.md).
 
 ## Device Creation
 
@@ -15,6 +17,8 @@ Enabled capabilities:
 - `ABS_MT_TRACKING_ID`
 - `ABS_MT_POSITION_X`
 - `ABS_MT_POSITION_Y`
+- `ABS_MT_TOUCH_MAJOR`
+- `ABS_MT_PRESSURE`
 - `BTN_TOUCH`
 - `INPUT_PROP_DIRECT`
 
@@ -50,6 +54,8 @@ Configured ranges:
 - `ABS_MT_TRACKING_ID`: `0..65535`
 - `ABS_MT_POSITION_X`: `0..screen_width-1`
 - `ABS_MT_POSITION_Y`: `0..screen_height-1`
+- `ABS_MT_TOUCH_MAJOR`: `0..15`
+- `ABS_MT_PRESSURE`: `0..255`
 
 The position ranges must match the touch surface Phantom is trying to emulate for Waydroid. If they do not, touches will be offset or scaled incorrectly.
 
@@ -59,9 +65,8 @@ Phantom currently uses:
 
 - MT Protocol B slots
 - one tracking ID per active slot
-- tracking ID equal to slot number
-- `BTN_TOUCH = 1` when the first touch becomes active
-- `BTN_TOUCH = 0` when the last touch is released
+- monotonic tracking IDs independent from slot number
+- `BTN_TOUCH` emitted once per batched report based on final active-touch state
 
 That tracking strategy is valid as long as a slot is not reused without first emitting `TRACKING_ID = -1`.
 
@@ -85,9 +90,11 @@ Example for slot `2` at `(960, 540)`:
 
 ```text
 EV_ABS  ABS_MT_SLOT         2
-EV_ABS  ABS_MT_TRACKING_ID  2
+EV_ABS  ABS_MT_TRACKING_ID  <new monotonic id>
 EV_ABS  ABS_MT_POSITION_X   960
 EV_ABS  ABS_MT_POSITION_Y   540
+EV_ABS  ABS_MT_TOUCH_MAJOR  15
+EV_ABS  ABS_MT_PRESSURE     255
 EV_KEY  BTN_TOUCH           1        # only when this is the first active touch
 EV_SYN  SYN_REPORT          0
 ```
@@ -98,6 +105,8 @@ EV_SYN  SYN_REPORT          0
 EV_ABS  ABS_MT_SLOT         2
 EV_ABS  ABS_MT_POSITION_X   980
 EV_ABS  ABS_MT_POSITION_Y   530
+EV_ABS  ABS_MT_TOUCH_MAJOR  15
+EV_ABS  ABS_MT_PRESSURE     255
 EV_SYN  SYN_REPORT          0
 ```
 
@@ -122,11 +131,8 @@ Current daemon resolution order:
 
 1. config override
 2. default profile `screen`
-3. `/sys/class/graphics/fb0/virtual_size`
-4. `/dev/fb0`
-5. fallback `1920x1080`
 
-This is a host-side heuristic, not an Android-surface discovery API.
+If neither exists, daemon startup fails. Phantom no longer falls back to framebuffer heuristics for runtime resolution.
 
 ## Waydroid Implication
 

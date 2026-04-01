@@ -1,12 +1,16 @@
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use crate::config::Config;
 use crate::error::{PhantomError, Result};
 use crate::inject::{PHANTOM_DEVICE_NAME, PHANTOM_PRODUCT_ID, PHANTOM_VENDOR_ID};
+use std::ffi::OsString;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 const WAYDROID_DEFAULT_WORK_DIR: &str = "/var/lib/waydroid";
+const DEFAULT_ANDROID_SERVER_JAR_CONTAINER_PATH: &str = "/data/local/tmp/phantom-server.jar";
+const DEFAULT_ANDROID_SERVER_LOG_CONTAINER_PATH: &str = "/data/local/tmp/phantom-server.log";
+const DEFAULT_ANDROID_SERVER_BIND_HOST: &str = "0.0.0.0";
+const DEFAULT_ANDROID_SERVER_PORT: u16 = 27183;
 const IDC_TEMPLATE: &str = include_str!("../../contrib/waydroid/Vendor_1234_Product_5678.idc");
 
 #[derive(Debug, Clone)]
@@ -48,6 +52,121 @@ pub fn waydroid_work_dir(config: &Config) -> PathBuf {
         .work_dir
         .clone()
         .unwrap_or_else(|| PathBuf::from(WAYDROID_DEFAULT_WORK_DIR))
+}
+
+pub fn android_server_host(config: &Config) -> Result<String> {
+    if let Some(host) = config.android.host.as_ref() {
+        return Ok(host.clone());
+    }
+
+    let status = waydroid_status_output()?;
+    parse_waydroid_status_ip(&status).ok_or_else(|| {
+        PhantomError::TouchBackend(format!(
+            "could not determine Waydroid container IP from 'waydroid status':\n{}",
+            status
+        ))
+    })
+}
+
+pub fn android_server_port(config: &Config) -> u16 {
+    config.android.port.unwrap_or(DEFAULT_ANDROID_SERVER_PORT)
+}
+
+pub fn android_server_bind_host(config: &Config) -> String {
+    config
+        .android
+        .container_bind_host
+        .clone()
+        .unwrap_or_else(|| DEFAULT_ANDROID_SERVER_BIND_HOST.into())
+}
+
+pub fn android_server_log_container_path(config: &Config) -> String {
+    config
+        .android
+        .container_log_path
+        .clone()
+        .unwrap_or_else(|| DEFAULT_ANDROID_SERVER_LOG_CONTAINER_PATH.into())
+}
+
+pub fn android_server_jar_container_path(config: &Config) -> String {
+    config
+        .android
+        .container_server_jar
+        .clone()
+        .unwrap_or_else(|| DEFAULT_ANDROID_SERVER_JAR_CONTAINER_PATH.into())
+}
+
+pub fn ensure_android_server(config: &Config) -> Result<()> {
+    ensure_waydroid_session_running()?;
+
+    let staged_jar = stage_android_server(config)?;
+    let container_jar = android_server_jar_container_path(config);
+    let bind_host = android_server_bind_host(config);
+    let port = android_server_port(config);
+    let log_path = android_server_log_container_path(config);
+    let server_class = config.android.server_class.trim();
+    if server_class.is_empty() {
+        return Err(PhantomError::TouchBackend(
+            "android server class cannot be empty".into(),
+        ));
+    }
+
+    tracing::info!(
+        staged_jar = %staged_jar.display(),
+        host = bind_host,
+        port = port,
+        server_class = server_class,
+        "launching android touch server"
+    );
+
+    let shell = format!(
+        "rm -f {log}; CLASSPATH={jar} app_process / {class} --host {host} --port {port} </dev/null >{log} 2>&1 &",
+        jar = sh_quote(&container_jar),
+        class = sh_quote(server_class),
+        host = sh_quote(&bind_host),
+        port = port,
+        log = sh_quote(&log_path),
+    );
+
+    let output = Command::new("waydroid")
+        .arg("shell")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg(&shell)
+        .output()
+        .map_err(|e| {
+            PhantomError::TouchBackend(format!("failed to launch android touch server: {}", e))
+        })?;
+
+    if !output.status.success() {
+        let detail = command_output_detail(&output);
+
+        return Err(PhantomError::TouchBackend(format!(
+            "waydroid shell failed to launch android touch server: {}",
+            detail
+        )));
+    }
+
+    Ok(())
+}
+
+pub fn android_server_log_excerpt(config: &Config) -> Option<String> {
+    let log_path = android_server_log_container_path(config);
+    let shell = format!("tail -n 80 {}", sh_quote(&log_path));
+    let output = Command::new("waydroid")
+        .arg("shell")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg(&shell)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let detail = command_output_detail(&output);
+    (!detail.trim().is_empty()).then_some(detail)
 }
 
 pub fn phantom_idc_text() -> &'static str {
@@ -237,11 +356,183 @@ fn read_mount_overlays(path: &Path) -> Option<bool> {
     None
 }
 
+fn stage_android_server(config: &Config) -> Result<PathBuf> {
+    let source = config.android.server_jar.clone().ok_or_else(|| {
+        PhantomError::TouchBackend(
+            "android auto-launch requires [android].server_jar to point to a built phantom-server.jar".into(),
+        )
+    })?;
+
+    if !source.exists() {
+        return Err(PhantomError::TouchBackend(format!(
+            "android server jar not found at {}",
+            source.display()
+        )));
+    }
+
+    validate_android_server_jar(&source)?;
+
+    let bytes = std::fs::read(&source).map_err(|e| {
+        PhantomError::TouchBackend(format!(
+            "cannot read android server jar {}: {}",
+            source.display(),
+            e
+        ))
+    })?;
+    let container_jar = android_server_jar_container_path(config);
+    let shell = format!(
+        "cat >{jar} && chmod 0644 {jar}",
+        jar = sh_quote(&container_jar)
+    );
+    let mut child = Command::new("waydroid")
+        .arg("shell")
+        .arg("--")
+        .arg("sh")
+        .arg("-c")
+        .arg(&shell)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            PhantomError::TouchBackend(format!("failed to stage android server jar: {}", e))
+        })?;
+
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        PhantomError::TouchBackend("failed to open stdin for waydroid shell staging".into())
+    })?;
+    stdin.write_all(&bytes).map_err(|e| {
+        PhantomError::TouchBackend(format!(
+            "failed writing android server jar into container: {}",
+            e
+        ))
+    })?;
+    drop(stdin);
+
+    let output = child.wait_with_output().map_err(|e| {
+        PhantomError::TouchBackend(format!("failed waiting for android server staging: {}", e))
+    })?;
+    if !output.status.success() {
+        return Err(PhantomError::TouchBackend(format!(
+            "failed staging android server jar in container: {}",
+            command_output_detail(&output)
+        )));
+    }
+
+    Ok(source)
+}
+
+fn ensure_waydroid_session_running() -> Result<()> {
+    let detail = waydroid_status_output()?;
+    if !waydroid_status_is_running(&detail) {
+        return Err(PhantomError::TouchBackend(format!(
+            "Waydroid session is not running; run 'waydroid session start' before starting Phantom with android_socket. Current status:\n{}",
+            detail
+        )));
+    }
+    if waydroid_container_is_frozen(&detail) {
+        return Err(PhantomError::TouchBackend(format!(
+            "Waydroid container is frozen; open Waydroid with 'waydroid show-full-ui' or launch the game before starting Phantom with android_socket. Current status:\n{}",
+            detail
+        )));
+    }
+
+    Ok(())
+}
+
+fn waydroid_status_output() -> Result<String> {
+    let output = Command::new("waydroid")
+        .arg("status")
+        .output()
+        .map_err(|e| {
+            PhantomError::TouchBackend(format!("failed to query waydroid status: {}", e))
+        })?;
+
+    if !output.status.success() {
+        return Err(PhantomError::TouchBackend(format!(
+            "waydroid status failed: {}",
+            command_output_detail(&output)
+        )));
+    }
+
+    Ok(command_output_detail(&output))
+}
+
+fn parse_waydroid_status_ip(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let line = line.trim();
+        let value = line.strip_prefix("IP address:")?.trim();
+        (!value.is_empty()).then_some(value.to_string())
+    })
+}
+
+fn validate_android_server_jar(path: &Path) -> Result<()> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        PhantomError::TouchBackend(format!(
+            "cannot read android server jar {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+
+    if !bytes
+        .windows(b"classes.dex".len())
+        .any(|w| w == b"classes.dex")
+    {
+        return Err(PhantomError::TouchBackend(format!(
+            "android server jar {} is not dexed (missing classes.dex); rebuild it with contrib/android-server/build.sh",
+            path.display()
+        )));
+    }
+
+    Ok(())
+}
+
 fn vendor_product_idc_filename() -> String {
     format!(
         "Vendor_{:04x}_Product_{:04x}.idc",
         PHANTOM_VENDOR_ID, PHANTOM_PRODUCT_ID
     )
+}
+
+fn command_output_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stderr.trim().is_empty() {
+        stdout.trim().to_string()
+    } else if stdout.trim().is_empty() {
+        stderr.trim().to_string()
+    } else {
+        format!("{}\n{}", stdout.trim(), stderr.trim())
+    }
+}
+
+fn waydroid_status_is_running(output: &str) -> bool {
+    output
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            if let Some(value) = line.strip_prefix("Session:") {
+                Some(value.trim().eq_ignore_ascii_case("RUNNING"))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false)
+}
+
+fn waydroid_container_is_frozen(output: &str) -> bool {
+    output
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            if let Some(value) = line.strip_prefix("Container:") {
+                Some(value.trim().eq_ignore_ascii_case("FROZEN"))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false)
 }
 
 fn device_name_idc_filename(name: &str) -> String {
@@ -268,6 +559,19 @@ fn yes_no(value: bool) -> &'static str {
     } else {
         "no"
     }
+}
+
+fn sh_quote(value: &str) -> String {
+    let mut rendered = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            rendered.push_str("'\"'\"'");
+        } else {
+            rendered.push(ch);
+        }
+    }
+    rendered.push('\'');
+    rendered
 }
 
 #[cfg(test)]
@@ -313,5 +617,50 @@ mod tests {
         let text = phantom_idc_text();
         assert!(text.contains("touch.deviceType = touchScreen"));
         assert!(text.contains("touch.orientationAware = 1"));
+    }
+
+    #[test]
+    fn android_server_defaults_are_tcp_and_container_local_tmp() {
+        let cfg = Config::default();
+        assert_eq!(android_server_port(&cfg), 27183);
+        assert_eq!(android_server_bind_host(&cfg), "0.0.0.0");
+        assert_eq!(
+            android_server_jar_container_path(&cfg),
+            "/data/local/tmp/phantom-server.jar"
+        );
+    }
+
+    #[test]
+    fn waydroid_status_parser_accepts_running() {
+        assert!(waydroid_status_is_running(
+            "Session:\tRUNNING\nVendor type:\tMAINLINE\n"
+        ));
+    }
+
+    #[test]
+    fn waydroid_status_parser_rejects_stopped() {
+        assert!(!waydroid_status_is_running(
+            "Session:\tSTOPPED\nVendor type:\tMAINLINE\n"
+        ));
+    }
+
+    #[test]
+    fn waydroid_status_parser_extracts_ip() {
+        assert_eq!(
+            parse_waydroid_status_ip(
+                "Session:\tRUNNING\nIP address:\t192.168.240.112\nVendor type:\tMAINLINE\n"
+            ),
+            Some("192.168.240.112".into())
+        );
+    }
+
+    #[test]
+    fn waydroid_status_parser_detects_frozen_container() {
+        assert!(waydroid_container_is_frozen(
+            "Session:\tRUNNING\nContainer:\tFROZEN\n"
+        ));
+        assert!(!waydroid_container_is_frozen(
+            "Session:\tRUNNING\nContainer:\tRUNNING\n"
+        ));
     }
 }

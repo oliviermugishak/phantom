@@ -6,7 +6,7 @@ This guide covers the full setup for the current Phantom product shape: fullscre
 
 | Requirement | Notes |
 |---|---|
-| Linux kernel with `uinput` | Phantom uses a virtual direct-touch device |
+| Linux kernel with `uinput` | required only for the `uinput` backend |
 | Access to `/dev/input/event*` and `/dev/uinput` | root or `input` group |
 | Waydroid | host and container share the same kernel input stack |
 | Rust toolchain | needed to build from source |
@@ -24,6 +24,7 @@ Artifacts:
 
 - `target/release/phantom`
 - `target/release/phantom-gui`
+- `contrib/android-server/build/phantom-server.jar` if you build the Android backend server
 
 ## Host Setup
 
@@ -63,6 +64,8 @@ You can also run the daemon as root:
 sudo ./target/release/phantom --daemon
 ```
 
+If you plan to use the Android framework backend instead of `uinput`, you still need access to `/dev/input/event*`, but you do not need `/dev/uinput`.
+
 ## Config And Profiles
 
 ```bash
@@ -82,11 +85,29 @@ width = 1920
 height = 1080
 ```
 
+Optional backend selection:
+
+```toml
+touch_backend = "uinput"
+```
+
 This is no longer optional in practice. Phantom uses the configured screen contract instead of falling back to framebuffer guessing.
 
 Every real profile should also carry a matching `screen` block. If the profile and daemon disagree, the load is rejected.
 
+Before live testing, audit the profile once:
+
+```bash
+./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
+```
+
+This prints the occupied touch slots, the node using each slot, the layer, and the triggering bindings. It is the fastest way to confirm that two or five controls you expect to hold simultaneously really map to distinct touch slots.
+
 ## Recommended Startup Order
+
+The order depends on backend choice.
+
+### `uinput`
 
 1. Start Phantom.
 2. Start or restart the Waydroid session.
@@ -98,6 +119,7 @@ Commands:
 
 ```bash
 ./target/release/phantom --daemon
+./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
 waydroid session stop
 waydroid session start
 ./target/release/phantom load ~/.config/phantom/profiles/pubg.json
@@ -106,7 +128,76 @@ waydroid session start
 
 If Waydroid was already running when Phantom started and the touch device does not appear, restart the Waydroid session.
 
+### `android_socket`
+
+1. Start or confirm the Waydroid session is already running.
+2. Start Phantom.
+3. Let Phantom stage and launch the Android server.
+4. Load the target profile if needed.
+5. Enter capture.
+
+Commands:
+
+```bash
+waydroid session start
+waydroid show-full-ui
+sudo ./target/release/phantom --trace --daemon
+./target/release/phantom audit ~/.config/phantom/profiles/pubg.json
+./target/release/phantom load ~/.config/phantom/profiles/pubg.json
+./target/release/phantom enter-capture
+```
+
+If Phantom is started with `sudo`, it now resolves config and IPC paths from the invoking user, so the normal user can still run CLI commands and use the GUI against the daemon.
+`Session: RUNNING` is not enough for this backend: if `waydroid status` also shows `Container: FROZEN`, open the UI or launch the game first so the container is actually responsive.
+
+## Android Framework Backend
+
+For Waydroid setups where host-side `uinput` touches are accepted by Phantom but still collapse downstream, Phantom can target an Android-side `app_process` server instead.
+
+Build the server:
+
+```bash
+./contrib/android-server/build.sh
+```
+
+This produces a dex jar for `app_process`. If the jar does not contain `classes.dex`, Phantom will now reject auto-launch and ask you to rebuild it.
+
+Then configure:
+
+```toml
+touch_backend = "android_socket"
+
+[android]
+auto_launch = true
+server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
+#host = "192.168.240.112"
+#port = 27183
+```
+
+Default Android backend runtime values:
+
+- host: Waydroid container IP from `waydroid status`
+- port: `27183`
+- staged server jar inside the container: `/data/local/tmp/phantom-server.jar`
+- server log inside the container: `/data/local/tmp/phantom-server.log`
+
+Expected daemon startup signals:
+
+- `touch backend ready` with `backend=android_socket`
+- `android touch server unavailable, attempting auto-launch` on a cold start
+- `launching android touch server`
+- `connected to android touch server`
+
+Expected server log signals:
+
+- `phantom-server starting host=0.0.0.0 port=27183`
+- `phantom-server client connected`
+
 ## First Verification
+
+Backend matters here. Do not mix the checks.
+
+### `uinput`
 
 ### 1. Confirm the host created the touchscreen
 
@@ -143,6 +234,34 @@ Expected behavior:
 - `joystick` holds and moves from a fixed left-stick center
 - `mouse_camera` drives a bounded mouse-look swipe region
 - `repeat_tap` repeatedly presses while held
+
+### `android_socket`
+
+1. Confirm the daemon is alive:
+
+```bash
+./target/release/phantom status
+```
+
+2. Confirm the Android server assets exist inside the container:
+
+```bash
+sudo waydroid shell -- sh -c 'ls -l /data/local/tmp/phantom-server.jar'
+sudo waydroid shell -- sh -c 'ss -ltnp | grep 27183 || true'
+sudo waydroid shell -- sh -c 'tail -n 50 /data/local/tmp/phantom-server.log'
+sudo waydroid status
+```
+
+The expected status for a live backend is:
+
+- `Session: RUNNING`
+- `Container: RUNNING`
+
+If the container is frozen, the TCP server may listen but still fail Phantom's readiness ping until the UI is opened.
+
+3. Confirm touch reaches the game by using a mapped key.
+
+For `android_socket`, `getevent` and `dumpsys input` are not the primary verification path, because there is no new kernel input device to inspect.
 
 ## Using The GUI
 
@@ -269,6 +388,26 @@ If the host sees the device but Waydroid does not:
 - start Phantom first
 - restart the Waydroid session
 - keep Waydroid on the intended fullscreen surface
+
+### `android_socket` daemon cannot connect
+
+Check:
+
+```bash
+sudo waydroid status
+sudo waydroid shell -- sh -c 'ss -ltnp | grep 27183 || true'
+sudo waydroid shell -- sh -c 'tail -n 100 /data/local/tmp/phantom-server.log'
+```
+
+Common causes:
+
+- Waydroid session was not running before daemon start
+- Phantom could not stage the server jar into `/data/local/tmp`
+- `waydroid shell` failed
+- ART cold start took too long and the daemon timed out
+- the server crashed during `app_process` startup
+
+If the server dies mid-session, restart the Phantom daemon. The current backend does not yet reconnect to a freshly restarted server automatically.
 
 ### Touches land in the wrong place
 

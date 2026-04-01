@@ -5,12 +5,12 @@ use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 use phantom::config;
-use phantom::engine::{self, KeymapEngine};
+use phantom::engine::KeymapEngine;
 use phantom::error::{PhantomError, Result};
-use phantom::inject::UinputDevice;
 use phantom::input::{InputCapture, InputEvent, Key};
 use phantom::ipc::{self, DaemonState, IpcRequest};
 use phantom::profile::Profile;
+use phantom::touch;
 
 const CAPTURE_TOGGLE_KEY: Key = Key::F8;
 const PAUSE_TOGGLE_KEY: Key = Key::F9;
@@ -23,6 +23,7 @@ fn print_help() {
 
 USAGE:
     phantom --daemon                  Start the daemon
+    phantom audit <profile.json>      Audit slot and binding usage in a profile
     phantom load <profile.json>       Load a profile
     phantom status                    Show daemon status
     phantom pause                     Pause input processing
@@ -51,6 +52,84 @@ FLAGS:
 
 fn print_version() {
     eprintln!("phantom {}", env!("CARGO_PKG_VERSION"));
+}
+
+fn expand_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).display().to_string();
+        }
+    }
+    path.to_string()
+}
+
+fn format_slots(slots: &[u8]) -> String {
+    let mut slots = slots.to_vec();
+    slots.sort_unstable();
+    slots.dedup();
+    if slots.is_empty() {
+        "(none)".into()
+    } else {
+        slots
+            .into_iter()
+            .map(|slot| slot.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn format_bindings(bindings: &[String]) -> String {
+    if bindings.is_empty() {
+        "(none)".into()
+    } else {
+        bindings.join(", ")
+    }
+}
+
+fn print_profile_audit(profile: &Profile) {
+    let audit = profile.audit();
+    let slots: Vec<u8> = audit.touch_entries.iter().map(|entry| entry.slot).collect();
+
+    eprintln!("profile: {}", audit.profile_name);
+    eprintln!("screen: {}x{}", audit.screen_width, audit.screen_height);
+    eprintln!("total nodes: {}", audit.total_nodes);
+    eprintln!("touch nodes: {}", audit.touch_entries.len());
+    eprintln!("touch slots: {}", format_slots(&slots));
+
+    if !audit.touch_entries.is_empty() {
+        eprintln!("touch slot audit:");
+        for entry in &audit.touch_entries {
+            let mut line = format!(
+                "  slot {}  {}  id={} layer={} bindings={}",
+                entry.slot,
+                entry.node_type,
+                entry.node_id,
+                entry.layer,
+                format_bindings(&entry.bindings)
+            );
+            if let Some(detail) = &entry.detail {
+                line.push_str(&format!(" {}", detail));
+            }
+            eprintln!("{line}");
+        }
+    }
+
+    if !audit.auxiliary_entries.is_empty() {
+        eprintln!("auxiliary nodes:");
+        for entry in &audit.auxiliary_entries {
+            let mut line = format!(
+                "  {}  id={} layer={} bindings={}",
+                entry.node_type,
+                entry.node_id,
+                entry.layer,
+                format_bindings(&entry.bindings)
+            );
+            if let Some(detail) = &entry.detail {
+                line.push_str(&format!(" {}", detail));
+            }
+            eprintln!("{line}");
+        }
+    }
 }
 
 fn init_logging(force_trace: bool) {
@@ -121,7 +200,7 @@ async fn run_daemon() -> Result<()> {
     });
 
     let (screen_w, screen_h) = detect_resolution(&config, default_profile.as_ref())?;
-    let uinput = UinputDevice::new(screen_w, screen_h)?;
+    let touch = touch::create_touch_device(&config, screen_w, screen_h)?;
     let capture = InputCapture::discover()?;
     tracing::info!(
         devices = capture.device_count(),
@@ -147,7 +226,7 @@ async fn run_daemon() -> Result<()> {
         }
     };
 
-    let (state, mut shutdown_rx) = DaemonState::new(engine, uinput, capture, screen_w, screen_h);
+    let (state, mut shutdown_rx) = DaemonState::new(engine, touch, capture, screen_w, screen_h);
     if let Some(path) = default_profile_path {
         *state.profile_path.write().await = Some(path);
     }
@@ -244,14 +323,14 @@ async fn run_daemon() -> Result<()> {
                             drop(engine);
 
                             if !pending.is_empty() {
-                                let mut dev = match ipc::lock_uinput(&state) {
+                                let mut dev = match ipc::lock_touch_device(&state) {
                                     Ok(dev) => dev,
                                     Err(e) => {
-                                        tracing::warn!("uinput lock error: {}", e);
+                                        tracing::warn!("touch backend lock error: {}", e);
                                         continue;
                                     }
                                 };
-                                if let Err(e) = engine::execute_commands(&mut dev, &pending) {
+                                if let Err(e) = dev.apply_commands(&pending) {
                                     tracing::warn!("inject error: {}", e);
                                 }
                             }
@@ -270,14 +349,14 @@ async fn run_daemon() -> Result<()> {
                 let cmds = engine.tick();
                 drop(engine);
                 if !cmds.is_empty() {
-                    let mut dev = match ipc::lock_uinput(&state) {
+                    let mut dev = match ipc::lock_touch_device(&state) {
                         Ok(dev) => dev,
                         Err(e) => {
-                            tracing::warn!("uinput lock error: {}", e);
+                            tracing::warn!("touch backend lock error: {}", e);
                             continue;
                         }
                     };
-                    if let Err(e) = engine::execute_commands(&mut dev, &cmds) {
+                    if let Err(e) = dev.apply_commands(&cmds) {
                         tracing::warn!("inject error: {}", e);
                     }
                 }
@@ -291,8 +370,8 @@ async fn run_daemon() -> Result<()> {
         let mut engine = state.engine.write().await;
         let cmds = engine.release_all();
         drop(engine);
-        let mut dev = ipc::lock_uinput(&state)?;
-        let _ = engine::execute_commands(&mut dev, &cmds);
+        let mut dev = ipc::lock_touch_device(&state)?;
+        let _ = dev.apply_commands(&cmds);
     }
 
     {
@@ -330,8 +409,8 @@ async fn handle_runtime_shortcut(state: &Arc<DaemonState>, event: &InputEvent) -
                 }
             };
             if !cmds.is_empty() {
-                let mut dev = ipc::lock_uinput(state)?;
-                let _ = engine::execute_commands(&mut dev, &cmds);
+                let mut dev = ipc::lock_touch_device(state)?;
+                let _ = dev.apply_commands(&cmds);
             }
             Ok(true)
         }
@@ -363,6 +442,16 @@ async fn handle_runtime_shortcut(state: &Arc<DaemonState>, event: &InputEvent) -
 
 async fn run_cli_command(args: &[String]) -> Result<()> {
     let cmd = args.first().map(|s| s.as_str()).unwrap_or("status");
+
+    if cmd == "audit" {
+        let path = args.get(1).ok_or_else(|| {
+            phantom::error::PhantomError::Ipc("audit requires a path argument".into())
+        })?;
+        let path = expand_path(path);
+        let profile = Profile::load(std::path::Path::new(&path))?;
+        print_profile_audit(&profile);
+        return Ok(());
+    }
 
     let request = match cmd {
         "load" => {
@@ -408,8 +497,17 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
         if let Some(profile) = &response.profile {
             eprintln!("profile: {}", profile);
         }
+        if let Some(path) = &response.profile_path {
+            eprintln!("profile path: {}", path);
+        }
         if let (Some(w), Some(h)) = (response.screen_width, response.screen_height) {
             eprintln!("screen: {}x{}", w, h);
+        }
+        if let Some(nodes) = response.nodes {
+            eprintln!("nodes: {}", nodes);
+        }
+        if let Some(slots) = &response.slots {
+            eprintln!("slots: {}", format_slots(slots));
         }
         if let Some(paused) = response.paused {
             eprintln!("paused: {}", paused);
@@ -419,6 +517,13 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
         }
         if let Some(sensitivity) = response.sensitivity {
             eprintln!("sensitivity: {}", sensitivity);
+        }
+        if let Some(active_layers) = &response.active_layers {
+            if active_layers.is_empty() {
+                eprintln!("active layers: (none)");
+            } else {
+                eprintln!("active layers: {}", active_layers.join(", "));
+            }
         }
         if let Some(profiles) = &response.profiles {
             if profiles.is_empty() {

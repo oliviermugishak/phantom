@@ -1,3 +1,4 @@
+pub mod android_inject;
 pub mod config;
 pub mod engine;
 pub mod error;
@@ -5,3 +6,5 @@ pub mod inject;
 pub mod input;
 pub mod ipc;
 pub mod profile;
+pub mod touch;
+pub mod waydroid;

@@ -4,23 +4,31 @@ Phantom has five runtime pieces:
 
 1. evdev capture
 2. keymap engine
-3. uinput touch injector
+3. touch injector backend
 4. IPC control plane
 5. native mapper GUI
 
 ## Data Flow
 
 ```text
-/dev/input/event* -> Phantom input capture -> keymap engine -> /dev/uinput -> Waydroid
-                                                ^                   ^
-                                                |                   |
-                                            profile data        touch events
+/dev/input/event* -> Phantom input capture -> keymap engine -> injector backend
+                                                ^                    ^
+                                                |                    |
+                                            profile data         touch events
                                                 ^
                                                 |
                                       CLI / GUI / IPC requests
+
+uinput path:
+  injector backend -> /dev/uinput -> Waydroid kernel input bridge
+
+android_socket path:
+  injector backend -> TCP -> app_process server -> InputManager.injectInputEvent()
 ```
 
 The GUI is still separate from the injector, but it is no longer disk-only. It can push live profiles and runtime commands over IPC.
+
+For static inspection, the CLI also exposes `phantom audit <profile.json>`, which renders the slot map directly from the profile model without starting the daemon.
 
 ## Input Capture
 
@@ -74,7 +82,11 @@ Current timing:
 - input polling every 4 ms
 - timer-driven nodes every 16 ms
 
-## Touch Injection
+## Touch Injection Backends
+
+Phantom currently supports two injector targets behind one interface.
+
+### `uinput`
 
 Phantom creates a virtual direct-touch device through `/dev/uinput`.
 
@@ -92,6 +104,37 @@ Runtime touch model:
 - tracking IDs are monotonic and independent from slot numbers
 - pointer-emulation state is updated alongside MT slot state
 - touch commands are batched into a single `SYN_REPORT`
+- safest startup order is Phantom first, then Waydroid session start or restart
+
+### `android_socket`
+
+Phantom can also send touch commands to a small `app_process` server inside Waydroid over TCP.
+
+Current shape:
+
+- host daemon still owns evdev capture and keymap logic
+- Rust backend serializes `TouchDown`, `TouchMove`, and `TouchUp`
+- Android server reconstructs `MotionEvent`s and injects them through `InputManager.injectInputEvent()`
+- the daemon discovers the Waydroid container IP from `waydroid status`
+- the daemon stages `phantom-server.jar` into `/data/local/tmp/` through `waydroid shell` stdin
+- the Android server binds `0.0.0.0:27183` by default
+- `uinput` remains available as a fallback backend
+- Waydroid session must already be running before the daemon starts
+- the daemon launches the server through `waydroid shell`
+- the server is a single-client process today; if it dies, restart the daemon
+
+Health signals for this path:
+
+- daemon log shows `backend=android_socket`
+- daemon log shows successful server connection
+- server log inside Waydroid shows client connected
+- container port `27183` is listening
+
+Signals that do not apply here:
+
+- `getevent` showing `Phantom Virtual Touch`
+- `dumpsys input` showing a new kernel-level Phantom device
+- IDC classification effects
 
 ## Resolution Handling
 

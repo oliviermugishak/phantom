@@ -11,11 +11,11 @@ use tokio::net::UnixListener;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::config;
-use crate::engine::{self, KeymapEngine, TouchCommand};
+use crate::engine::{KeymapEngine, TouchCommand};
 use crate::error::{PhantomError, Result};
-use crate::inject::UinputDevice;
 use crate::input::InputCapture;
 use crate::profile::Profile;
+use crate::touch::TouchDevice;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -74,7 +74,7 @@ pub struct ProfileEntry {
 pub struct DaemonState {
     pub engine: RwLock<KeymapEngine>,
     pub profile_path: RwLock<Option<PathBuf>>,
-    pub uinput: Mutex<UinputDevice>,
+    pub touch: Mutex<Box<dyn TouchDevice>>,
     pub capture: Mutex<InputCapture>,
     pub screen_width: u32,
     pub screen_height: u32,
@@ -85,7 +85,7 @@ pub struct DaemonState {
 impl DaemonState {
     pub fn new(
         engine: KeymapEngine,
-        uinput: UinputDevice,
+        touch: Box<dyn TouchDevice>,
         capture: InputCapture,
         width: u32,
         height: u32,
@@ -94,7 +94,7 @@ impl DaemonState {
         let state = Arc::new(Self {
             engine: RwLock::new(engine),
             profile_path: RwLock::new(None),
-            uinput: Mutex::new(uinput),
+            touch: Mutex::new(touch),
             capture: Mutex::new(capture),
             screen_width: width,
             screen_height: height,
@@ -134,8 +134,9 @@ pub async fn run_ipc_server(state: Arc<DaemonState>) -> Result<()> {
 
     let _ = std::fs::set_permissions(
         &socket_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        std::os::unix::fs::PermissionsExt::from_mode(0o660),
     );
+    let _ = maybe_chown_socket(&socket_path);
 
     tracing::info!("IPC server listening on {}", socket_path.display());
 
@@ -155,6 +156,32 @@ pub async fn run_ipc_server(state: Arc<DaemonState>) -> Result<()> {
             }
         });
     }
+}
+
+fn maybe_chown_socket(path: &std::path::Path) -> Result<()> {
+    let uid = config::invoking_uid();
+    let gid = config::invoking_gid();
+    let current_uid = unsafe { libc::getuid() };
+
+    if current_uid != 0 {
+        return Ok(());
+    }
+
+    let path_bytes = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| PhantomError::Ipc(format!("invalid socket path {}", path.display())))?;
+
+    let rc = unsafe { libc::chown(path_bytes.as_ptr(), uid, gid) };
+    if rc != 0 {
+        return Err(PhantomError::Ipc(format!(
+            "cannot chown {} to {}:{}: {}",
+            path.display(),
+            uid,
+            gid,
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    Ok(())
 }
 
 async fn handle_connection(stream: tokio::net::UnixStream, state: Arc<DaemonState>) -> Result<()> {
@@ -223,8 +250,8 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                     .await
                     .as_ref()
                     .map(|p| p.display().to_string()),
-                nodes: None,
-                slots: None,
+                nodes: Some(engine.node_count()),
+                slots: Some(engine.slots()),
                 paused: Some(engine.is_paused()),
                 capture_active: Some(state.capture_active.load(Ordering::Acquire)),
                 sensitivity: None,
@@ -355,7 +382,8 @@ async fn load_profile_into_state(
     }
 
     let name = profile.name.clone();
-    let slots: Vec<u8> = profile.nodes.iter().filter_map(|n| n.slot()).collect();
+    let audit = profile.audit();
+    let slots: Vec<u8> = audit.touch_entries.iter().map(|entry| entry.slot).collect();
     let nodes = profile.nodes.len();
 
     let (was_paused, release_cmds) = {
@@ -419,15 +447,15 @@ fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()>
         return Ok(());
     }
 
-    let mut device = lock_uinput(state)?;
-    engine::execute_commands(&mut device, cmds)
+    let mut device = lock_touch_device(state)?;
+    device.apply_commands(cmds)
 }
 
-pub fn lock_uinput(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, UinputDevice>> {
-    match state.uinput.lock() {
+pub fn lock_touch_device(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, Box<dyn TouchDevice>>> {
+    match state.touch.lock() {
         Ok(guard) => Ok(guard),
         Err(poisoned) => {
-            tracing::warn!("uinput device lock poisoned, recovering");
+            tracing::warn!("touch backend lock poisoned, recovering");
             Ok(poisoned.into_inner())
         }
     }

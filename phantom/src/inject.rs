@@ -7,6 +7,7 @@ use std::time::Duration;
 use nix::errno::Errno;
 
 use crate::error::{PhantomError, Result};
+use crate::touch::TouchDevice;
 
 nix::ioctl_write_int!(ui_set_evbit, b'U', 100);
 nix::ioctl_write_int!(ui_set_keybit, b'U', 101);
@@ -38,6 +39,10 @@ const SLOT_COUNT: usize = (MAX_SLOTS as usize) + 1;
 const ABS_CNT: usize = 0x40;
 const PRESSURE_MAX: i32 = 255;
 const TOUCH_MAJOR_MAX: i32 = 15;
+
+pub const PHANTOM_DEVICE_NAME: &str = "Phantom Virtual Touch";
+pub const PHANTOM_VENDOR_ID: u16 = 0x1234;
+pub const PHANTOM_PRODUCT_ID: u16 = 0x5678;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -478,18 +483,32 @@ impl Drop for UinputDevice {
     }
 }
 
+impl TouchDevice for UinputDevice {
+    fn backend_name(&self) -> &'static str {
+        "uinput"
+    }
+
+    fn apply_commands(&mut self, cmds: &[crate::engine::TouchCommand]) -> Result<()> {
+        UinputDevice::apply_commands(self, cmds)
+    }
+
+    fn release_all(&mut self) -> Result<()> {
+        UinputDevice::release_all(self)
+    }
+}
+
 fn build_setup() -> UinputSetup {
     let mut setup = UinputSetup {
         id: InputId {
             bustype: BUS_VIRTUAL,
-            vendor: 0x1234,
-            product: 0x5678,
+            vendor: PHANTOM_VENDOR_ID,
+            product: PHANTOM_PRODUCT_ID,
             version: 1,
         },
         name: [0; 80],
         ff_effects_max: 0,
     };
-    let name = b"Phantom Virtual Touch";
+    let name = PHANTOM_DEVICE_NAME.as_bytes();
     setup.name[..name.len()].copy_from_slice(name);
     setup
 }

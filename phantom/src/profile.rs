@@ -139,6 +139,35 @@ pub enum MacroAction {
     Up,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileAudit {
+    pub profile_name: String,
+    pub screen_width: u32,
+    pub screen_height: u32,
+    pub total_nodes: usize,
+    pub touch_entries: Vec<SlotAuditEntry>,
+    pub auxiliary_entries: Vec<AuxiliaryAuditEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotAuditEntry {
+    pub slot: u8,
+    pub node_id: String,
+    pub node_type: &'static str,
+    pub layer: String,
+    pub bindings: Vec<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuxiliaryAuditEntry {
+    pub node_id: String,
+    pub node_type: &'static str,
+    pub layer: String,
+    pub bindings: Vec<String>,
+    pub detail: Option<String>,
+}
+
 fn default_sensitivity() -> f64 {
     1.0
 }
@@ -152,6 +181,19 @@ fn is_default_layer(layer: &str) -> bool {
 }
 
 impl Node {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Node::Tap { .. } => "tap",
+            Node::HoldTap { .. } => "hold_tap",
+            Node::ToggleTap { .. } => "toggle_tap",
+            Node::Joystick { .. } => "joystick",
+            Node::MouseCamera { .. } => "mouse_camera",
+            Node::RepeatTap { .. } => "repeat_tap",
+            Node::Macro { .. } => "macro",
+            Node::LayerShift { .. } => "layer_shift",
+        }
+    }
+
     pub fn id(&self) -> &str {
         match self {
             Node::Tap { id, .. }
@@ -217,6 +259,51 @@ impl Node {
             | Node::Macro { key, .. }
             | Node::LayerShift { key, .. } => Some(key),
             Node::Joystick { .. } | Node::MouseCamera { .. } => None,
+        }
+    }
+
+    pub fn audit_bindings(&self) -> Vec<String> {
+        match self {
+            Node::Tap { key, .. }
+            | Node::HoldTap { key, .. }
+            | Node::ToggleTap { key, .. }
+            | Node::RepeatTap { key, .. }
+            | Node::Macro { key, .. }
+            | Node::LayerShift { key, .. } => vec![key.clone()],
+            Node::Joystick { keys, .. } => vec![
+                keys.up.clone(),
+                keys.down.clone(),
+                keys.left.clone(),
+                keys.right.clone(),
+            ],
+            Node::MouseCamera { .. } => vec!["MouseMove".into()],
+        }
+    }
+
+    pub fn audit_detail(&self) -> Option<String> {
+        match self {
+            Node::Joystick { radius, .. } => Some(format!("radius={:.3}", radius)),
+            Node::MouseCamera {
+                region,
+                sensitivity,
+                invert_y,
+                ..
+            } => Some(format!(
+                "region=({:.3},{:.3},{:.3},{:.3}) sensitivity={:.3} invert_y={}",
+                region.x, region.y, region.w, region.h, sensitivity, invert_y
+            )),
+            Node::Macro { sequence, .. } => Some(format!("steps={}", sequence.len())),
+            Node::LayerShift {
+                layer_name, mode, ..
+            } => Some(format!(
+                "target={} mode={}",
+                layer_name,
+                match mode {
+                    LayerMode::Hold => "hold",
+                    LayerMode::Toggle => "toggle",
+                }
+            )),
+            _ => None,
         }
     }
 }
@@ -345,6 +432,54 @@ impl Profile {
         }
 
         Ok(())
+    }
+
+    pub fn audit(&self) -> ProfileAudit {
+        let mut touch_entries = Vec::new();
+        let mut auxiliary_entries = Vec::new();
+
+        for node in &self.nodes {
+            let layer = display_layer_name(node.layer());
+            let bindings = node.audit_bindings();
+            let detail = node.audit_detail();
+
+            if let Some(slot) = node.slot() {
+                touch_entries.push(SlotAuditEntry {
+                    slot,
+                    node_id: node.id().to_string(),
+                    node_type: node.kind(),
+                    layer,
+                    bindings,
+                    detail,
+                });
+            } else {
+                auxiliary_entries.push(AuxiliaryAuditEntry {
+                    node_id: node.id().to_string(),
+                    node_type: node.kind(),
+                    layer,
+                    bindings,
+                    detail,
+                });
+            }
+        }
+
+        touch_entries.sort_by_key(|entry| entry.slot);
+        auxiliary_entries.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+
+        let (screen_width, screen_height) = self
+            .screen
+            .as_ref()
+            .map(|screen| (screen.width, screen.height))
+            .unwrap_or((0, 0));
+
+        ProfileAudit {
+            profile_name: self.name.clone(),
+            screen_width,
+            screen_height,
+            total_nodes: self.nodes.len(),
+            touch_entries,
+            auxiliary_entries,
+        }
     }
 }
 
@@ -489,6 +624,14 @@ fn normalize_key_name(key: &str) -> String {
     key.trim().to_uppercase()
 }
 
+fn display_layer_name(layer: &str) -> String {
+    if layer.trim().is_empty() {
+        "base".into()
+    } else {
+        layer.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +658,34 @@ mod tests {
     #[test]
     fn valid_profile_passes() {
         assert!(valid_profile().validate().is_ok());
+    }
+
+    #[test]
+    fn audit_sorts_slots_and_marks_base_layer() {
+        let mut profile = valid_profile();
+        profile.nodes.push(Node::LayerShift {
+            id: "combat".into(),
+            key: "LeftAlt".into(),
+            layer_name: "combat".into(),
+            mode: LayerMode::Toggle,
+        });
+        profile.nodes.push(Node::HoldTap {
+            id: "fire".into(),
+            layer: "combat".into(),
+            slot: 3,
+            pos: RelPos { x: 0.8, y: 0.8 },
+            key: "MouseLeft".into(),
+        });
+
+        let audit = profile.audit();
+        assert_eq!(audit.profile_name, "Test");
+        assert_eq!(audit.touch_entries.len(), 2);
+        assert_eq!(audit.touch_entries[0].slot, 0);
+        assert_eq!(audit.touch_entries[0].layer, "base");
+        assert_eq!(audit.touch_entries[1].slot, 3);
+        assert_eq!(audit.touch_entries[1].layer, "combat");
+        assert_eq!(audit.auxiliary_entries.len(), 1);
+        assert_eq!(audit.auxiliary_entries[0].node_type, "layer_shift");
     }
 
     #[test]
