@@ -182,6 +182,7 @@ Important:
 
 - runtime mouse grab only routes host mouse input into Phantom
 - actual camera movement only happens if the loaded profile contains a `mouse_camera` node
+- touchpads are supported, but a real mouse will usually feel smoother for camera movement
 
 Supported activation modes:
 

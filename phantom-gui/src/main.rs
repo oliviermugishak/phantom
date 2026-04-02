@@ -118,6 +118,8 @@ const BINDABLE_KEYS: &[&str] = &[
     "WheelDown",
 ];
 
+const MAX_LOGICAL_TOUCH_SLOT: u8 = u8::MAX;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Select,
@@ -1274,7 +1276,9 @@ impl PhantomGui {
 
     fn next_slot(&self) -> Option<u8> {
         let profile = self.profile.as_ref()?;
-        (0..=9).find(|slot| !profile.nodes.iter().any(|node| node.slot() == Some(*slot)))
+        let used_slots: std::collections::HashSet<u8> =
+            profile.nodes.iter().filter_map(Node::slot).collect();
+        (0..=MAX_LOGICAL_TOUCH_SLOT).find(|slot| !used_slots.contains(slot))
     }
 
     fn unique_node_id(&self, prefix: &str) -> String {
@@ -1353,7 +1357,7 @@ impl PhantomGui {
             return;
         };
         let Some(node) = self.duplicate_node_for_insert(&node) else {
-            self.set_banner("No free touch slot for paste", true);
+            self.set_banner("No free logical touch slot for paste", true);
             return;
         };
         self.begin_edit();
@@ -1381,7 +1385,7 @@ impl PhantomGui {
             return;
         };
         let Some(node) = self.duplicate_node_for_insert(&source) else {
-            self.set_banner("No free touch slot for duplicate", true);
+            self.set_banner("No free logical touch slot for duplicate", true);
             return;
         };
         self.begin_edit();
@@ -1462,7 +1466,7 @@ impl PhantomGui {
 
     fn place_node(&mut self, template: NodeTemplate, rel: RelPos) {
         let Some(slot) = self.next_slot() else {
-            self.set_banner("All 10 touch slots are already assigned", true);
+            self.set_banner("All logical touch slot ids are already assigned", true);
             return;
         };
         if self.profile.is_none() {
@@ -2767,7 +2771,10 @@ impl PhantomGui {
                                 ui.label("Slot");
                                 let mut slot = step.slot as f64;
                                 if ui
-                                    .add(egui::DragValue::new(&mut slot).range(0.0..=9.0))
+                                    .add(
+                                        egui::DragValue::new(&mut slot)
+                                            .range(0.0..=MAX_LOGICAL_TOUCH_SLOT as f64),
+                                    )
                                     .changed()
                                 {
                                     step.slot = slot as u8;

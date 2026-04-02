@@ -93,6 +93,7 @@ Important runtime limit:
 
 - Android and the current backends still support at most 10 simultaneous active touches
 - if gameplay would exceed 10 concurrent touches, the backend rejects the extra touch activation
+- the GUI auto-assigns logical slot ids from the full `0..255` range, not just `0..9`
 
 ## 6. Layers
 

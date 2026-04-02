@@ -110,11 +110,16 @@ Check:
 - `mouse_camera` region is correct
 - `mouse_camera` activation mode matches the intended workflow
 - activation key is present if mode is `while_held` or `toggle`
+- the loaded profile actually contains a `mouse_camera` node
 
 Useful cases:
 
 - start with `always_on` to prove the region itself is correct
 - then switch to `while_held` or `toggle`
+
+Note:
+
+- touchpads now work, but they may still feel less smooth than a real mouse because Phantom must derive relative motion from absolute touchpad coordinates
 
 ## PUBG Sprint-Lock Drag Does Not Feel Right
 
