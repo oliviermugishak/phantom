@@ -269,7 +269,11 @@ Reference docs:
 - [docs/PROTOCOL.md](docs/PROTOCOL.md)
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 - [contrib/android-server/README.md](contrib/android-server/README.md)
-- [TOTAL_SCOPE.md](TOTAL_SCOPE.md)
+
+Contribution docs:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [AGENTS.md](AGENTS.md)
 
 ## Common Commands
 
