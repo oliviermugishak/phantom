@@ -16,6 +16,7 @@
         "y": 0.532
       },
       "radius": 0.03,
+      "mode": "fixed",
       "keys": {
         "up": "W",
         "down": "S",

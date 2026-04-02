@@ -13,6 +13,7 @@
       "slot": 0,
       "pos": { "x": 0.16, "y": 0.78 },
       "radius": 0.08,
+      "mode": "fixed",
       "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
     },
     {

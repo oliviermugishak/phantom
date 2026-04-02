@@ -3,6 +3,7 @@ name = "phantom"
 version.workspace = true
 edition.workspace = true
 description = "Virtual touchscreen mapper for Waydroid"
+readme = "README.md"
 
 [dependencies]
 tokio = { version = "1.43", features = ["full"] }

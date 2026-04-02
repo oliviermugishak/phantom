@@ -118,6 +118,7 @@ The supported sync flow is:
 Practical rule:
 
 - if a new shipped profile does not appear in the GUI, rerun `./install.sh`
+- if you want to refresh shipped examples or the generated config in place, use `./install.sh -o`
 
 ## Runtime Hotkeys
 
@@ -219,8 +220,8 @@ Use for:
 
 Use:
 
-- `pubg.json` for a compact baseline
-- `pubg-mobile-layout1.json` for a richer starter based on a real custom-layout screen
+- `pubg.json` for the main richer starter based on a real custom-layout screen
+- `pubg-small.json` for a compact baseline
 
 Typical mapping model:
 

@@ -31,7 +31,7 @@ Expected:
 Before live gameplay tests, audit the profile:
 
 ```bash
-phantom audit ~/.config/phantom/profiles/pubg-mobile-layout1.json
+phantom audit ~/.config/phantom/profiles/pubg.json
 ```
 
 Look for:

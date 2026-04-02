@@ -3,7 +3,9 @@
 # The GUI discovers profiles from ~/.config/phantom/profiles/.
 
 # Log level: trace, debug, info, warn, error
-# Use "trace" when debugging evdev capture, engine decisions, backend transport, or touch injection.
+# Use "trace" for useful runtime diagnosis.
+# For raw evdev/device firehose logging, also run with:
+#   PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
 log_level = "info"
 
 # Recommended backend for Waydroid:
@@ -42,6 +44,7 @@ work_dir = "/var/lib/waydroid"
 # Use a known key name like "F1" or "MouseRight".
 # Use "" or "none" to disable a hotkey entirely.
 # On many laptops, enable Fn Lock if you want the top row to emit real F-keys.
+# F10 controls the experimental debug overlay preview.
 [runtime_hotkeys]
 mouse_toggle = "F1"
 capture_toggle = "F8"

@@ -132,6 +132,11 @@ That command:
 - creates `~/.config/phantom/config.toml` if missing
 - copies shipped profiles into `~/.config/phantom/profiles/` if those files do not already exist
 
+Optional overwrite prompt:
+
+- `./install.sh -o`
+  interactively ask whether to overwrite the existing config and whether to overwrite the currently shipped profile filenames
+
 Installed binaries:
 
 - `phantom`
@@ -142,6 +147,8 @@ Important profile-library behavior:
 - the GUI reads profiles from `~/.config/phantom/profiles/`
 - the installer seeds that directory from the repository's `profiles/` directory
 - rerunning `./install.sh` copies any newly added shipped profiles without overwriting your edited ones
+- `./install.sh -o` can overwrite only the shipped filenames that currently exist in the repo
+- `./install.sh -o` does not delete older extra profiles that are no longer shipped
 
 Uninstall later with:
 
@@ -254,8 +261,8 @@ In a normal user shell:
 
 ```bash
 phantom status
-phantom audit ~/.config/phantom/profiles/pubg-mobile-layout1.json
-phantom load ~/.config/phantom/profiles/pubg-mobile-layout1.json
+phantom audit ~/.config/phantom/profiles/pubg.json
+phantom load ~/.config/phantom/profiles/pubg.json
 phantom-gui
 ```
 
