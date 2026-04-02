@@ -2,14 +2,17 @@ use std::path::Path;
 use std::time::Duration;
 
 use eframe::egui;
-use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
 use phantom::profile::{
     JoystickMode, MouseCameraActivationMode, Node, Profile, Region, RelPos,
 };
 
 const OVERLAY_BG: Color32 = Color32::TRANSPARENT;
-const LABEL_BG: Color32 = Color32::from_black_alpha(110);
+const MARKER_RADIUS: f32 = 14.0;
+const SMALL_MARKER_RADIUS: f32 = 9.0;
+const TEXT_SHADOW: Color32 = Color32::from_black_alpha(190);
+const GUIDE_LENGTH: f32 = 14.0;
 pub fn run_overlay(profile_path: &Path) -> eframe::Result<()> {
     let profile = Profile::load(profile_path).map_err(|e| {
         eframe::Error::AppCreation(Box::new(std::io::Error::other(e.to_string())))
@@ -57,6 +60,10 @@ impl eframe::App for OverlayApp {
             });
         ctx.request_repaint_after(Duration::from_millis(500));
     }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
 }
 
 fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) {
@@ -82,7 +89,7 @@ fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) 
                 region,
                 activation_mode,
                 ..
-            } => draw_mouse_region(painter, rect, node, region, activation_mode),
+            } => draw_mouse_region(painter, rect, region, activation_mode),
             Node::Macro { .. } | Node::LayerShift { .. } => {}
             Node::Joystick {
                 mode: JoystickMode::Floating,
@@ -95,21 +102,7 @@ fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) 
 
 fn draw_button_marker(painter: &egui::Painter, rect: Rect, node: &Node, pos: &RelPos) {
     let center = to_canvas_pos(rect, pos);
-    let fill = match node {
-        Node::Tap { .. } => tap_fill(),
-        Node::HoldTap { .. } => hold_fill(),
-        Node::ToggleTap { .. } => toggle_fill(),
-        Node::RepeatTap { .. } => repeat_fill(),
-        _ => tap_fill(),
-    };
-    painter.circle_filled(center, 26.0, fill);
-    painter.circle_stroke(center, 26.0, Stroke::new(1.5, Color32::from_white_alpha(170)));
-    draw_label(
-        painter,
-        center + Vec2::new(0.0, 36.0),
-        compact_label(node),
-        Some(node.layer()),
-    );
+    draw_ring_marker(painter, center, MARKER_RADIUS, marker_stroke(node), compact_label(node));
 }
 
 fn draw_fixed_joystick(
@@ -121,19 +114,43 @@ fn draw_fixed_joystick(
 ) {
     let center = to_canvas_pos(rect, pos);
     let radius_px = rect.width().min(rect.height()) * radius as f32;
-    painter.circle_filled(center, radius_px, joystick_fill());
     painter.circle_stroke(center, radius_px, Stroke::new(2.0, joystick_stroke()));
     painter.circle_stroke(
         center,
-        (radius_px * 0.38).max(18.0),
-        Stroke::new(1.0, Color32::from_white_alpha(110)),
+        (radius_px * 0.22).max(10.0),
+        Stroke::new(1.5, joystick_stroke().gamma_multiply(0.8)),
     );
-    draw_label(
-        painter,
-        center + Vec2::new(0.0, radius_px + 20.0),
-        compact_label(node),
-        Some(node.layer()),
-    );
+    if let Node::Joystick { keys, .. } = node {
+        let label_radius = radius_px + 22.0;
+        draw_ring_marker(
+            painter,
+            center + Vec2::new(0.0, -label_radius),
+            SMALL_MARKER_RADIUS,
+            Stroke::new(1.5, joystick_stroke()),
+            &keys.up,
+        );
+        draw_ring_marker(
+            painter,
+            center + Vec2::new(-label_radius, 0.0),
+            SMALL_MARKER_RADIUS,
+            Stroke::new(1.5, joystick_stroke()),
+            &keys.left,
+        );
+        draw_ring_marker(
+            painter,
+            center + Vec2::new(label_radius, 0.0),
+            SMALL_MARKER_RADIUS,
+            Stroke::new(1.5, joystick_stroke()),
+            &keys.right,
+        );
+        draw_ring_marker(
+            painter,
+            center + Vec2::new(0.0, label_radius),
+            SMALL_MARKER_RADIUS,
+            Stroke::new(1.5, joystick_stroke()),
+            &keys.down,
+        );
+    }
 }
 
 fn draw_floating_joystick(
@@ -143,24 +160,13 @@ fn draw_floating_joystick(
     region: &Region,
 ) {
     let zone = region_rect(rect, region);
-    let fill = joystick_fill();
-    painter.rect_filled(zone, 24.0, fill.gamma_multiply(0.35));
-    painter.rect_stroke(
-        zone,
-        24.0,
-        Stroke::new(2.0, joystick_stroke()),
-        StrokeKind::Inside,
-    );
-    painter.circle_stroke(
-        zone.center(),
-        zone.width().min(zone.height()) * 0.22,
-        Stroke::new(1.2, Color32::from_white_alpha(120)),
-    );
-    draw_label(
+    draw_corner_guides(painter, zone, joystick_stroke());
+    draw_ring_marker(
         painter,
-        Pos2::new(zone.center().x, zone.bottom() + 18.0),
+        zone.center(),
+        SMALL_MARKER_RADIUS,
+        Stroke::new(1.5, joystick_stroke()),
         compact_label(node),
-        Some(node.layer()),
     );
 }
 
@@ -174,71 +180,92 @@ fn draw_drag_gesture(
     let start = to_canvas_pos(rect, start);
     let end = to_canvas_pos(rect, end);
     painter.arrow(start, end - start, Stroke::new(2.0, drag_stroke()));
-    painter.circle_filled(start, 14.0, Color32::from_rgba_unmultiplied(0, 200, 140, 70));
-    painter.circle_stroke(start, 14.0, Stroke::new(1.5, drag_stroke()));
-    draw_label(
+    draw_ring_marker(
         painter,
-        start + Vec2::new(0.0, -22.0),
+        start,
+        SMALL_MARKER_RADIUS,
+        Stroke::new(1.5, drag_stroke()),
         compact_label(node),
-        Some(node.layer()),
     );
+    painter.circle_stroke(end, 8.0, Stroke::new(1.5, drag_stroke().gamma_multiply(0.85)));
 }
 
 fn draw_mouse_region(
     painter: &egui::Painter,
     rect: Rect,
-    node: &Node,
     region: &Region,
     activation_mode: &MouseCameraActivationMode,
 ) {
     let zone = region_rect(rect, region);
-    painter.rect_stroke(
-        zone,
-        24.0,
-        Stroke::new(2.0, look_stroke()),
-        StrokeKind::Inside,
-    );
-    painter.rect_filled(
-        zone,
-        24.0,
-        Color32::from_rgba_unmultiplied(251, 188, 4, 28),
-    );
+    draw_corner_guides(painter, zone, look_stroke());
     let mode = match activation_mode {
         MouseCameraActivationMode::AlwaysOn => "Look",
         MouseCameraActivationMode::WhileHeld => "Hold Look",
         MouseCameraActivationMode::Toggle => "Toggle Look",
     };
-    let layer = if node.layer().trim().is_empty() {
-        None
-    } else {
-        Some(node.layer())
-    };
-    draw_label(painter, zone.center_top() + Vec2::new(0.0, 18.0), mode, layer);
+    draw_tag_text(painter, zone.center_top() + Vec2::new(0.0, 18.0), mode, look_stroke());
 }
 
-fn draw_label(
+fn draw_ring_marker(
     painter: &egui::Painter,
-    anchor: Pos2,
-    primary: impl AsRef<str>,
-    layer: Option<&str>,
+    center: Pos2,
+    radius: f32,
+    stroke: Stroke,
+    text: impl AsRef<str>,
 ) {
-    let text = if let Some(layer) = layer.filter(|layer| !layer.trim().is_empty()) {
-        format!("{}\n[{}]", primary.as_ref(), layer)
+    painter.circle_stroke(center, radius, stroke);
+    painter.circle_filled(center, radius - 2.0, marker_fill(stroke.color));
+    draw_centered_text(painter, center, text.as_ref(), Color32::WHITE);
+}
+
+fn draw_centered_text(painter: &egui::Painter, center: Pos2, text: &str, color: Color32) {
+    let font_size = if text.len() >= 8 {
+        11.0
+    } else if text.len() >= 5 {
+        12.0
     } else {
-        primary.as_ref().to_string()
+        14.0
     };
-    let font = FontId::proportional(16.0);
-    let galley = painter.layout_no_wrap(text.clone(), font.clone(), Color32::WHITE);
-    let padding = Vec2::new(12.0, 8.0);
-    let bounds = Rect::from_center_size(anchor, galley.size() + padding * 2.0);
-    painter.rect_filled(bounds, 12.0, LABEL_BG);
+    let font = FontId::proportional(font_size);
     painter.text(
-        anchor,
+        center + Vec2::new(1.0, 1.0),
         Align2::CENTER_CENTER,
         text,
-        font,
-        Color32::WHITE,
+        font.clone(),
+        TEXT_SHADOW,
     );
+    painter.text(center, Align2::CENTER_CENTER, text, font, color);
+}
+
+fn draw_tag_text(painter: &egui::Painter, pos: Pos2, text: &str, color: Color32) {
+    let font = FontId::proportional(12.0);
+    painter.text(
+        pos + Vec2::new(1.0, 1.0),
+        Align2::CENTER_CENTER,
+        text,
+        font.clone(),
+        TEXT_SHADOW,
+    );
+    painter.text(pos, Align2::CENTER_CENTER, text, font, color);
+}
+
+fn draw_corner_guides(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let stroke = Stroke::new(2.0, color);
+    draw_corner_guide(painter, rect.left_top(), Vec2::new(GUIDE_LENGTH, 0.0), Vec2::new(0.0, GUIDE_LENGTH), stroke);
+    draw_corner_guide(painter, rect.right_top(), Vec2::new(-GUIDE_LENGTH, 0.0), Vec2::new(0.0, GUIDE_LENGTH), stroke);
+    draw_corner_guide(painter, rect.left_bottom(), Vec2::new(GUIDE_LENGTH, 0.0), Vec2::new(0.0, -GUIDE_LENGTH), stroke);
+    draw_corner_guide(painter, rect.right_bottom(), Vec2::new(-GUIDE_LENGTH, 0.0), Vec2::new(0.0, -GUIDE_LENGTH), stroke);
+}
+
+fn draw_corner_guide(
+    painter: &egui::Painter,
+    corner: Pos2,
+    horizontal: Vec2,
+    vertical: Vec2,
+    stroke: Stroke,
+) {
+    painter.line_segment([corner, corner + horizontal], stroke);
+    painter.line_segment([corner, corner + vertical], stroke);
 }
 
 fn compact_label(node: &Node) -> String {
@@ -248,20 +275,18 @@ fn compact_label(node: &Node) -> String {
         | Node::ToggleTap { key, .. }
         | Node::Drag { key, .. }
         | Node::RepeatTap { key, .. } => key.clone(),
-        Node::Joystick { keys, .. } => {
-            format!("{}/{}/{}/{}", keys.up, keys.left, keys.down, keys.right)
-        }
+        Node::Joystick { .. } => "Move".into(),
         Node::MouseCamera {
             activation_mode,
             activation_key,
             ..
         } => match activation_mode {
-            MouseCameraActivationMode::AlwaysOn => "Mouse Look".into(),
+            MouseCameraActivationMode::AlwaysOn => "Look".into(),
             MouseCameraActivationMode::WhileHeld => {
-                format!("Look: {}", activation_key.as_deref().unwrap_or("?"))
+                activation_key.as_deref().unwrap_or("Look").into()
             }
             MouseCameraActivationMode::Toggle => {
-                format!("Toggle: {}", activation_key.as_deref().unwrap_or("?"))
+                activation_key.as_deref().unwrap_or("Look").into()
             }
         },
         Node::Macro { id, .. } | Node::LayerShift { id, .. } => id.clone(),
@@ -291,24 +316,8 @@ fn region_rect(content: Rect, region: &Region) -> Rect {
     )
 }
 
-fn tap_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(66, 133, 244, 110)
-}
-
-fn hold_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(234, 67, 53, 110)
-}
-
-fn toggle_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(0, 172, 193, 110)
-}
-
-fn repeat_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(171, 71, 188, 110)
-}
-
-fn joystick_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(52, 168, 83, 70)
+fn marker_fill(color: Color32) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 18)
 }
 
 fn joystick_stroke() -> Color32 {
@@ -321,4 +330,15 @@ fn drag_stroke() -> Color32 {
 
 fn look_stroke() -> Color32 {
     Color32::from_rgba_unmultiplied(251, 188, 4, 200)
+}
+
+fn marker_stroke(node: &Node) -> Stroke {
+    let color = match node {
+        Node::Tap { .. } => Color32::from_rgb(66, 133, 244),
+        Node::HoldTap { .. } => Color32::from_rgb(234, 67, 53),
+        Node::ToggleTap { .. } => Color32::from_rgb(0, 172, 193),
+        Node::RepeatTap { .. } => Color32::from_rgb(171, 71, 188),
+        _ => Color32::WHITE,
+    };
+    Stroke::new(2.0, color)
 }

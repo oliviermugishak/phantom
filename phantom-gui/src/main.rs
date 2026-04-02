@@ -28,12 +28,15 @@ const COLOR_MACRO: Color32 = Color32::from_rgb(255, 112, 67);
 const COLOR_LAYER: Color32 = Color32::from_rgb(158, 158, 158);
 const CANVAS_BG: Color32 = Color32::from_rgb(19, 21, 26);
 const CONTENT_BG: Color32 = Color32::from_rgb(26, 29, 36);
-const HANDLE_SIZE: f32 = 10.0;
+const HANDLE_SIZE: f32 = 12.0;
 const REGION_PICK_MARGIN: f32 = 6.0;
 const REGION_BORDER_PICK_WIDTH: f32 = 14.0;
 const DASH_LENGTH: f32 = 10.0;
 const DASH_GAP: f32 = 6.0;
+const LEFT_PANEL_WIDTH: f32 = 290.0;
 const LEFT_PANEL_RUNTIME_RESERVE: f32 = 200.0;
+const RIGHT_PANEL_WIDTH: f32 = 390.0;
+const CONTROL_CARD_ACTION_BUTTON_WIDTH: f32 = 26.0;
 const MAX_HISTORY: usize = 128;
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const REPAINT_INTERVAL: Duration = Duration::from_millis(50);
@@ -162,9 +165,13 @@ enum BindingTarget {
 #[derive(Clone, Copy)]
 enum RegionHandle {
     TopLeft,
+    Top,
     TopRight,
+    Right,
     BottomLeft,
+    Bottom,
     BottomRight,
+    Left,
 }
 
 enum DragState {
@@ -1865,8 +1872,14 @@ impl PhantomGui {
     fn clamp_canvas_pan(&mut self, canvas: Rect) {
         let base = self.base_content_rect(canvas);
         let scaled = zoom_rect(base, self.canvas_zoom, Vec2::ZERO);
-        let max_x = ((scaled.width() - canvas.width()).max(0.0) / 2.0) + 24.0;
-        let max_y = ((scaled.height() - canvas.height()).max(0.0) / 2.0) + 24.0;
+        let max_x = ((scaled.width() - canvas.width()).max(0.0) / 2.0).max(0.0);
+        let max_y = ((scaled.height() - canvas.height()).max(0.0) / 2.0).max(0.0);
+        if max_x == 0.0 {
+            self.canvas_pan.x = 0.0;
+        }
+        if max_y == 0.0 {
+            self.canvas_pan.y = 0.0;
+        }
         self.canvas_pan.x = self.canvas_pan.x.clamp(-max_x, max_x);
         self.canvas_pan.y = self.canvas_pan.y.clamp(-max_y, max_y);
     }
@@ -2178,8 +2191,8 @@ impl PhantomGui {
 
     fn draw_left_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("left_panel")
-            .resizable(true)
-            .default_width(290.0)
+            .resizable(false)
+            .exact_width(LEFT_PANEL_WIDTH)
             .show(ctx, |ui| {
                 let snapshot_before = self.snapshot();
                 let mut profile_changed = false;
@@ -2405,8 +2418,8 @@ impl PhantomGui {
 
     fn draw_properties_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("properties_panel")
-            .resizable(true)
-            .default_width(390.0)
+            .resizable(false)
+            .exact_width(RIGHT_PANEL_WIDTH)
             .show(ctx, |ui| {
                 let snapshot_before = self.snapshot();
                 ui.heading("Phantom GUI");
@@ -3096,6 +3109,27 @@ impl PhantomGui {
                 );
             }
 
+            let pointer_pos = response.interact_pointer_pos();
+            let hovered_hit = pointer_pos
+                .filter(|mouse| content.contains(*mouse))
+                .and_then(|mouse| {
+                    self.profile
+                        .as_ref()
+                        .and_then(|profile| hit_test(profile, content, mouse, self.selected))
+                });
+
+            if let Some(hit) = hovered_hit {
+                match hit {
+                    HitTarget::RegionHandle(_, handle) => {
+                        ctx.set_cursor_icon(region_handle_cursor(handle));
+                    }
+                    HitTarget::Region(_) => ctx.set_cursor_icon(egui::CursorIcon::Grab),
+                    HitTarget::Point(_) | HitTarget::DragEnd(_) => {
+                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                }
+            }
+
             draw_grid(&painter, content);
 
             if let Some(profile) = &self.profile {
@@ -3125,6 +3159,10 @@ impl PhantomGui {
                         content,
                         node,
                         self.selected == Some(idx),
+                        hovered_hit.is_some_and(|hit| {
+                            hit.idx() == idx
+                                && matches!(hit, HitTarget::Region(_) | HitTarget::RegionHandle(_, _))
+                        }),
                         !node.layer().trim().is_empty()
                             && self
                                 .runtime
@@ -3135,15 +3173,6 @@ impl PhantomGui {
                     );
                 }
             }
-
-            let pointer_pos = response.interact_pointer_pos();
-            let hovered_hit = pointer_pos
-                .filter(|mouse| content.contains(*mouse))
-                .and_then(|mouse| {
-                    self.profile
-                        .as_ref()
-                        .and_then(|profile| hit_test(profile, content, mouse, self.selected))
-                });
             let hovered_summary = hovered_hit.and_then(|hit| {
                 self.profile.as_ref().and_then(|profile| {
                     profile.nodes.get(hit.idx()).map(|node| {
@@ -3483,19 +3512,33 @@ impl PhantomGui {
                                                 next.w = origin.w - delta.x as f64;
                                                 next.h = origin.h - delta.y as f64;
                                             }
+                                            RegionHandle::Top => {
+                                                next.y = origin.y + delta.y as f64;
+                                                next.h = origin.h - delta.y as f64;
+                                            }
                                             RegionHandle::TopRight => {
                                                 next.y = origin.y + delta.y as f64;
                                                 next.w = origin.w + delta.x as f64;
                                                 next.h = origin.h - delta.y as f64;
+                                            }
+                                            RegionHandle::Right => {
+                                                next.w = origin.w + delta.x as f64;
                                             }
                                             RegionHandle::BottomLeft => {
                                                 next.x = origin.x + delta.x as f64;
                                                 next.w = origin.w - delta.x as f64;
                                                 next.h = origin.h + delta.y as f64;
                                             }
+                                            RegionHandle::Bottom => {
+                                                next.h = origin.h + delta.y as f64;
+                                            }
                                             RegionHandle::BottomRight => {
                                                 next.w = origin.w + delta.x as f64;
                                                 next.h = origin.h + delta.y as f64;
+                                            }
+                                            RegionHandle::Left => {
+                                                next.x = origin.x + delta.x as f64;
+                                                next.w = origin.w - delta.x as f64;
                                             }
                                         }
                                         *region =
@@ -3690,6 +3733,20 @@ fn hit_test(
         }
     }
 
+    for (idx, node) in profile.nodes.iter().enumerate().rev() {
+        if Some(idx) == selected {
+            continue;
+        }
+        if let Some(region) = node_region(node) {
+            let rect = region_rect(content, region);
+            for (handle, handle_rect) in region_handles(rect) {
+                if handle_rect.contains(mouse) {
+                    return Some(HitTarget::RegionHandle(idx, handle));
+                }
+            }
+        }
+    }
+
     let mut best_point = None;
     for (idx, node) in profile.nodes.iter().enumerate() {
         if let Some(pos) = node_pos(node) {
@@ -3753,6 +3810,7 @@ fn draw_node(
     content: Rect,
     node: &Node,
     selected: bool,
+    hovered_region: bool,
     layer_active: bool,
     show_labels: bool,
 ) {
@@ -3768,8 +3826,8 @@ fn draw_node(
             painter,
             rect,
             Stroke::new(
-                if selected { 3.0 } else { 2.0 },
-                if layer_active {
+                if selected || hovered_region { 3.0 } else { 2.0 },
+                if selected || hovered_region || layer_active {
                     accent
                 } else {
                     color.gamma_multiply(0.85)
@@ -3800,9 +3858,17 @@ fn draw_node(
                 draw_joystick_compass_labels(painter, center, radius_px, node, accent, layer_active);
             }
         }
-        if selected {
+        if selected || hovered_region {
             for (_, handle_rect) in region_handles(rect) {
-                painter.rect_filled(handle_rect, 2.0, accent);
+                painter.rect_filled(
+                    handle_rect,
+                    2.0,
+                    if selected {
+                        accent
+                    } else {
+                        accent.gamma_multiply(0.72)
+                    },
+                );
             }
         }
         if show_labels {
@@ -3969,35 +4035,39 @@ fn draw_control_card(
                 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        let action_width = if selected { 116.0 } else { 0.0 };
-                        let title_width = (ui.available_width() - action_width).max(80.0);
-                        let response = ui.add_sized(
-                            [title_width, 24.0],
-                            egui::SelectableLabel::new(
-                                selected,
-                                RichText::new(title.as_str()).strong().color(color),
-                            ),
-                        );
-                        if response.clicked() {
-                            action = Some(ControlListAction::Select(idx));
-                        }
+                    let response = ui.add_sized(
+                        [ui.available_width(), 24.0],
+                        egui::SelectableLabel::new(
+                            selected,
+                            RichText::new(title.as_str()).strong().color(color),
+                        ),
+                    );
+                    if response.clicked() {
+                        action = Some(ControlListAction::Select(idx));
+                    }
 
-                        if selected {
-                            if ui.small_button("↑").on_hover_text("Move up").clicked() {
-                                action = Some(ControlListAction::MoveUp(idx));
-                            }
-                            if ui.small_button("↓").on_hover_text("Move down").clicked() {
-                                action = Some(ControlListAction::MoveDown(idx));
-                            }
-                            if ui.small_button("⧉").on_hover_text("Duplicate").clicked() {
-                                action = Some(ControlListAction::Duplicate(idx));
-                            }
-                            if ui.small_button("✕").on_hover_text("Delete").clicked() {
-                                action = Some(ControlListAction::Delete(idx));
-                            }
-                        }
-                    });
+                    if selected {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if action_button(ui, "Del", "Delete").clicked() {
+                                        action = Some(ControlListAction::Delete(idx));
+                                    }
+                                    if action_button(ui, "Dup", "Duplicate").clicked() {
+                                        action = Some(ControlListAction::Duplicate(idx));
+                                    }
+                                    if action_button(ui, "Dn", "Move down").clicked() {
+                                        action = Some(ControlListAction::MoveDown(idx));
+                                    }
+                                    if action_button(ui, "Up", "Move up").clicked() {
+                                        action = Some(ControlListAction::MoveUp(idx));
+                                    }
+                                },
+                            );
+                        });
+                    }
 
                     ui.label(RichText::new(kind).small().color(Color32::from_gray(205)));
                     ui.label(RichText::new(metadata).small().color(accent));
@@ -4008,6 +4078,14 @@ fn draw_control_card(
         },
     );
     action
+}
+
+fn action_button<'a>(ui: &'a mut egui::Ui, text: &'a str, tooltip: &'a str) -> egui::Response {
+    ui.add_sized(
+        [CONTROL_CARD_ACTION_BUTTON_WIDTH, 20.0],
+        egui::Button::new(RichText::new(text).small()),
+    )
+    .on_hover_text(tooltip)
 }
 
 fn node_color(node: &Node) -> Color32 {
@@ -4508,25 +4586,54 @@ fn region_border_contains(rect: Rect, mouse: Pos2) -> bool {
     !rect.shrink(inset).contains(mouse)
 }
 
-fn region_handles(rect: Rect) -> [(RegionHandle, Rect); 4] {
+fn region_handles(rect: Rect) -> [(RegionHandle, Rect); 8] {
+    let mid_top = Pos2::new(rect.center().x, rect.top());
+    let mid_right = Pos2::new(rect.right(), rect.center().y);
+    let mid_bottom = Pos2::new(rect.center().x, rect.bottom());
+    let mid_left = Pos2::new(rect.left(), rect.center().y);
     [
         (
             RegionHandle::TopLeft,
             Rect::from_center_size(rect.left_top(), Vec2::splat(HANDLE_SIZE)),
         ),
         (
+            RegionHandle::Top,
+            Rect::from_center_size(mid_top, Vec2::new(HANDLE_SIZE * 1.35, HANDLE_SIZE)),
+        ),
+        (
             RegionHandle::TopRight,
             Rect::from_center_size(rect.right_top(), Vec2::splat(HANDLE_SIZE)),
+        ),
+        (
+            RegionHandle::Right,
+            Rect::from_center_size(mid_right, Vec2::new(HANDLE_SIZE, HANDLE_SIZE * 1.35)),
         ),
         (
             RegionHandle::BottomLeft,
             Rect::from_center_size(rect.left_bottom(), Vec2::splat(HANDLE_SIZE)),
         ),
         (
+            RegionHandle::Bottom,
+            Rect::from_center_size(mid_bottom, Vec2::new(HANDLE_SIZE * 1.35, HANDLE_SIZE)),
+        ),
+        (
             RegionHandle::BottomRight,
             Rect::from_center_size(rect.right_bottom(), Vec2::splat(HANDLE_SIZE)),
         ),
+        (
+            RegionHandle::Left,
+            Rect::from_center_size(mid_left, Vec2::new(HANDLE_SIZE, HANDLE_SIZE * 1.35)),
+        ),
     ]
+}
+
+fn region_handle_cursor(handle: RegionHandle) -> egui::CursorIcon {
+    match handle {
+        RegionHandle::TopLeft | RegionHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
+        RegionHandle::TopRight | RegionHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
+        RegionHandle::Top | RegionHandle::Bottom => egui::CursorIcon::ResizeVertical,
+        RegionHandle::Left | RegionHandle::Right => egui::CursorIcon::ResizeHorizontal,
+    }
 }
 
 fn draw_dashed_rect(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
