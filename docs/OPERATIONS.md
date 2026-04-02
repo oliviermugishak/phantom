@@ -31,6 +31,8 @@ sudo waydroid status
 sudo phantom --trace --daemon
 ```
 
+If `sudo phantom` is not found after install, rerun `./install.sh`. The installer now places a sudo-visible `phantom` launcher in `/usr/local/bin` when possible.
+
 Required Waydroid state:
 
 - `Session: RUNNING`

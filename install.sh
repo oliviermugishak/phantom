@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="$PREFIX/bin"
+SYSTEM_BIN_DIR="${SYSTEM_BIN_DIR:-/usr/local/bin}"
+INSTALL_SYSTEM_WRAPPER="${INSTALL_SYSTEM_WRAPPER:-1}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 DATA_DIR="$DATA_HOME/phantom"
@@ -12,6 +14,7 @@ CONFIG_DIR="$CONFIG_HOME/phantom"
 PROFILE_DIR="$CONFIG_DIR/profiles"
 INSTALLED_JAR="$ANDROID_DIR/phantom-server.jar"
 CONFIG_PATH="$CONFIG_DIR/config.toml"
+SYSTEM_PHANTOM_WRAPPER="$SYSTEM_BIN_DIR/phantom"
 
 usage() {
     cat <<'EOF'
@@ -22,6 +25,8 @@ Usage:
 
 Environment overrides:
   PREFIX         Install prefix for binaries (default: ~/.local)
+  SYSTEM_BIN_DIR System launcher directory for sudo-visible phantom wrapper (default: /usr/local/bin)
+  INSTALL_SYSTEM_WRAPPER  Set to 0 to skip installing the sudo-visible phantom wrapper
   XDG_DATA_HOME  Data root for installed Android server jar
   XDG_CONFIG_HOME Config root for user config and profiles
 EOF
@@ -35,6 +40,63 @@ ensure_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
         printf 'error: required command not found: %s\n' "$1" >&2
         exit 1
+    fi
+}
+
+can_write_path_directly() {
+    local target="$1"
+    if [[ -e "$target" ]]; then
+        [[ -w "$target" ]]
+    else
+        can_write_dir_directly "$(dirname "$target")"
+    fi
+}
+
+can_write_dir_directly() {
+    local dir="$1"
+    if [[ -d "$dir" ]]; then
+        [[ -w "$dir" ]]
+    else
+        [[ -w "$(dirname "$dir")" ]]
+    fi
+}
+
+install_system_phantom_wrapper() {
+    if [[ "$INSTALL_SYSTEM_WRAPPER" != "1" ]]; then
+        printf 'skipping system phantom wrapper (INSTALL_SYSTEM_WRAPPER=%s)\n' "$INSTALL_SYSTEM_WRAPPER"
+        return
+    fi
+
+    local tmp_wrapper
+    tmp_wrapper="$(mktemp)"
+    cat >"$tmp_wrapper" <<EOF
+#!/usr/bin/env bash
+exec "$BIN_DIR/phantom" "\$@"
+EOF
+
+    if can_write_path_directly "$SYSTEM_PHANTOM_WRAPPER"; then
+        install -d "$SYSTEM_BIN_DIR"
+        install -m755 "$tmp_wrapper" "$SYSTEM_PHANTOM_WRAPPER"
+        printf 'installed sudo-visible launcher: %s\n' "$SYSTEM_PHANTOM_WRAPPER"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo install -d "$SYSTEM_BIN_DIR"
+        sudo install -m755 "$tmp_wrapper" "$SYSTEM_PHANTOM_WRAPPER"
+        printf 'installed sudo-visible launcher: %s\n' "$SYSTEM_PHANTOM_WRAPPER"
+    else
+        printf 'warning: could not install %s and sudo is unavailable\n' "$SYSTEM_PHANTOM_WRAPPER" >&2
+        printf 'sudo may not find phantom unless you adjust secure_path or run sudo %s/phantom\n' "$BIN_DIR" >&2
+    fi
+
+    rm -f "$tmp_wrapper"
+}
+
+remove_system_phantom_wrapper() {
+    if [[ -e "$SYSTEM_PHANTOM_WRAPPER" ]]; then
+        if can_write_path_directly "$SYSTEM_PHANTOM_WRAPPER"; then
+            rm -f "$SYSTEM_PHANTOM_WRAPPER"
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo rm -f "$SYSTEM_PHANTOM_WRAPPER"
+        fi
     fi
 }
 
@@ -80,6 +142,7 @@ install_phantom() {
     install -m755 "$REPO_ROOT/target/release/phantom-gui" "$BIN_DIR/phantom-gui"
     rm -f "$BIN_DIR/phantom-studio"
     install -m644 "$REPO_ROOT/contrib/android-server/build/phantom-server.jar" "$INSTALLED_JAR"
+    install_system_phantom_wrapper
 
     for profile in "$REPO_ROOT"/profiles/*.json; do
         copy_profile_if_missing "$profile"
@@ -92,6 +155,9 @@ install_phantom() {
     printf '  %s\n' "$BIN_DIR/phantom-gui"
     printf '  %s\n' "$INSTALLED_JAR"
     printf '  %s\n' "$CONFIG_PATH"
+    if [[ "$INSTALL_SYSTEM_WRAPPER" == "1" ]]; then
+        printf '  %s\n' "$SYSTEM_PHANTOM_WRAPPER"
+    fi
 
     case ":$PATH:" in
         *":$BIN_DIR:"*) ;;
@@ -105,10 +171,11 @@ install_phantom() {
 
 uninstall_phantom() {
     rm -f "$BIN_DIR/phantom" "$BIN_DIR/phantom-gui" "$BIN_DIR/phantom-studio" "$INSTALLED_JAR"
+    remove_system_phantom_wrapper
     rmdir "$ANDROID_DIR" 2>/dev/null || true
     rmdir "$DATA_DIR" 2>/dev/null || true
 
-    printf 'removed installed binaries and Android server jar\n'
+    printf 'removed installed binaries, sudo-visible phantom launcher, and Android server jar\n'
     printf 'kept user config and profiles in: %s\n' "$CONFIG_DIR"
 }
 

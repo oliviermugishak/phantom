@@ -262,8 +262,8 @@ phantom-gui --version
 
 ## Install Notes
 
-- `./install.sh` builds the workspace, installs `phantom` and `phantom-gui` into `~/.local/bin`, installs the Android server jar into `~/.local/share/phantom/android/`, creates `~/.config/phantom/config.toml` if missing, and seeds missing shipped profiles into `~/.config/phantom/profiles/`.
-- `./install.sh -u` removes the installed binaries and Android server jar, but leaves your config and user profiles untouched.
+- `./install.sh` builds the workspace, installs `phantom` and `phantom-gui` into `~/.local/bin`, installs a sudo-visible `phantom` launcher into `/usr/local/bin` when possible, installs the Android server jar into `~/.local/share/phantom/android/`, creates `~/.config/phantom/config.toml` if missing, and seeds missing shipped profiles into `~/.config/phantom/profiles/`.
+- `./install.sh -u` removes the installed binaries, the sudo-visible `phantom` launcher, and the Android server jar, but leaves your config and user profiles untouched.
 - rerunning `./install.sh` is safe for profile seeding because it only copies missing shipped profiles
 
 ## Current Direction

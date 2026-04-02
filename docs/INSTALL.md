@@ -127,6 +127,7 @@ That command:
 - builds `phantom-gui`
 - builds the Android server jar
 - installs binaries into `~/.local/bin`
+- installs a sudo-visible `phantom` launcher into `/usr/local/bin` when possible
 - installs `phantom-server.jar` into `~/.local/share/phantom/android/`
 - creates `~/.config/phantom/config.toml` if missing
 - copies shipped profiles into `~/.config/phantom/profiles/` if those files do not already exist
@@ -148,7 +149,7 @@ Uninstall later with:
 ./install.sh -u
 ```
 
-That removes installed binaries and the installed Android server jar, but leaves your user config and profiles intact.
+That removes installed binaries, the sudo-visible `phantom` launcher, and the installed Android server jar, but leaves your user config and profiles intact.
 
 ## 8. Manual Build
 
