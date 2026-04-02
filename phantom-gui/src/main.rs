@@ -790,13 +790,8 @@ impl PhantomGui {
         ui.group(|ui| {
             ui.label(RichText::new("Daemon Control").strong());
             ui.horizontal_wrapped(|ui| {
-                let start_label = if command_exists("pkexec") && !running_as_root() {
-                    "Start Daemon"
-                } else {
-                    "Start Daemon"
-                };
                 if ui
-                    .add_enabled(!self.runtime.connected, egui::Button::new(start_label))
+                    .add_enabled(!self.runtime.connected, egui::Button::new("Start Daemon"))
                     .clicked()
                 {
                     self.start_daemon();

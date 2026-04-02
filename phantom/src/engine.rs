@@ -625,8 +625,9 @@ impl KeymapEngine {
                             fa = true;
                         }
 
+                        let (offset_x, offset_y) = joystick_offset(u, dn, l, r, *radius);
                         let (move_x, move_y) =
-                            joystick_target(ox, oy, u, dn, l, r, *radius, region.as_ref());
+                            joystick_target(ox, oy, offset_x, offset_y, region.as_ref());
 
                         cmds.push(TouchCommand::TouchMove {
                             slot: *slot,
@@ -777,14 +778,12 @@ impl KeymapEngine {
                                 origin_y: 0.0,
                             };
                         } else if fa {
+                            let (offset_x, offset_y) = joystick_offset(u, dn, l, r, *radius);
                             let (move_x, move_y) = joystick_target(
                                 *origin_x,
                                 *origin_y,
-                                u,
-                                dn,
-                                l,
-                                r,
-                                *radius,
+                                offset_x,
+                                offset_y,
                                 region.as_ref(),
                             );
                             cmds.push(TouchCommand::TouchMove {
@@ -1218,14 +1217,10 @@ fn joystick_origin(
 fn joystick_target(
     origin_x: f64,
     origin_y: f64,
-    up: bool,
-    down: bool,
-    left: bool,
-    right: bool,
-    radius: f64,
+    offset_x: f64,
+    offset_y: f64,
     region: Option<&Region>,
 ) -> (f64, f64) {
-    let (offset_x, offset_y) = joystick_offset(up, down, left, right, radius);
     let mut x = origin_x + offset_x;
     let mut y = origin_y + offset_y;
     if let Some(region) = region {

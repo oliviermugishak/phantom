@@ -1031,10 +1031,7 @@ impl InputCapture {
             _ => return None,
         };
 
-        let (prev_x, prev_y) = match device.last_abs_position.replace((next_x, next_y)) {
-            Some(prev) => prev,
-            None => return None,
-        };
+        let (prev_x, prev_y) = device.last_abs_position.replace((next_x, next_y))?;
 
         let dx = next_x - prev_x;
         let dy = next_y - prev_y;

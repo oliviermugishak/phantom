@@ -13,6 +13,12 @@ pub struct OverlayPreview {
     snapshot_path: PathBuf,
 }
 
+impl Default for OverlayPreview {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OverlayPreview {
     pub fn new() -> Self {
         Self {

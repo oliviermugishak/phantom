@@ -512,11 +512,8 @@ fn waydroid_status_is_running(output: &str) -> bool {
         .lines()
         .find_map(|line| {
             let line = line.trim();
-            if let Some(value) = line.strip_prefix("Session:") {
-                Some(value.trim().eq_ignore_ascii_case("RUNNING"))
-            } else {
-                None
-            }
+            line.strip_prefix("Session:")
+                .map(|value| value.trim().eq_ignore_ascii_case("RUNNING"))
         })
         .unwrap_or(false)
 }
@@ -526,11 +523,8 @@ fn waydroid_container_is_frozen(output: &str) -> bool {
         .lines()
         .find_map(|line| {
             let line = line.trim();
-            if let Some(value) = line.strip_prefix("Container:") {
-                Some(value.trim().eq_ignore_ascii_case("FROZEN"))
-            } else {
-                None
-            }
+            line.strip_prefix("Container:")
+                .map(|value| value.trim().eq_ignore_ascii_case("FROZEN"))
         })
         .unwrap_or(false)
 }
