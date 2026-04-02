@@ -13,6 +13,7 @@
       "slot": 0,
       "pos": { "x": 0.12, "y": 0.65 },
       "radius": 0.08,
+      "mode": "fixed",
       "keys": { "up": "W", "down": "S", "left": "A", "right": "D" }
     },
     {
@@ -20,7 +21,9 @@
       "type": "mouse_camera",
       "slot": 1,
       "region": { "x": 0.30, "y": 0.0, "w": 0.70, "h": 1.0 },
-      "sensitivity": 1.0
+      "sensitivity": 1.0,
+      "activation_mode": "always_on",
+      "invert_y": false
     },
     {
       "id": "attack",
@@ -56,7 +59,7 @@
       "type": "hold_tap",
       "slot": 6,
       "pos": { "x": 0.82, "y": 0.90 },
-      "key": "LEFTSHIFT"
+      "key": "LeftShift"
     }
   ]
 }

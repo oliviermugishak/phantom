@@ -373,7 +373,7 @@ Examples:
 Current shipped library:
 
 - `pubg.json`
-- `pubg-mobile-layout1.json`
+- `pubg-small.json`
 - `genshin.json`
 - `efootball-template.json`
 - `temple-run.json`
@@ -384,9 +384,9 @@ Current shipped library:
 Intent:
 
 - `pubg.json`
-  compact combat starter
-- `pubg-mobile-layout1.json`
-  richer PUBG starter based on a real layout screen
+  full PUBG starter based on a real custom-layout screen
+- `pubg-small.json`
+  compact PUBG starter for reduced layouts and focused testing
 - `temple-run.json`
   swipe-only runner starter
 - `subway-surfers.json`

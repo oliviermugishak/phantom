@@ -12,10 +12,11 @@
       "id": "move",
       "slot": 0,
       "pos": {
-        "x": 0.18,
-        "y": 0.72
+        "x": 0.158,
+        "y": 0.789
       },
-      "radius": 0.07,
+      "radius": 0.082,
+      "mode": "fixed",
       "keys": {
         "up": "W",
         "down": "S",
@@ -24,89 +25,216 @@
       }
     },
     {
+      "type": "drag",
+      "id": "sprint_lock",
+      "slot": 1,
+      "start": {
+        "x": 0.158,
+        "y": 0.789
+      },
+      "end": {
+        "x": 0.158,
+        "y": 0.294
+      },
+      "key": "LeftShift",
+      "duration_ms": 110
+    },
+    {
       "type": "mouse_camera",
       "id": "camera",
-      "slot": 1,
+      "slot": 2,
       "region": {
-        "x": 0.35,
+        "x": 0.0,
         "y": 0.0,
-        "w": 0.65,
+        "w": 1.0,
         "h": 1.0
       },
-      "sensitivity": 1.2,
-      "activation_mode": "while_held",
-      "activation_key": "MouseRight",
+      "sensitivity": 1.15,
+      "activation_mode": "toggle",
+      "activation_key": "Tab",
       "invert_y": false
     },
     {
       "type": "hold_tap",
       "id": "fire",
-      "slot": 2,
+      "slot": 3,
       "pos": {
-        "x": 0.88,
-        "y": 0.62
+        "x": 0.85,
+        "y": 0.75
       },
       "key": "MouseLeft"
     },
     {
       "type": "hold_tap",
-      "id": "ads",
-      "slot": 3,
+      "id": "free_look",
+      "slot": 4,
       "pos": {
-        "x": 0.759,
-        "y": 0.617
+        "x": 0.766,
+        "y": 0.3
       },
-      "key": "MouseRight"
+      "key": "LeftAlt"
+    },
+    {
+      "type": "tap",
+      "id": "interact",
+      "slot": 5,
+      "pos": {
+        "x": 0.668,
+        "y": 0.429
+      },
+      "key": "F"
     },
     {
       "type": "tap",
       "id": "jump",
-      "slot": 4,
+      "slot": 6,
       "pos": {
-        "x": 0.92,
-        "y": 0.82
+        "x": 0.97,
+        "y": 0.685
       },
       "key": "Space"
     },
     {
       "type": "tap",
       "id": "crouch",
-      "slot": 5,
+      "slot": 7,
       "pos": {
-        "x": 0.85,
-        "y": 0.9
+        "x": 0.944,
+        "y": 0.911
       },
       "key": "C"
     },
     {
       "type": "tap",
-      "id": "reload",
-      "slot": 6,
-      "pos": {
-        "x": 0.78,
-        "y": 0.88
-      },
-      "key": "R"
-    },
-    {
-      "type": "tap",
       "id": "prone",
-      "slot": 7,
+      "slot": 8,
       "pos": {
-        "x": 0.8,
-        "y": 0.95
+        "x": 0.836,
+        "y": 0.935
       },
       "key": "Z"
     },
     {
       "type": "tap",
-      "id": "tap_8",
-      "slot": 8,
+      "id": "grenade",
+      "slot": 9,
       "pos": {
-        "x": 0.802,
-        "y": 0.345
+        "x": 0.697,
+        "y": 0.931
       },
-      "key": "H"
+      "key": "G"
+    },
+    {
+      "type": "hold_tap",
+      "id": "secondary_fire",
+      "slot": 10,
+      "pos": {
+        "x": 0.6010549664497375,
+        "y": 0.6549350023269653
+      },
+      "key": "MouseLeft"
+    },
+    {
+      "type": "toggle_tap",
+      "id": "ads_toggle",
+      "slot": 11,
+      "pos": {
+        "x": 0.97,
+        "y": 0.532
+      },
+      "key": "MouseRight"
+    },
+    {
+      "type": "tap",
+      "id": "weapon_slot_1",
+      "slot": 12,
+      "pos": {
+        "x": 0.44779127836227417,
+        "y": 0.8937188982963562
+      },
+      "key": "1"
+    },
+    {
+      "type": "tap",
+      "id": "weapon_slot_2",
+      "slot": 13,
+      "pos": {
+        "x": 0.5574125647544861,
+        "y": 0.8959481120109558
+      },
+      "key": "2"
+    },
+    {
+      "type": "tap",
+      "id": "throwable_select",
+      "slot": 14,
+      "pos": {
+        "x": 0.668,
+        "y": 0.532
+      },
+      "key": "G"
+    },
+    {
+      "type": "tap",
+      "id": "weapon_slot_3",
+      "slot": 15,
+      "pos": {
+        "x": 0.618,
+        "y": 0.837
+      },
+      "key": "3"
+    },
+    {
+      "type": "tap",
+      "id": "weapon_slot_0",
+      "slot": 16,
+      "pos": {
+        "x": 0.3054719567298889,
+        "y": 0.9393490552902222
+      },
+      "key": "0"
+    },
+    {
+      "type": "repeat_tap",
+      "id": "rapid_left_ctrl",
+      "slot": 17,
+      "pos": {
+        "x": 0.05,
+        "y": 0.532
+      },
+      "key": "LeftCtrl",
+      "interval_ms": 90
+    },
+    {
+      "type": "repeat_tap",
+      "id": "rapid_interact",
+      "slot": 18,
+      "pos": {
+        "x": 0.078,
+        "y": 0.487
+      },
+      "key": "E",
+      "interval_ms": 16
+    },
+    {
+      "type": "tap",
+      "id": "map",
+      "slot": 19,
+      "pos": {
+        "x": 0.9267967343330384,
+        "y": 0.09547466784715652
+      },
+      "key": "M"
+    },
+    {
+      "type": "tap",
+      "id": "reload",
+      "slot": 20,
+      "pos": {
+        "x": 0.6669324040412903,
+        "y": 0.25287941098213196
+      },
+      "key": "R"
     }
   ]
 }

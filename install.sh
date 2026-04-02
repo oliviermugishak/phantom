@@ -15,11 +15,15 @@ PROFILE_DIR="$CONFIG_DIR/profiles"
 INSTALLED_JAR="$ANDROID_DIR/phantom-server.jar"
 CONFIG_PATH="$CONFIG_DIR/config.toml"
 SYSTEM_PHANTOM_WRAPPER="$SYSTEM_BIN_DIR/phantom"
+PROMPT_OVERRIDES=0
+OVERWRITE_CONFIG=0
+OVERWRITE_PROFILES=0
 
 usage() {
     cat <<'EOF'
 Usage:
   ./install.sh        Build and install Phantom and Phantom GUI into the current user environment
+  ./install.sh -o     Prompt before overwriting existing config and shipped profiles
   ./install.sh -u     Uninstall Phantom binaries and installed Android server jar
   ./install.sh -h     Show this help
 
@@ -30,6 +34,13 @@ Environment overrides:
   XDG_DATA_HOME  Data root for installed Android server jar
   XDG_CONFIG_HOME Config root for user config and profiles
 EOF
+}
+
+prompt_yes_no() {
+    local prompt="$1"
+    local reply
+    read -r -p "$prompt [y/N] " reply
+    [[ "$reply" =~ ^([yY]|[yY][eE][sS])$ ]]
 }
 
 escape_sed_replacement() {
@@ -100,19 +111,22 @@ remove_system_phantom_wrapper() {
     fi
 }
 
-copy_profile_if_missing() {
+install_profile() {
     local source="$1"
     local file_name
     file_name="$(basename "$source")"
     local target="$PROFILE_DIR/$file_name"
-    if [[ ! -e "$target" ]]; then
+    if ((OVERWRITE_PROFILES)); then
+        install -Dm644 "$source" "$target"
+        printf 'overwrote profile: %s\n' "$target"
+    elif [[ ! -e "$target" ]]; then
         install -Dm644 "$source" "$target"
         printf 'installed profile: %s\n' "$target"
     fi
 }
 
-create_config_if_missing() {
-    if [[ -e "$CONFIG_PATH" ]]; then
+install_config() {
+    if [[ -e "$CONFIG_PATH" ]] && (( !OVERWRITE_CONFIG )); then
         printf 'keeping existing config: %s\n' "$CONFIG_PATH"
         return
     fi
@@ -123,13 +137,51 @@ create_config_if_missing() {
     sed \
         "s|/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar|$escaped_jar|g" \
         "$REPO_ROOT/config.example.toml" >"$CONFIG_PATH"
-    printf 'created config: %s\n' "$CONFIG_PATH"
+    if ((OVERWRITE_CONFIG)); then
+        printf 'overwrote config: %s\n' "$CONFIG_PATH"
+    else
+        printf 'created config: %s\n' "$CONFIG_PATH"
+    fi
+}
+
+prompt_override_choices() {
+    if (( !PROMPT_OVERRIDES )); then
+        return
+    fi
+
+    if [[ ! -t 0 ]]; then
+        printf 'error: -o requires an interactive terminal for overwrite prompts\n' >&2
+        exit 1
+    fi
+
+    if [[ -e "$CONFIG_PATH" ]]; then
+        if prompt_yes_no "Override existing config at $CONFIG_PATH?"; then
+            OVERWRITE_CONFIG=1
+        fi
+    fi
+
+    local existing_shipped_profile=0
+    local profile
+    for profile in "$REPO_ROOT"/profiles/*.json; do
+        if [[ -e "$PROFILE_DIR/$(basename "$profile")" ]]; then
+            existing_shipped_profile=1
+            break
+        fi
+    done
+
+    if ((existing_shipped_profile)); then
+        if prompt_yes_no "Override currently shipped profiles in $PROFILE_DIR?"; then
+            OVERWRITE_PROFILES=1
+        fi
+    fi
 }
 
 install_phantom() {
     ensure_command cargo
     ensure_command sed
     ensure_command install
+
+    prompt_override_choices
 
     printf 'building Rust binaries...\n'
     cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml"
@@ -145,10 +197,10 @@ install_phantom() {
     install_system_phantom_wrapper
 
     for profile in "$REPO_ROOT"/profiles/*.json; do
-        copy_profile_if_missing "$profile"
+        install_profile "$profile"
     done
 
-    create_config_if_missing
+    install_config
 
     printf '\ninstalled:\n'
     printf '  %s\n' "$BIN_DIR/phantom"
@@ -184,6 +236,9 @@ main() {
 
     while (($#)); do
         case "$1" in
+            -o|--overwrite)
+                PROMPT_OVERRIDES=1
+                ;;
             -u|--uninstall)
                 uninstall=1
                 ;;
@@ -199,6 +254,11 @@ main() {
         esac
         shift
     done
+
+    if ((uninstall && PROMPT_OVERRIDES)); then
+        printf 'error: -o cannot be combined with -u\n' >&2
+        exit 1
+    fi
 
     if ((uninstall)); then
         uninstall_phantom

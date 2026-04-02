@@ -3,6 +3,7 @@ name = "phantom-gui"
 version.workspace = true
 edition.workspace = true
 description = "Profile editor GUI for Phantom"
+readme = "README.md"
 
 [dependencies]
 phantom = { path = "../phantom" }

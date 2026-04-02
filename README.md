@@ -62,7 +62,6 @@ Important recent additions:
 The repository ships starter profiles in [`profiles/`](profiles/):
 
 - `pubg.json`
-- `pubg-mobile-layout1.json`
 - `pubg-small.json`
 - `genshin.json`
 - `efootball-template.json`
@@ -86,6 +85,7 @@ The GUI loads profiles from the user library, not directly from the repository.
 
 - it copies every shipped profile into `~/.config/phantom/profiles/` if that file does not already exist
 - it does not overwrite profiles you already edited
+- `./install.sh -o` can prompt to overwrite the current config and/or the currently shipped profile filenames
 - rerunning `./install.sh` is the supported way to seed newly added shipped profiles into an existing setup
 
 That means:
@@ -132,8 +132,8 @@ sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
 
 ```bash
 phantom status
-phantom audit ~/.config/phantom/profiles/pubg-mobile-layout1.json
-phantom load ~/.config/phantom/profiles/pubg-mobile-layout1.json
+phantom audit ~/.config/phantom/profiles/pubg.json
+phantom load ~/.config/phantom/profiles/pubg.json
 phantom enter-capture
 ```
 
@@ -275,6 +275,12 @@ Contribution docs:
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [AGENTS.md](AGENTS.md)
 
+Package docs:
+
+- [phantom/README.md](phantom/README.md)
+- [phantom-gui/README.md](phantom-gui/README.md)
+- [contrib/README.md](contrib/README.md)
+
 ## Common Commands
 
 ```bash
@@ -303,6 +309,7 @@ phantom-gui --version
 ## Install Notes
 
 - `./install.sh` builds the workspace, installs `phantom` and `phantom-gui` into `~/.local/bin`, installs a sudo-visible `phantom` launcher into `/usr/local/bin` when possible, installs the Android server jar into `~/.local/share/phantom/android/`, creates `~/.config/phantom/config.toml` if missing, and seeds missing shipped profiles into `~/.config/phantom/profiles/`.
+- `./install.sh -o` interactively asks whether to overwrite `~/.config/phantom/config.toml` and whether to overwrite the currently shipped profile filenames in `~/.config/phantom/profiles/`.
 - `./install.sh -u` removes the installed binaries, the sudo-visible `phantom` launcher, and the Android server jar, but leaves your config and user profiles untouched.
 - rerunning `./install.sh` is safe for profile seeding because it only copies missing shipped profiles
 
