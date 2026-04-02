@@ -37,7 +37,19 @@ pub struct RawInputEvent {
     pub value: i32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InputAbsInfo {
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
+
 const _: [(); 24] = [(); std::mem::size_of::<RawInputEvent>()];
+const _: [(); 24] = [(); std::mem::size_of::<InputAbsInfo>()];
 
 #[derive(Debug, Clone)]
 pub enum InputEvent {
@@ -553,6 +565,8 @@ pub struct DeviceInfo {
     pointer_kind: PointerKind,
     abs_x: Option<i32>,
     abs_y: Option<i32>,
+    abs_range_x: Option<(i32, i32)>,
+    abs_range_y: Option<(i32, i32)>,
     last_abs_position: Option<(i32, i32)>,
     abs_dirty: bool,
     pressed_keys: HashSet<Key>,
@@ -741,6 +755,16 @@ impl InputCapture {
         } else {
             PointerKind::None
         };
+        let abs_range_x = if matches!(pointer_kind, PointerKind::Absolute) {
+            query_abs_range(fd, ABS_X)
+        } else {
+            None
+        };
+        let abs_range_y = if matches!(pointer_kind, PointerKind::Absolute) {
+            query_abs_range(fd, ABS_Y)
+        } else {
+            None
+        };
 
         let is_mouse = !matches!(pointer_kind, PointerKind::None);
 
@@ -765,6 +789,8 @@ impl InputCapture {
             pointer_kind,
             abs_x: None,
             abs_y: None,
+            abs_range_x,
+            abs_range_y,
             last_abs_position: None,
             abs_dirty: false,
             pressed_keys: HashSet::new(),
@@ -1035,7 +1061,21 @@ impl InputCapture {
 
         let dx = next_x - prev_x;
         let dy = next_y - prev_y;
+        if absolute_reanchor_jump(dx, device.abs_range_x)
+            || absolute_reanchor_jump(dy, device.abs_range_y)
+        {
+            tracing::trace!(
+                device = %device.path,
+                dx = dx,
+                dy = dy,
+                "ignoring touchpad re-anchor jump"
+            );
+            return None;
+        }
         if dx == 0 && dy == 0 {
+            return None;
+        }
+        if dx.abs() <= 1 && dy.abs() <= 1 {
             return None;
         }
 
@@ -1061,6 +1101,21 @@ impl InputCapture {
 
     pub fn keyboard_grabbed(&self) -> bool {
         self.keyboard_grabbed
+    }
+
+    pub fn current_pressed_mouse_keys(&self) -> HashSet<Key> {
+        let mut pressed = HashSet::new();
+        for device in &self.devices {
+            if !device.is_mouse {
+                continue;
+            }
+            for key in &device.pressed_keys {
+                if key.is_mouse() {
+                    pressed.insert(*key);
+                }
+            }
+        }
+        pressed
     }
 
     pub fn set_grabbed_all(&mut self, grabbed: bool) -> Result<()> {
@@ -1207,6 +1262,31 @@ fn format_pressed_keys(keys: &HashSet<Key>) -> String {
     rendered.join(",")
 }
 
+fn query_abs_range(fd: RawFd, axis: u16) -> Option<(i32, i32)> {
+    let mut info = InputAbsInfo {
+        value: 0,
+        minimum: 0,
+        maximum: 0,
+        fuzz: 0,
+        flat: 0,
+        resolution: 0,
+    };
+    let ret = unsafe { libc::ioctl(fd, eviocgabs_request(axis), &mut info as *mut InputAbsInfo) };
+    if ret < 0 {
+        return None;
+    }
+    Some((info.minimum, info.maximum))
+}
+
+fn absolute_reanchor_jump(delta: i32, range: Option<(i32, i32)>) -> bool {
+    let span = range
+        .map(|(min, max)| (max - min).unsigned_abs() as i32)
+        .unwrap_or_default();
+    let threshold = ((span as f64) * 0.12).round() as i32;
+    let threshold = threshold.clamp(64, 1024);
+    delta.abs() >= threshold
+}
+
 fn eviocgname_request(len: usize) -> libc::c_ulong {
     nix::request_code_read!(b'E', 0x06, len) as libc::c_ulong
 }
@@ -1217,6 +1297,11 @@ fn eviocgbit_request(ev: u16, len: usize) -> libc::c_ulong {
 
 fn eviocgkey_request(len: usize) -> libc::c_ulong {
     nix::request_code_read!(b'E', 0x18, len) as libc::c_ulong
+}
+
+fn eviocgabs_request(axis: u16) -> libc::c_ulong {
+    nix::request_code_read!(b'E', 0x40 + axis as u8, std::mem::size_of::<InputAbsInfo>())
+        as libc::c_ulong
 }
 
 #[cfg(test)]
@@ -1275,6 +1360,8 @@ mod tests {
                 pointer_kind: PointerKind::Absolute,
                 abs_x: None,
                 abs_y: None,
+                abs_range_x: Some((0, 1000)),
+                abs_range_y: Some((0, 1000)),
                 last_abs_position: None,
                 abs_dirty: false,
                 pressed_keys: HashSet::new(),
@@ -1355,5 +1442,68 @@ mod tests {
 
         assert_eq!(second.len(), 1);
         assert!(matches!(second[0], InputEvent::MouseMove { dx: 12, dy: 6 }));
+    }
+
+    #[test]
+    fn absolute_pointer_ignores_large_reanchor_jumps() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Touchpad".into(),
+                file,
+                is_keyboard: false,
+                is_mouse: true,
+                pointer_kind: PointerKind::Absolute,
+                abs_x: Some(100),
+                abs_y: Some(100),
+                abs_range_x: Some((0, 1000)),
+                abs_range_y: Some((0, 1000)),
+                last_abs_position: Some((100, 100)),
+                abs_dirty: true,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        let events = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_X,
+                    value: 800,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_Y,
+                    value: 850,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+        ]);
+
+        assert!(events.is_empty());
     }
 }

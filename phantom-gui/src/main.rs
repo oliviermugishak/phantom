@@ -29,6 +29,11 @@ const COLOR_LAYER: Color32 = Color32::from_rgb(158, 158, 158);
 const CANVAS_BG: Color32 = Color32::from_rgb(19, 21, 26);
 const CONTENT_BG: Color32 = Color32::from_rgb(26, 29, 36);
 const HANDLE_SIZE: f32 = 10.0;
+const REGION_PICK_MARGIN: f32 = 6.0;
+const REGION_BORDER_PICK_WIDTH: f32 = 14.0;
+const DASH_LENGTH: f32 = 10.0;
+const DASH_GAP: f32 = 6.0;
+const LEFT_PANEL_RUNTIME_RESERVE: f32 = 200.0;
 const MAX_HISTORY: usize = 128;
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const REPAINT_INTERVAL: Duration = Duration::from_millis(50);
@@ -186,6 +191,15 @@ enum DragState {
     },
 }
 
+#[derive(Clone, Copy)]
+enum ControlListAction {
+    Select(usize),
+    MoveUp(usize),
+    MoveDown(usize),
+    Duplicate(usize),
+    Delete(usize),
+}
+
 #[derive(Default)]
 struct RuntimeState {
     connected: bool,
@@ -203,6 +217,11 @@ struct RuntimeState {
 struct Banner {
     text: String,
     is_error: bool,
+}
+
+struct OverlapPicker {
+    anchor: Pos2,
+    candidates: Vec<usize>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -319,6 +338,7 @@ pub struct PhantomGui {
     undo_stack: Vec<EditorSnapshot>,
     redo_stack: Vec<EditorSnapshot>,
     clipboard: Option<Node>,
+    overlap_picker: Option<OverlapPicker>,
     canvas_zoom: f32,
     canvas_pan: Vec2,
 }
@@ -348,6 +368,7 @@ impl PhantomGui {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             clipboard: None,
+            overlap_picker: None,
             canvas_zoom: 1.0,
             canvas_pan: Vec2::ZERO,
         };
@@ -410,6 +431,7 @@ impl PhantomGui {
         self.drag_state = None;
         self.pending_binding = None;
         self.pending_binding_started_at = None;
+        self.overlap_picker = None;
         self.dirty = true;
     }
 
@@ -472,6 +494,7 @@ impl PhantomGui {
 
     fn focus_selection(&mut self, idx: usize) {
         self.selected = Some(idx);
+        self.overlap_picker = None;
         self.right_panel_tab = RightPanelTab::Inspect;
     }
 
@@ -528,6 +551,32 @@ impl PhantomGui {
         summaries
     }
 
+    fn known_layer_names(&self) -> Vec<String> {
+        let Some(profile) = &self.profile else {
+            return Vec::new();
+        };
+
+        let mut names = Vec::new();
+        for summary in self.layer_summaries() {
+            if let LayerFilter::Named(name) = summary.filter {
+                names.push(name);
+            }
+        }
+
+        for node in &profile.nodes {
+            if let Node::LayerShift { layer_name, .. } = node {
+                let layer_name = layer_name.trim();
+                if !layer_name.is_empty() && !names.iter().any(|name| name == layer_name) {
+                    names.push(layer_name.to_string());
+                }
+            }
+        }
+
+        names.sort();
+        names.dedup();
+        names
+    }
+
     fn filtered_controls_count(&self) -> usize {
         self.profile
             .as_ref()
@@ -549,6 +598,12 @@ impl PhantomGui {
         ui.separator();
         ui.heading("Layers");
         ui.add_space(6.0);
+        ui.label(
+            RichText::new("Base is always active. Named layers turn on through Layer Switch nodes.")
+                .small()
+                .color(Color32::from_gray(155)),
+        );
+        ui.add_space(4.0);
 
         let all_selected = matches!(self.layer_filter, LayerFilter::All);
         if ui
@@ -646,6 +701,8 @@ impl PhantomGui {
             ui.label(format!("Name: {}", profile.name));
             ui.label(format!("Controls: {}", profile.nodes.len()));
             ui.label(format!("Touch slots in use: {}", used_slots));
+            let (source_text, source_color) = profile_source_badge(self.profile_path.as_deref());
+            ui.label(RichText::new(format!("Source: {}", source_text)).color(source_color));
             ui.label(format!(
                 "Current list filter: {}",
                 self.layer_filter.label()
@@ -941,6 +998,7 @@ impl PhantomGui {
         self.profile_path = None;
         self.screenshot = None;
         self.selected = None;
+        self.overlap_picker = None;
         self.dirty = true;
         self.tool = Tool::Select;
         self.right_panel_tab = RightPanelTab::Overview;
@@ -957,6 +1015,7 @@ impl PhantomGui {
                 self.profile_path = Some(path.to_path_buf());
                 self.screenshot = None;
                 self.selected = None;
+                self.overlap_picker = None;
                 self.dirty = false;
                 self.tool = Tool::Select;
                 self.right_panel_tab = RightPanelTab::Overview;
@@ -1394,6 +1453,55 @@ impl PhantomGui {
         self.set_banner("Duplicated control", false);
     }
 
+    fn duplicate_selected_into_layer(&mut self, target_layer: String) {
+        let Some(idx) = self.selected else {
+            return;
+        };
+        let Some(source) = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.nodes.get(idx))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(mut node) = self.duplicate_node_for_insert(&source) else {
+            self.set_banner("No free logical touch slot for duplicate", true);
+            return;
+        };
+
+        match &mut node {
+            Node::Tap { layer, .. }
+            | Node::HoldTap { layer, .. }
+            | Node::ToggleTap { layer, .. }
+            | Node::Joystick { layer, .. }
+            | Node::Drag { layer, .. }
+            | Node::MouseCamera { layer, .. }
+            | Node::RepeatTap { layer, .. }
+            | Node::Macro { layer, .. } => *layer = target_layer.clone(),
+            Node::LayerShift { .. } => {
+                self.set_banner("Layer switch nodes are not duplicated into layers", true);
+                return;
+            }
+        }
+
+        self.begin_edit();
+        let Some(profile) = &mut self.profile else {
+            return;
+        };
+        profile.nodes.insert(idx + 1, node);
+        self.selected = Some(idx + 1);
+        self.right_panel_tab = RightPanelTab::Inspect;
+        self.mark_dirty();
+
+        let banner = if target_layer.trim().is_empty() {
+            "Duplicated control into base layer".to_string()
+        } else {
+            format!("Duplicated control into layer {}", target_layer)
+        };
+        self.set_banner(banner, false);
+    }
+
     fn move_selected(&mut self, delta: isize) {
         let Some(len) = self.profile.as_ref().map(|profile| profile.nodes.len()) else {
             return;
@@ -1572,6 +1680,7 @@ impl PhantomGui {
             };
             profile.nodes.remove(idx);
             self.selected = None;
+            self.overlap_picker = None;
             self.drag_state = None;
             self.pending_binding = None;
             self.mark_dirty();
@@ -2084,6 +2193,9 @@ impl PhantomGui {
                     if ui.text_edit_singleline(&mut profile.name).changed() {
                         profile_changed = true;
                     }
+                    let (source_text, source_color) =
+                        profile_source_badge(self.profile_path.as_deref());
+                    ui.label(RichText::new(source_text).small().color(source_color));
 
                     let screen = profile.screen.get_or_insert(default_screen);
                     ui.horizontal(|ui| {
@@ -2141,87 +2253,91 @@ impl PhantomGui {
                     ));
                     ui.add_space(6.0);
 
-                    let mut clicked = None;
-                    let mut move_up = None;
-                    let mut move_down = None;
-                    let mut duplicate = None;
-                    let mut delete = None;
+                    ui.label(
+                        RichText::new(
+                            "Select a card to inspect it. Reorder, duplicate, and delete actions appear on the selected control only.",
+                        )
+                        .small()
+                        .color(Color32::from_gray(155)),
+                    );
+                    ui.add_space(4.0);
 
-                    if let Some(profile) = &self.profile {
-                        for (idx, node) in profile.nodes.iter().enumerate() {
-                            if !self.layer_filter.matches_node(node) {
-                                continue;
+                    let controls_height =
+                        (ui.available_height() - LEFT_PANEL_RUNTIME_RESERVE).max(180.0);
+                    let mut action = None;
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("controls_list")
+                        .max_height(controls_height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if let Some(profile) = &self.profile {
+                                let mut visible_count = 0usize;
+                                for (idx, node) in profile.nodes.iter().enumerate() {
+                                    if !self.layer_filter.matches_node(node) {
+                                        continue;
+                                    }
+                                    visible_count += 1;
+                                    let selected = self.selected == Some(idx);
+                                    let is_layer_active = !node.layer().trim().is_empty()
+                                        && self
+                                            .runtime
+                                            .active_layers
+                                            .iter()
+                                            .any(|layer| layer == node.layer());
+                                    if action.is_none() {
+                                        action = draw_control_card(
+                                            ui,
+                                            idx,
+                                            node,
+                                            selected,
+                                            is_layer_active,
+                                        );
+                                    } else {
+                                        draw_control_card(ui, idx, node, selected, is_layer_active);
+                                    }
+                                    ui.add_space(6.0);
+                                }
+
+                                if visible_count == 0 {
+                                    ui.group(|ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.label(
+                                            RichText::new("No controls in the current layer filter.")
+                                                .strong(),
+                                        );
+                                        ui.label(
+                                            RichText::new(
+                                                "Switch the layer filter back to All or Base, or add controls into this layer.",
+                                            )
+                                            .small()
+                                            .color(Color32::from_gray(160)),
+                                        );
+                                    });
+                                }
                             }
-                            let selected = self.selected == Some(idx);
-                            let text = format!("{}  {}", display_binding(node), display_type(node));
-                            let is_layer_active = !node.layer().trim().is_empty()
-                                && self
-                                    .runtime
-                                    .active_layers
-                                    .iter()
-                                    .any(|layer| layer == node.layer());
-                            let subtitle = match (node.slot(), node.layer().trim().is_empty()) {
-                                (Some(slot), true) => format!("slot {}", slot),
-                                (Some(slot), false) => {
-                                    format!("slot {} • layer {}", slot, node.layer())
-                                }
-                                (None, true) => "runtime".into(),
-                                (None, false) => format!("layer {}", node.layer()),
-                            };
+                        });
 
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    let response = ui.selectable_label(
-                                        selected,
-                                        RichText::new(text).color(node_color(node)).strong(),
-                                    );
-                                    if response.clicked() {
-                                        clicked = Some(idx);
-                                    }
-                                    if ui.small_button("↑").clicked() {
-                                        move_up = Some(idx);
-                                    }
-                                    if ui.small_button("↓").clicked() {
-                                        move_down = Some(idx);
-                                    }
-                                    if ui.small_button("⧉").clicked() {
-                                        duplicate = Some(idx);
-                                    }
-                                    if ui.small_button("✕").clicked() {
-                                        delete = Some(idx);
-                                    }
-                                });
-                                let subtitle_color = if is_layer_active {
-                                    Color32::from_rgb(255, 218, 121)
-                                } else {
-                                    Color32::from_gray(150)
-                                };
-                                ui.label(RichText::new(subtitle).small().color(subtitle_color));
-                                if !node.id().is_empty() {
-                                    ui.label(RichText::new(node.id()).small().italics().weak());
-                                }
-                            });
-                            ui.add_space(4.0);
+                    if let Some(action) = action {
+                        match action {
+                            ControlListAction::Select(idx) => self.focus_selection(idx),
+                            ControlListAction::MoveUp(idx) => {
+                                self.focus_selection(idx);
+                                self.move_selected(-1);
+                            }
+                            ControlListAction::MoveDown(idx) => {
+                                self.focus_selection(idx);
+                                self.move_selected(1);
+                            }
+                            ControlListAction::Duplicate(idx) => {
+                                self.focus_selection(idx);
+                                self.duplicate_selected();
+                            }
+                            ControlListAction::Delete(idx) => {
+                                self.focus_selection(idx);
+                                self.delete_selected();
+                            }
                         }
-                    }
-                    if let Some(idx) = clicked {
-                        self.focus_selection(idx);
-                    }
-                    if let Some(idx) = move_up {
-                        self.focus_selection(idx);
-                        self.move_selected(-1);
-                    }
-                    if let Some(idx) = move_down {
-                        self.focus_selection(idx);
-                        self.move_selected(1);
-                    }
-                    if let Some(idx) = duplicate {
-                        self.focus_selection(idx);
-                        self.duplicate_selected();
-                    }
-                    if let Some(idx) = delete {
-                        self.focus_selection(idx);
-                        self.delete_selected();
                     }
                 }
 
@@ -2330,6 +2446,12 @@ impl PhantomGui {
                     RightPanelTab::Inspect => {}
                 }
 
+                let layer_choices = self.known_layer_names();
+                let suggested_layer = match &self.layer_filter {
+                    LayerFilter::Named(name) => Some(name.as_str()),
+                    _ => None,
+                };
+
                 let Some(profile) = &mut self.profile else {
                     self.draw_studio_overview(ui);
                     return;
@@ -2344,6 +2466,28 @@ impl PhantomGui {
                         .small()
                         .color(Color32::from_gray(170)),
                     );
+                    ui.add_space(10.0);
+                    ui.group(|ui| {
+                        ui.label(RichText::new("Quick Starts").strong());
+                        ui.label(
+                            RichText::new(
+                                "Use Mouse Look for camera drag, Drag for one-shot swipes, and Layer Switch for context-specific remaps.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(165)),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Add Mouse Look").clicked() {
+                                self.tool = Tool::Place(NodeTemplate::MouseLook);
+                            }
+                            if ui.button("Add Drag").clicked() {
+                                self.tool = Tool::Place(NodeTemplate::Drag);
+                            }
+                            if ui.button("Add Layer Switch").clicked() {
+                                self.add_non_canvas_node(NodeTemplate::LayerShift);
+                            }
+                        });
+                    });
                     return;
                 };
                 if idx >= profile.nodes.len() {
@@ -2355,6 +2499,7 @@ impl PhantomGui {
                 let mut delete_current = false;
                 let mut dirty = false;
                 let screen = profile.screen.clone();
+                let mut duplicate_into_layer = None;
 
                 let node = &mut profile.nodes[idx];
                 ui.label(
@@ -2384,7 +2529,14 @@ impl PhantomGui {
                     | Node::HoldTap { layer, pos, .. }
                     | Node::ToggleTap { layer, pos, .. }
                     | Node::RepeatTap { layer, pos, .. } => {
-                        layer_row(ui, layer, &mut dirty);
+                        layer_row(
+                            ui,
+                            layer,
+                            ("layer_row", idx),
+                            &layer_choices,
+                            suggested_layer,
+                            &mut dirty,
+                        );
                         position_editor(ui, pos, screen.as_ref(), &mut dirty);
                     }
                     Node::Joystick {
@@ -2395,7 +2547,14 @@ impl PhantomGui {
                         region,
                         ..
                     } => {
-                        layer_row(ui, layer, &mut dirty);
+                        layer_row(
+                            ui,
+                            layer,
+                            ("layer_row", idx),
+                            &layer_choices,
+                            suggested_layer,
+                            &mut dirty,
+                        );
                         ui.horizontal(|ui| {
                             ui.label("Mode");
                             egui::ComboBox::from_id_salt(("joystick_mode", idx))
@@ -2480,7 +2639,14 @@ impl PhantomGui {
                         duration_ms,
                         ..
                     } => {
-                        layer_row(ui, layer, &mut dirty);
+                        layer_row(
+                            ui,
+                            layer,
+                            ("layer_row", idx),
+                            &layer_choices,
+                            suggested_layer,
+                            &mut dirty,
+                        );
                         ui.label(RichText::new("Start").small().strong());
                         position_editor(ui, start, screen.as_ref(), &mut dirty);
                         ui.label(RichText::new("End").small().strong());
@@ -2509,13 +2675,48 @@ impl PhantomGui {
                         );
                     }
                     Node::MouseCamera { layer, region, .. } => {
-                        layer_row(ui, layer, &mut dirty);
+                        layer_row(
+                            ui,
+                            layer,
+                            ("layer_row", idx),
+                            &layer_choices,
+                            suggested_layer,
+                            &mut dirty,
+                        );
                         region_editor(ui, region, screen.as_ref(), &mut dirty);
                     }
                     Node::Macro { layer, .. } => {
-                        layer_row(ui, layer, &mut dirty);
+                        layer_row(
+                            ui,
+                            layer,
+                            ("layer_row", idx),
+                            &layer_choices,
+                            suggested_layer,
+                            &mut dirty,
+                        );
                     }
                     Node::LayerShift { .. } => {}
+                }
+
+                if !matches!(node, Node::LayerShift { .. }) {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Duplicate Into Base").clicked() {
+                            duplicate_into_layer = Some(String::new());
+                        }
+                        if let Some(layer_name) = suggested_layer {
+                            let button = format!("Duplicate Into {}", layer_name);
+                            if ui.button(button).clicked() {
+                                duplicate_into_layer = Some(layer_name.to_string());
+                            }
+                        }
+                    });
+                    ui.label(
+                        RichText::new(
+                            "Use layer duplicates to reuse a control in a new context without rebuilding it from scratch.",
+                        )
+                        .small()
+                        .color(Color32::from_gray(160)),
+                    );
                 }
 
                 ui.separator();
@@ -2851,6 +3052,10 @@ impl PhantomGui {
                     self.delete_selected();
                     return;
                 }
+                if let Some(target_layer) = duplicate_into_layer {
+                    self.duplicate_selected_into_layer(target_layer);
+                    return;
+                }
                 if dirty {
                     self.push_history_snapshot(snapshot_before);
                     self.mark_dirty();
@@ -3041,6 +3246,52 @@ impl PhantomGui {
                 }
             }
 
+            let mut overlap_pick = None;
+            let mut close_overlap_picker = false;
+            if let (Some(picker), Some(profile)) = (&self.overlap_picker, &self.profile) {
+                egui::Area::new(egui::Id::new("overlap_picker"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(picker.anchor + Vec2::new(18.0, 18.0))
+                    .show(ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.set_min_width(260.0);
+                            ui.label(RichText::new("Overlapping controls").strong());
+                            ui.label(
+                                RichText::new("Choose the control you want to inspect.")
+                                    .small()
+                                    .color(Color32::from_gray(165)),
+                            );
+                            ui.add_space(4.0);
+                            for idx in &picker.candidates {
+                                if let Some(node) = profile.nodes.get(*idx) {
+                                    let selected = self.selected == Some(*idx);
+                                    if ui
+                                        .selectable_label(
+                                            selected,
+                                            RichText::new(overlap_picker_line(node))
+                                                .color(node_color(node)),
+                                        )
+                                        .clicked()
+                                    {
+                                        overlap_pick = Some(*idx);
+                                    }
+                                }
+                            }
+                            ui.add_space(4.0);
+                            if ui.button("Dismiss").clicked() {
+                                close_overlap_picker = true;
+                            }
+                        });
+                    });
+            }
+
+            if let Some(idx) = overlap_pick {
+                self.focus_selection(idx);
+            }
+            if close_overlap_picker {
+                self.overlap_picker = None;
+            }
+
             if let Some(target) = self.pending_binding.as_ref() {
                 draw_binding_overlay(&painter, content, target);
                 return;
@@ -3051,6 +3302,7 @@ impl PhantomGui {
                     if content.contains(mouse) {
                         match self.tool {
                             Tool::Place(template) => {
+                                self.overlap_picker = None;
                                 if matches!(
                                     template,
                                     NodeTemplate::Macro | NodeTemplate::LayerShift
@@ -3062,11 +3314,19 @@ impl PhantomGui {
                             }
                             Tool::Select => {
                                 if let Some(profile) = &self.profile {
-                                    if let Some(hit) =
+                                    let point_hits = point_hit_candidates(profile, content, mouse);
+                                    if point_hits.len() > 1 {
+                                        self.overlap_picker = Some(OverlapPicker {
+                                            anchor: mouse,
+                                            candidates: point_hits,
+                                        });
+                                    } else if let Some(hit) =
                                         hit_test(profile, content, mouse, self.selected)
                                     {
+                                        self.overlap_picker = None;
                                         self.focus_selection(hit.idx());
                                     } else {
+                                        self.overlap_picker = None;
                                         self.selected = None;
                                     }
                                 }
@@ -3081,11 +3341,13 @@ impl PhantomGui {
                     if ctx.input(|input| {
                         input.key_down(egui::Key::Space) || input.pointer.middle_down()
                     }) {
+                        self.overlap_picker = None;
                         self.drag_state = Some(DragState::Pan {
                             origin_pan: self.canvas_pan,
                             start_mouse: mouse,
                         });
                     } else {
+                        self.overlap_picker = None;
                         self.drag_state = hit_test(profile, content, mouse, self.selected)
                             .and_then(|hit| match hit {
                                 HitTarget::Point(idx) => Some(DragState::Point { idx }),
@@ -3422,28 +3684,68 @@ fn hit_test(
                     return Some(HitTarget::RegionHandle(idx, handle));
                 }
             }
-            if rect.contains(mouse) {
+            if region_border_contains(rect, mouse) {
                 return Some(HitTarget::Region(idx));
             }
         }
     }
 
-    let mut best = None;
+    let mut best_point = None;
     for (idx, node) in profile.nodes.iter().enumerate() {
-        if let Some(region) = node_region(node) {
-            if region_rect(content, region).contains(mouse) {
-                return Some(HitTarget::Region(idx));
-            }
-        }
         if let Some(pos) = node_pos(node) {
             let point = to_canvas_pos(content, pos);
             let distance = (point - mouse).length();
-            if distance <= 22.0 && best.is_none_or(|(_, best_distance)| distance < best_distance) {
-                best = Some((idx, distance));
+            if distance <= 22.0
+                && best_point.is_none_or(|(_, best_distance)| distance < best_distance)
+            {
+                best_point = Some((idx, distance));
             }
         }
     }
-    best.map(|(idx, _)| HitTarget::Point(idx))
+    if let Some((idx, _)) = best_point {
+        return Some(HitTarget::Point(idx));
+    }
+
+    for (idx, node) in profile.nodes.iter().enumerate() {
+        if let Some(region) = node_region(node) {
+            if region_border_contains(region_rect(content, region), mouse) {
+                return Some(HitTarget::Region(idx));
+            }
+        }
+    }
+
+    None
+}
+
+fn point_hit_candidates(profile: &Profile, content: Rect, mouse: Pos2) -> Vec<usize> {
+    let mut hits = Vec::new();
+    for (idx, node) in profile.nodes.iter().enumerate() {
+        let Some(pos) = node_pos(node) else {
+            continue;
+        };
+        let point = to_canvas_pos(content, pos);
+        let distance = (point - mouse).length();
+        if distance <= 22.0 {
+            hits.push((idx, distance));
+        }
+    }
+    hits.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.0.cmp(&a.0))
+    });
+    hits.into_iter().map(|(idx, _)| idx).collect()
+}
+
+fn overlap_picker_line(node: &Node) -> String {
+    let mut line = format!("{} • {}", display_binding(node), display_type(node));
+    match (node.slot(), node.layer().trim().is_empty()) {
+        (Some(slot), true) => line.push_str(&format!(" • slot {}", slot)),
+        (Some(slot), false) => line.push_str(&format!(" • slot {} • {}", slot, node.layer())),
+        (None, false) => line.push_str(&format!(" • {}", node.layer())),
+        (None, true) => {}
+    }
+    line
 }
 
 fn draw_node(
@@ -3462,15 +3764,17 @@ fn draw_node(
     };
     if let Some(region) = node_region(node) {
         let rect = region_rect(content, region);
-        painter.rect_filled(rect, 8.0, color.gamma_multiply(0.08));
-        painter.rect_stroke(
+        draw_dashed_rect(
+            painter,
             rect,
-            8.0,
             Stroke::new(
                 if selected { 3.0 } else { 2.0 },
-                if layer_active { accent } else { color },
+                if layer_active {
+                    accent
+                } else {
+                    color.gamma_multiply(0.85)
+                },
             ),
-            StrokeKind::Outside,
         );
         if let Node::Joystick { radius, .. } = node {
             let center = to_canvas_pos(content, &region_center(region));
@@ -3492,19 +3796,23 @@ fn draw_node(
                 egui::FontId::proportional(12.0),
                 Color32::BLACK,
             );
+            if show_labels {
+                draw_joystick_compass_labels(painter, center, radius_px, node, accent, layer_active);
+            }
         }
         if selected {
             for (_, handle_rect) in region_handles(rect) {
                 painter.rect_filled(handle_rect, 2.0, accent);
             }
         }
-        painter.text(
-            rect.center_top() + Vec2::new(0.0, 12.0),
-            Align2::CENTER_TOP,
-            display_binding(node),
-            egui::FontId::proportional(13.0),
-            if layer_active { accent } else { color },
-        );
+        if show_labels {
+            draw_region_badge(
+                painter,
+                rect,
+                region_badge_text(node),
+                if layer_active { accent } else { color },
+            );
+        }
         return;
     }
 
@@ -3529,6 +3837,9 @@ fn draw_node(
             radius_px,
             Stroke::new(2.0, color.gamma_multiply(0.65)),
         );
+        if show_labels {
+            draw_joystick_compass_labels(painter, point, radius_px, node, accent, layer_active);
+        }
     }
 
     let marker_radius = if selected { 16.0 } else { 12.0 };
@@ -3543,7 +3854,7 @@ fn draw_node(
         egui::FontId::proportional(12.0),
         Color32::BLACK,
     );
-    if show_labels {
+    if show_labels && !matches!(node, Node::Joystick { .. }) {
         painter.text(
             point + Vec2::new(0.0, marker_radius + 6.0),
             Align2::CENTER_TOP,
@@ -3594,6 +3905,109 @@ fn display_binding(node: &Node) -> String {
             }
         },
     }
+}
+
+fn region_badge_text(node: &Node) -> String {
+    match node {
+        Node::Joystick { .. } => display_type(node).into(),
+        _ => display_binding(node),
+    }
+}
+
+fn profile_source_badge(path: Option<&Path>) -> (String, Color32) {
+    match path {
+        None => ("Unsaved draft".into(), Color32::from_rgb(255, 218, 121)),
+        Some(path) if path.starts_with(config::profiles_dir()) => (
+            "Library profile".into(),
+            Color32::from_rgb(182, 255, 216),
+        ),
+        Some(_) => ("External profile".into(), Color32::from_rgb(166, 208, 255)),
+    }
+}
+
+fn draw_control_card(
+    ui: &mut egui::Ui,
+    idx: usize,
+    node: &Node,
+    selected: bool,
+    is_layer_active: bool,
+) -> Option<ControlListAction> {
+    let title = display_binding(node);
+    let kind = display_type(node);
+    let color = node_color(node);
+    let accent = if is_layer_active {
+        Color32::from_rgb(255, 218, 121)
+    } else {
+        Color32::from_gray(150)
+    };
+    let metadata = match (node.slot(), node.layer().trim().is_empty()) {
+        (Some(slot), true) => format!("slot {}", slot),
+        (Some(slot), false) => format!("slot {} • layer {}", slot, node.layer()),
+        (None, true) => "runtime".into(),
+        (None, false) => format!("layer {}", node.layer()),
+    };
+
+    let mut action = None;
+    let width = ui.available_width();
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, 0.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            egui::Frame::group(ui.style())
+                .stroke(Stroke::new(
+                    if selected { 2.0 } else { 1.0 },
+                    if selected {
+                        color.gamma_multiply(0.95)
+                    } else {
+                        Color32::from_gray(60)
+                    },
+                ))
+                .fill(if selected {
+                    Color32::from_white_alpha(10)
+                } else {
+                    Color32::from_black_alpha(16)
+                })
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let action_width = if selected { 116.0 } else { 0.0 };
+                        let title_width = (ui.available_width() - action_width).max(80.0);
+                        let response = ui.add_sized(
+                            [title_width, 24.0],
+                            egui::SelectableLabel::new(
+                                selected,
+                                RichText::new(title.as_str()).strong().color(color),
+                            ),
+                        );
+                        if response.clicked() {
+                            action = Some(ControlListAction::Select(idx));
+                        }
+
+                        if selected {
+                            if ui.small_button("↑").on_hover_text("Move up").clicked() {
+                                action = Some(ControlListAction::MoveUp(idx));
+                            }
+                            if ui.small_button("↓").on_hover_text("Move down").clicked() {
+                                action = Some(ControlListAction::MoveDown(idx));
+                            }
+                            if ui.small_button("⧉").on_hover_text("Duplicate").clicked() {
+                                action = Some(ControlListAction::Duplicate(idx));
+                            }
+                            if ui.small_button("✕").on_hover_text("Delete").clicked() {
+                                action = Some(ControlListAction::Delete(idx));
+                            }
+                        }
+                    });
+
+                    ui.label(RichText::new(kind).small().color(Color32::from_gray(205)));
+                    ui.label(RichText::new(metadata).small().color(accent));
+                    if !node.id().is_empty() {
+                        ui.label(RichText::new(node.id()).small().italics().weak());
+                    }
+                });
+        },
+    );
+    action
 }
 
 fn node_color(node: &Node) -> Color32 {
@@ -3891,13 +4305,63 @@ fn region_editor(
     }
 }
 
-fn layer_row(ui: &mut egui::Ui, layer: &mut String, dirty: &mut bool) {
+fn layer_row(
+    ui: &mut egui::Ui,
+    layer: &mut String,
+    id_source: impl std::hash::Hash,
+    layer_choices: &[String],
+    suggested_layer: Option<&str>,
+    dirty: &mut bool,
+) {
     ui.horizontal(|ui| {
         ui.label("Layer");
         if ui.text_edit_singleline(layer).changed() {
             *dirty = true;
         }
     });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .selectable_label(layer.trim().is_empty(), "Base")
+            .on_hover_text("No layer name means this control is always active.")
+            .clicked()
+        {
+            layer.clear();
+            *dirty = true;
+        }
+
+        if let Some(suggested) = suggested_layer {
+            if !suggested.trim().is_empty()
+                && ui
+                    .selectable_label(layer.trim() == suggested, format!("Use {}", suggested))
+                    .on_hover_text("Apply the currently filtered layer name.")
+                    .clicked()
+            {
+                *layer = suggested.to_string();
+                *dirty = true;
+            }
+        }
+
+        if !layer_choices.is_empty() {
+            egui::ComboBox::from_id_salt(("layer_choice", id_source))
+                .selected_text("Existing layers")
+                .show_ui(ui, |ui| {
+                    for choice in layer_choices {
+                        let selected = layer.trim() == choice;
+                        if ui.selectable_label(selected, choice).clicked() {
+                            *layer = choice.clone();
+                            *dirty = true;
+                        }
+                    }
+                });
+        }
+    });
+    ui.label(
+        RichText::new(
+            "Base controls are always live. Named layers only activate through Layer Switch nodes.",
+        )
+        .small()
+        .color(Color32::from_gray(160)),
+    );
 }
 
 fn binding_picker(
@@ -4030,6 +4494,20 @@ fn region_rect(content: Rect, region: &Region) -> Rect {
     )
 }
 
+fn region_border_contains(rect: Rect, mouse: Pos2) -> bool {
+    let outer = rect.expand(REGION_PICK_MARGIN);
+    if !outer.contains(mouse) {
+        return false;
+    }
+
+    let inset = REGION_BORDER_PICK_WIDTH.min((rect.width().min(rect.height()) / 2.0) - 2.0);
+    if inset <= 0.0 {
+        return rect.contains(mouse);
+    }
+
+    !rect.shrink(inset).contains(mouse)
+}
+
 fn region_handles(rect: Rect) -> [(RegionHandle, Rect); 4] {
     [
         (
@@ -4049,6 +4527,110 @@ fn region_handles(rect: Rect) -> [(RegionHandle, Rect); 4] {
             Rect::from_center_size(rect.right_bottom(), Vec2::splat(HANDLE_SIZE)),
         ),
     ]
+}
+
+fn draw_dashed_rect(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
+    draw_dashed_line(painter, rect.left_top(), rect.right_top(), stroke);
+    draw_dashed_line(painter, rect.right_top(), rect.right_bottom(), stroke);
+    draw_dashed_line(painter, rect.right_bottom(), rect.left_bottom(), stroke);
+    draw_dashed_line(painter, rect.left_bottom(), rect.left_top(), stroke);
+}
+
+fn draw_dashed_line(painter: &egui::Painter, start: Pos2, end: Pos2, stroke: Stroke) {
+    let delta = end - start;
+    let length = delta.length();
+    if length <= 0.0 {
+        return;
+    }
+    let direction = delta / length;
+    let mut traveled = 0.0;
+    while traveled < length {
+        let dash_end = (traveled + DASH_LENGTH).min(length);
+        let from = start + direction * traveled;
+        let to = start + direction * dash_end;
+        painter.line_segment([from, to], stroke);
+        traveled += DASH_LENGTH + DASH_GAP;
+    }
+}
+
+fn draw_region_badge(painter: &egui::Painter, rect: Rect, text: String, color: Color32) {
+    let width = (text.len() as f32 * 7.2).clamp(52.0, 180.0);
+    let badge = Rect::from_min_size(
+        rect.left_top() + Vec2::new(10.0, 10.0),
+        Vec2::new(width, 22.0),
+    );
+    painter.rect_filled(badge, 999.0, Color32::from_black_alpha(168));
+    painter.rect_stroke(
+        badge,
+        999.0,
+        Stroke::new(1.5, color.gamma_multiply(0.95)),
+        StrokeKind::Outside,
+    );
+    painter.text(
+        badge.center(),
+        Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(11.0),
+        color,
+    );
+}
+
+fn draw_joystick_compass_labels(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius_px: f32,
+    node: &Node,
+    accent: Color32,
+    layer_active: bool,
+) {
+    let Node::Joystick { keys, .. } = node else {
+        return;
+    };
+    let text_color = if layer_active { accent } else { Color32::WHITE };
+    let label_radius = radius_px + 20.0;
+    draw_key_chip(
+        painter,
+        center + Vec2::new(0.0, -label_radius),
+        &keys.up,
+        text_color,
+    );
+    draw_key_chip(
+        painter,
+        center + Vec2::new(-label_radius, 0.0),
+        &keys.left,
+        text_color,
+    );
+    draw_key_chip(
+        painter,
+        center + Vec2::new(label_radius, 0.0),
+        &keys.right,
+        text_color,
+    );
+    draw_key_chip(
+        painter,
+        center + Vec2::new(0.0, label_radius),
+        &keys.down,
+        text_color,
+    );
+}
+
+fn draw_key_chip(painter: &egui::Painter, center: Pos2, text: &str, text_color: Color32) {
+    let width = (text.len() as f32 * 7.5).clamp(24.0, 68.0);
+    let rect = Rect::from_center_size(center, Vec2::new(width, 22.0));
+    painter.rect_filled(rect, 999.0, Color32::from_black_alpha(178));
+    painter.rect_stroke(
+        rect,
+        999.0,
+        Stroke::new(1.0, text_color.gamma_multiply(0.8)),
+        StrokeKind::Outside,
+    );
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(11.0),
+        text_color,
+    );
 }
 
 fn clamp_region(mut region: Region) -> Region {

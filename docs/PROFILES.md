@@ -207,10 +207,12 @@ Modes:
 
 - `fixed`
   - uses `pos` as the exact center
+  - engages in two stages: `TouchDown` first, then the first `TouchMove` on the next engine tick
   - best for visible static sticks
 - `floating`
   - chooses a runtime origin inside `region`
   - keeps that origin stable until all movement keys are released
+  - starts with immediate `TouchDown` + `TouchMove`
   - best for floating movement zones and football-style drag movement
 
 ### `drag`
@@ -277,6 +279,8 @@ Important:
 - `mouse_camera` is touch-drag camera emulation
 - it is not desktop pointer emulation
 - runtime mouse grab or `F1` alone does not enable camera movement; the loaded profile must contain a `mouse_camera` node
+- toggled mouse-look state survives `F1` mouse routing changes
+- `while_held` mouse activation keys are resynced when mouse routing is re-enabled
 
 ### `repeat_tap`
 

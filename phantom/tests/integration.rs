@@ -151,8 +151,11 @@ fn full_pubg_move_and_shoot() {
 
     // Press W to move
     let cmds = engine.process(&InputEvent::KeyPress(Key::W));
-    assert_eq!(cmds.len(), 2); // finger down + move
+    assert_eq!(cmds.len(), 1); // fixed joystick engages on down, then moves on tick
     assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 0, .. }));
+    let cmds = engine.tick();
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], TouchCommand::TouchMove { slot: 0, .. }));
 
     // Press D while holding W = diagonal
     let cmds = engine.process(&InputEvent::KeyPress(Key::D));
@@ -257,7 +260,7 @@ fn mouse_camera_releases_after_idle() {
     let cmds = engine.process(&InputEvent::MouseMove { dx: 20, dy: 0 });
     assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::thread::sleep(std::time::Duration::from_millis(520));
     let cmds = engine.tick();
     assert!(cmds
         .iter()
@@ -640,7 +643,7 @@ fn simultaneous_tap_and_joystick() {
 
     // Press W to move
     let cmds_move = engine.process(&InputEvent::KeyPress(Key::W));
-    assert_eq!(cmds_move.len(), 2); // down + move on slot 0
+    assert_eq!(cmds_move.len(), 1); // fixed joystick engages, move follows on tick
 
     // Press Space while W is held
     let cmds_jump = engine.process(&InputEvent::KeyPress(Key::Space));

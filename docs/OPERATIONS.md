@@ -140,6 +140,12 @@ Overlay notes:
 
 `mouse_camera` has three modes.
 
+Runtime note:
+
+- `F1` only changes mouse routing
+- it no longer destroys toggle-look state
+- `while_held` mouse buttons are resynced when mouse routing is turned back on
+
 ### `always_on`
 
 Use when:
@@ -173,6 +179,11 @@ Modes:
 
 - `fixed`
 - `floating`
+
+Practical difference:
+
+- `fixed` is for visible static sticks and now uses a staged engage path
+- `floating` is for drag zones and starts moving immediately from a runtime origin
 
 ### `drag`
 

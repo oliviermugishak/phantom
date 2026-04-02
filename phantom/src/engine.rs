@@ -6,7 +6,8 @@ use crate::profile::{
     JoystickMode, LayerMode, MacroAction, MouseCameraActivationMode, Node, Profile, Region,
 };
 
-const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(250);
+const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
+const MOUSE_LOOK_SCALE: f64 = 1.0 / 500.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TouchCommand {
@@ -32,6 +33,7 @@ enum NodeState {
         left: bool,
         right: bool,
         finger_active: bool,
+        pending_move: bool,
         origin_x: f64,
         origin_y: f64,
     },
@@ -74,6 +76,17 @@ pub struct KeymapEngine {
 }
 
 impl KeymapEngine {
+    fn mouse_camera_center(region: &Region) -> (f64, f64) {
+        (region.x + region.w / 2.0, region.y + region.h / 2.0)
+    }
+
+    fn clamp_mouse_camera_point(region: &Region, x: f64, y: f64) -> (f64, f64) {
+        (
+            x.clamp(region.x, region.x + region.w),
+            y.clamp(region.y, region.y + region.h),
+        )
+    }
+
     pub fn new(profile: Profile) -> Self {
         let sensitivity = profile.global_sensitivity;
         let states: Vec<NodeState> = profile.nodes.iter().map(Self::init_state).collect();
@@ -112,11 +125,28 @@ impl KeymapEngine {
         //
         // Keeping them separate is what makes `while_held` and `toggle` behave
         // correctly without conflating "mode active" with "finger still moving".
+        let (center_x, center_y) = Self::mouse_camera_center(region);
         NodeState::MouseCamera {
             enabled,
             finger_active: false,
-            current_x: region.x + region.w / 2.0,
-            current_y: region.y + region.h / 2.0,
+            current_x: center_x,
+            current_y: center_y,
+            last_motion: Instant::now(),
+        }
+    }
+
+    fn suspended_mouse_camera_state(
+        region: &Region,
+        enabled: bool,
+        current_x: f64,
+        current_y: f64,
+    ) -> NodeState {
+        let (current_x, current_y) = Self::clamp_mouse_camera_point(region, current_x, current_y);
+        NodeState::MouseCamera {
+            enabled,
+            finger_active: false,
+            current_x,
+            current_y,
             last_motion: Instant::now(),
         }
     }
@@ -126,12 +156,14 @@ impl KeymapEngine {
             return Vec::new();
         };
 
-        let (was_enabled, finger_active) = match &self.states[idx] {
+        let (was_enabled, finger_active, current_x, current_y) = match &self.states[idx] {
             NodeState::MouseCamera {
                 enabled,
                 finger_active,
+                current_x,
+                current_y,
                 ..
-            } => (*enabled, *finger_active),
+            } => (*enabled, *finger_active, *current_x, *current_y),
             _ => return Vec::new(),
         };
 
@@ -146,7 +178,8 @@ impl KeymapEngine {
             cmds.push(TouchCommand::TouchUp { slot: *slot });
         }
 
-        self.states[idx] = Self::mouse_camera_state(region, enabled);
+        self.states[idx] =
+            Self::suspended_mouse_camera_state(region, enabled, current_x, current_y);
         cmds
     }
 
@@ -186,6 +219,7 @@ impl KeymapEngine {
                 left: false,
                 right: false,
                 finger_active: false,
+                pending_move: false,
                 origin_x: 0.0,
                 origin_y: 0.0,
             },
@@ -300,6 +334,8 @@ impl KeymapEngine {
                 if let NodeState::MouseCamera {
                     enabled,
                     finger_active,
+                    current_x,
+                    current_y,
                     last_motion,
                     ..
                 } = &self.states[idx]
@@ -313,7 +349,59 @@ impl KeymapEngine {
                             Node::MouseCamera { region, .. } => region,
                             _ => unreachable!(),
                         };
-                        self.states[idx] = Self::mouse_camera_state(region, *enabled);
+                        self.states[idx] = Self::suspended_mouse_camera_state(
+                            region,
+                            *enabled,
+                            *current_x,
+                            *current_y,
+                        );
+                    }
+                }
+            }
+
+            if let Node::Joystick {
+                slot,
+                radius,
+                region,
+                ..
+            } = node
+            {
+                if let NodeState::Joystick {
+                    up,
+                    down,
+                    left,
+                    right,
+                    finger_active,
+                    pending_move,
+                    origin_x,
+                    origin_y,
+                } = &self.states[idx]
+                {
+                    if *finger_active && *pending_move {
+                        let (offset_x, offset_y) =
+                            joystick_offset(*up, *down, *left, *right, *radius);
+                        let (move_x, move_y) = joystick_target(
+                            *origin_x,
+                            *origin_y,
+                            offset_x,
+                            offset_y,
+                            region.as_ref(),
+                        );
+                        cmds.push(TouchCommand::TouchMove {
+                            slot: *slot,
+                            x: move_x,
+                            y: move_y,
+                        });
+                        self.states[idx] = NodeState::Joystick {
+                            up: *up,
+                            down: *down,
+                            left: *left,
+                            right: *right,
+                            finger_active: true,
+                            pending_move: false,
+                            origin_x: *origin_x,
+                            origin_y: *origin_y,
+                        };
                     }
                 }
             }
@@ -593,6 +681,7 @@ impl KeymapEngine {
                         left,
                         right,
                         finger_active,
+                        pending_move: _,
                         origin_x,
                         origin_y,
                     } = &self.states[idx]
@@ -602,6 +691,7 @@ impl KeymapEngine {
                         let mut l = *left;
                         let mut r = *right;
                         let mut fa = *finger_active;
+                        let mut pm = matches!(mode, JoystickMode::Fixed) && !fa;
                         let mut ox = *origin_x;
                         let mut oy = *origin_y;
                         match d {
@@ -623,17 +713,20 @@ impl KeymapEngine {
                                 y: start_y,
                             });
                             fa = true;
+                            pm = matches!(mode, JoystickMode::Fixed);
                         }
 
                         let (offset_x, offset_y) = joystick_offset(u, dn, l, r, *radius);
                         let (move_x, move_y) =
                             joystick_target(ox, oy, offset_x, offset_y, region.as_ref());
 
-                        cmds.push(TouchCommand::TouchMove {
-                            slot: *slot,
-                            x: move_x,
-                            y: move_y,
-                        });
+                        if !pm {
+                            cmds.push(TouchCommand::TouchMove {
+                                slot: *slot,
+                                x: move_x,
+                                y: move_y,
+                            });
+                        }
 
                         self.states[idx] = NodeState::Joystick {
                             up: u,
@@ -641,6 +734,7 @@ impl KeymapEngine {
                             left: l,
                             right: r,
                             finger_active: fa,
+                            pending_move: pm,
                             origin_x: ox,
                             origin_y: oy,
                         };
@@ -751,6 +845,7 @@ impl KeymapEngine {
                         left,
                         right,
                         finger_active,
+                        pending_move: _,
                         origin_x,
                         origin_y,
                     } = &self.states[idx]
@@ -774,6 +869,7 @@ impl KeymapEngine {
                                 left: false,
                                 right: false,
                                 finger_active: false,
+                                pending_move: false,
                                 origin_x: 0.0,
                                 origin_y: 0.0,
                             };
@@ -797,6 +893,7 @@ impl KeymapEngine {
                                 left: l,
                                 right: r,
                                 finger_active: fa,
+                                pending_move: false,
                                 origin_x: *origin_x,
                                 origin_y: *origin_y,
                             };
@@ -937,31 +1034,38 @@ impl KeymapEngine {
                         * sensitivity
                         * self.sensitivity;
 
-                    let scale = 1.0 / 500.0;
                     let fa = *finger_active;
-                    let start_x = if fa {
-                        *current_x
-                    } else {
-                        region.x + region.w / 2.0
-                    };
-                    let start_y = if fa {
-                        *current_y
-                    } else {
-                        region.y + region.h / 2.0
-                    };
-                    let mut cx = start_x;
-                    let mut cy = start_y;
+                    let (center_x, center_y) = Self::mouse_camera_center(region);
+                    let mut start_x = *current_x;
+                    let mut start_y = *current_y;
+                    let unclamped_x = start_x + delta_x * MOUSE_LOOK_SCALE;
+                    let unclamped_y = start_y + delta_y * MOUSE_LOOK_SCALE;
+                    let overflowed = unclamped_x < region.x
+                        || unclamped_x > region.x + region.w
+                        || unclamped_y < region.y
+                        || unclamped_y > region.y + region.h;
 
-                    cx = (cx + delta_x * scale).clamp(region.x, region.x + region.w);
-                    cy = (cy + delta_y * scale).clamp(region.y, region.y + region.h);
+                    if overflowed {
+                        if fa {
+                            cmds.push(TouchCommand::TouchUp { slot: *slot });
+                        }
+                        start_x = center_x;
+                        start_y = center_y;
+                    }
 
-                    if !fa {
+                    if !fa || overflowed {
                         cmds.push(TouchCommand::TouchDown {
                             slot: *slot,
                             x: start_x,
                             y: start_y,
                         });
                     }
+
+                    let (cx, cy) = Self::clamp_mouse_camera_point(
+                        region,
+                        start_x + delta_x * MOUSE_LOOK_SCALE,
+                        start_y + delta_y * MOUSE_LOOK_SCALE,
+                    );
 
                     cmds.push(TouchCommand::TouchMove {
                         slot: *slot,
@@ -990,13 +1094,122 @@ impl KeymapEngine {
         cmds
     }
 
-    pub fn release_mouse_inputs(&mut self) -> Vec<TouchCommand> {
+    pub fn suspend_mouse_inputs(&mut self) -> Vec<TouchCommand> {
         let mut cmds = Vec::new();
         for idx in 0..self.profile.nodes.len() {
             if self.node_uses_mouse_input(&self.profile.nodes[idx]) {
-                cmds.extend(self.release_node(idx));
+                cmds.extend(self.suspend_mouse_node(idx));
             }
         }
+        cmds
+    }
+
+    pub fn resync_mouse_buttons(&mut self, pressed: &HashSet<Key>) -> Vec<TouchCommand> {
+        let mut cmds = Vec::new();
+
+        for idx in 0..self.profile.nodes.len() {
+            let node = &self.profile.nodes[idx];
+            if !self.is_node_active(node) || !self.node_uses_mouse_input(node) {
+                continue;
+            }
+
+            match node {
+                Node::HoldTap { slot, pos, key, .. } => {
+                    let Ok(bound_key) = key.parse::<Key>() else {
+                        continue;
+                    };
+                    if !bound_key.is_mouse() {
+                        continue;
+                    }
+                    let should_hold = pressed.contains(&bound_key);
+                    if let NodeState::HoldTap { held } = &self.states[idx] {
+                        match (*held, should_hold) {
+                            (false, true) => {
+                                cmds.push(TouchCommand::TouchDown {
+                                    slot: *slot,
+                                    x: pos.x,
+                                    y: pos.y,
+                                });
+                                self.states[idx] = NodeState::HoldTap { held: true };
+                            }
+                            (true, false) => {
+                                cmds.push(TouchCommand::TouchUp { slot: *slot });
+                                self.states[idx] = NodeState::HoldTap { held: false };
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Node::RepeatTap { slot, pos, key, .. } => {
+                    let Ok(bound_key) = key.parse::<Key>() else {
+                        continue;
+                    };
+                    if !bound_key.is_mouse() {
+                        continue;
+                    }
+                    let should_repeat = pressed.contains(&bound_key);
+                    if let NodeState::RepeatTap {
+                        active,
+                        finger_down,
+                        ..
+                    } = &self.states[idx]
+                    {
+                        match (*active, should_repeat) {
+                            (false, true) => {
+                                cmds.push(TouchCommand::TouchDown {
+                                    slot: *slot,
+                                    x: pos.x,
+                                    y: pos.y,
+                                });
+                                self.states[idx] = NodeState::RepeatTap {
+                                    active: true,
+                                    last_toggle: Instant::now(),
+                                    finger_down: true,
+                                };
+                            }
+                            (true, false) => {
+                                if *finger_down {
+                                    cmds.push(TouchCommand::TouchUp { slot: *slot });
+                                }
+                                self.states[idx] = NodeState::RepeatTap {
+                                    active: false,
+                                    last_toggle: Instant::now(),
+                                    finger_down: false,
+                                };
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Node::MouseCamera {
+                    activation_mode,
+                    activation_key,
+                    ..
+                } => match activation_mode {
+                    MouseCameraActivationMode::AlwaysOn => {
+                        cmds.extend(self.set_mouse_camera_enabled(idx, true));
+                    }
+                    MouseCameraActivationMode::WhileHeld => {
+                        let Some(key_name) = activation_key.as_deref() else {
+                            continue;
+                        };
+                        let Ok(bound_key) = key_name.parse::<Key>() else {
+                            continue;
+                        };
+                        if !bound_key.is_mouse() {
+                            continue;
+                        }
+                        cmds.extend(self.set_mouse_camera_enabled(
+                            idx,
+                            pressed.contains(&bound_key),
+                        ));
+                    }
+                    MouseCameraActivationMode::Toggle => {}
+                },
+                _ => {}
+            }
+        }
+
         cmds
     }
 
@@ -1046,6 +1259,7 @@ impl KeymapEngine {
                     left: false,
                     right: false,
                     finger_active: false,
+                    pending_move: false,
                     origin_x: 0.0,
                     origin_y: 0.0,
                 };
@@ -1110,6 +1324,38 @@ impl KeymapEngine {
             _ => {}
         }
         cmds
+    }
+
+    fn suspend_mouse_node(&mut self, idx: usize) -> Vec<TouchCommand> {
+        let node = &self.profile.nodes[idx];
+        let slot = node.slot();
+        match (&self.profile.nodes[idx], &self.states[idx]) {
+            (
+                Node::MouseCamera { region, .. },
+                NodeState::MouseCamera {
+                    enabled,
+                    finger_active,
+                    current_x,
+                    current_y,
+                    ..
+                },
+            ) => {
+                let mut cmds = Vec::new();
+                if let Some(slot) = slot {
+                    if *finger_active {
+                        cmds.push(TouchCommand::TouchUp { slot });
+                    }
+                }
+                self.states[idx] = Self::suspended_mouse_camera_state(
+                    region,
+                    *enabled,
+                    *current_x,
+                    *current_y,
+                );
+                cmds
+            }
+            _ => self.release_node(idx),
+        }
     }
 
     fn is_node_active(&self, node: &Node) -> bool {
@@ -1324,6 +1570,11 @@ mod tests {
     fn joystick_diagonal_is_normalized() {
         let mut engine = KeymapEngine::new(test_profile());
         let _ = engine.process(&InputEvent::KeyPress(Key::W));
+        let cmds = engine.tick();
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchMove { slot: 1, .. }]
+        ));
         let cmds = engine.process(&InputEvent::KeyPress(Key::D));
         match &cmds[0] {
             TouchCommand::TouchMove { x, y, .. } => {
@@ -1537,6 +1788,141 @@ mod tests {
         assert!(engine
             .process(&InputEvent::MouseMove { dx: 10, dy: 5 })
             .is_empty());
+    }
+
+    #[test]
+    fn mouse_camera_suspend_preserves_toggle_state() {
+        let profile = Profile {
+            name: "Cam Toggle".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![Node::MouseCamera {
+                id: "look".into(),
+                layer: String::new(),
+                slot: 1,
+                region: Region {
+                    x: 0.3,
+                    y: 0.0,
+                    w: 0.7,
+                    h: 1.0,
+                },
+                sensitivity: 1.0,
+                activation_mode: MouseCameraActivationMode::Toggle,
+                activation_key: Some("MouseRight".into()),
+                invert_y: false,
+            }],
+        };
+        let mut engine = KeymapEngine::new(profile);
+        assert!(engine.process(&InputEvent::KeyPress(Key::MouseRight)).is_empty());
+        let _ = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let cmds = engine.suspend_mouse_inputs();
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchUp { slot: 1 }]
+        ));
+        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+    }
+
+    #[test]
+    fn mouse_camera_while_held_resyncs_from_pressed_buttons() {
+        let profile = Profile {
+            name: "Cam Hold".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![Node::MouseCamera {
+                id: "look".into(),
+                layer: String::new(),
+                slot: 1,
+                region: Region {
+                    x: 0.3,
+                    y: 0.0,
+                    w: 0.7,
+                    h: 1.0,
+                },
+                sensitivity: 1.0,
+                activation_mode: MouseCameraActivationMode::WhileHeld,
+                activation_key: Some("MouseRight".into()),
+                invert_y: false,
+            }],
+        };
+        let mut engine = KeymapEngine::new(profile);
+        assert!(engine.process(&InputEvent::KeyPress(Key::MouseRight)).is_empty());
+        let _ = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let _ = engine.suspend_mouse_inputs();
+
+        let mut pressed = HashSet::new();
+        pressed.insert(Key::MouseRight);
+        assert!(engine.resync_mouse_buttons(&pressed).is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        assert_eq!(cmds.len(), 2);
+
+        pressed.clear();
+        let cmds = engine.resync_mouse_buttons(&pressed);
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchUp { slot: 1 }]
+        ));
+    }
+
+    #[test]
+    fn mouse_camera_idle_releases_without_recentering() {
+        let profile = Profile {
+            name: "Cam".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![Node::MouseCamera {
+                id: "look".into(),
+                layer: String::new(),
+                slot: 1,
+                region: Region {
+                    x: 0.3,
+                    y: 0.0,
+                    w: 0.7,
+                    h: 1.0,
+                },
+                sensitivity: 1.0,
+                activation_mode: MouseCameraActivationMode::AlwaysOn,
+                activation_key: None,
+                invert_y: false,
+            }],
+        };
+        let mut engine = KeymapEngine::new(profile);
+        let cmds = engine.process(&InputEvent::MouseMove { dx: 50, dy: 0 });
+        let moved_x = match &cmds[1] {
+            TouchCommand::TouchMove { x, .. } => *x,
+            other => panic!("expected move, got {other:?}"),
+        };
+        std::thread::sleep(MOUSE_LOOK_IDLE_TIMEOUT + Duration::from_millis(10));
+        let cmds = engine.tick();
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchUp { slot: 1 }]
+        ));
+        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 0 });
+        let restart_x = match &cmds[0] {
+            TouchCommand::TouchDown { x, .. } => *x,
+            other => panic!("expected down, got {other:?}"),
+        };
+        assert!(restart_x >= moved_x);
+    }
+
+    #[test]
+    fn fixed_joystick_engages_then_moves_on_tick() {
+        let mut engine = KeymapEngine::new(test_profile());
+        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchDown { slot: 1, .. }]
+        ));
+        let cmds = engine.tick();
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchMove { slot: 1, .. }]
+        ));
     }
 
     #[test]

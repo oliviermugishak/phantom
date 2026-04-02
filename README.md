@@ -183,6 +183,7 @@ Important:
 - runtime mouse grab only routes host mouse input into Phantom
 - actual camera movement only happens if the loaded profile contains a `mouse_camera` node
 - touchpads are supported, but a real mouse will usually feel smoother for camera movement
+- `F1` now preserves toggle-look state and resyncs `while_held` mouse buttons when routing is restored
 
 Supported activation modes:
 
@@ -201,6 +202,7 @@ Typical use:
 Phantom now supports:
 
 - floating movement zones through `joystick` with `mode = "floating"`
+- visible fixed sticks through staged `joystick` engage in `mode = "fixed"`
 - one-shot swipes and drags through `drag`
 
 That makes it viable for:

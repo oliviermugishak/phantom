@@ -120,6 +120,21 @@ Useful cases:
 Note:
 
 - touchpads now work, but they may still feel less smooth than a real mouse because Phantom must derive relative motion from absolute touchpad coordinates
+- Phantom now filters large touchpad re-anchor jumps and preserves mouse-look mode across `F1`, but a real mouse is still the best path for fast aim-heavy games
+
+## Mouse Look Stops After `F1` Mouse Toggle
+
+Expected behavior now:
+
+- `F1` lifts the active mouse-look finger
+- `toggle` mouse-look stays enabled across the routing change
+- `while_held` mouse-look is resynced from the real current mouse-button state when routing is re-enabled
+
+If it still feels wrong:
+
+- check whether the profile uses `toggle` or `while_held`
+- verify the activation key is a real mouse button such as `MouseRight`
+- test with a real mouse to separate touchpad-feel issues from routing-state issues
 
 ## PUBG Sprint-Lock Drag Does Not Feel Right
 

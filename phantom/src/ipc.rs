@@ -535,6 +535,16 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
     }
     state.capture_active.store(active, Ordering::Release);
     if active {
+        let pressed_mouse = {
+            let capture = lock_capture(state)?;
+            capture.current_pressed_mouse_keys()
+        };
+        let cmds = {
+            let mut engine = state.engine.write().await;
+            engine.resync_mouse_buttons(&pressed_mouse)
+        };
+        apply_commands(state, &cmds)?;
+
         let engine = state.engine.read().await;
         if !engine.has_mouse_camera() {
             tracing::info!(
@@ -560,15 +570,29 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
     if !routed {
         let cmds = {
             let mut engine = state.engine.write().await;
-            engine.release_mouse_inputs()
+            engine.suspend_mouse_inputs()
         };
         apply_commands(state, &cmds)?;
     }
 
-    {
+    let pressed_mouse = {
         let mut capture = lock_capture(state)?;
         capture.set_grabbed_mouse_only(routed)?;
+        if routed {
+            Some(capture.current_pressed_mouse_keys())
+        } else {
+            None
+        }
+    };
+
+    if let Some(pressed_mouse) = pressed_mouse {
+        let cmds = {
+            let mut engine = state.engine.write().await;
+            engine.resync_mouse_buttons(&pressed_mouse)
+        };
+        apply_commands(state, &cmds)?;
     }
+
     if routed {
         let engine = state.engine.read().await;
         if !engine.has_mouse_camera() {
