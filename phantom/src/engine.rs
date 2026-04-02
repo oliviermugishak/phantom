@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::input::{InputEvent, Key};
+use crate::logging::trace_detail_enabled;
 use crate::profile::{
     JoystickMode, LayerMode, MacroAction, MouseCameraActivationMode, Node, Profile, Region,
 };
@@ -306,13 +307,15 @@ impl KeymapEngine {
             InputEvent::KeyRelease(key) => self.handle_key_release(*key),
             InputEvent::MouseMove { dx, dy } => self.handle_mouse_move(*dx, *dy),
         };
-        tracing::trace!(
-            event = ?event,
-            commands = ?cmds,
-            paused = self.paused,
-            active_layers = ?self.active_layers,
-            "engine processed input"
-        );
+        if !cmds.is_empty() || trace_detail_enabled() {
+            tracing::trace!(
+                event = ?event,
+                commands = ?cmds,
+                paused = self.paused,
+                active_layers = ?self.active_layers,
+                "engine processed input"
+            );
+        }
         cmds
     }
 
@@ -350,10 +353,7 @@ impl KeymapEngine {
                             _ => unreachable!(),
                         };
                         self.states[idx] = Self::suspended_mouse_camera_state(
-                            region,
-                            *enabled,
-                            *current_x,
-                            *current_y,
+                            region, *enabled, *current_x, *current_y,
                         );
                     }
                 }
@@ -1199,10 +1199,9 @@ impl KeymapEngine {
                         if !bound_key.is_mouse() {
                             continue;
                         }
-                        cmds.extend(self.set_mouse_camera_enabled(
-                            idx,
-                            pressed.contains(&bound_key),
-                        ));
+                        cmds.extend(
+                            self.set_mouse_camera_enabled(idx, pressed.contains(&bound_key)),
+                        );
                     }
                     MouseCameraActivationMode::Toggle => {}
                 },
@@ -1346,12 +1345,8 @@ impl KeymapEngine {
                         cmds.push(TouchCommand::TouchUp { slot });
                     }
                 }
-                self.states[idx] = Self::suspended_mouse_camera_state(
-                    region,
-                    *enabled,
-                    *current_x,
-                    *current_y,
-                );
+                self.states[idx] =
+                    Self::suspended_mouse_camera_state(region, *enabled, *current_x, *current_y);
                 cmds
             }
             _ => self.release_node(idx),
@@ -1814,7 +1809,9 @@ mod tests {
             }],
         };
         let mut engine = KeymapEngine::new(profile);
-        assert!(engine.process(&InputEvent::KeyPress(Key::MouseRight)).is_empty());
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::MouseRight))
+            .is_empty());
         let _ = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
         let cmds = engine.suspend_mouse_inputs();
         assert!(matches!(
@@ -1849,7 +1846,9 @@ mod tests {
             }],
         };
         let mut engine = KeymapEngine::new(profile);
-        assert!(engine.process(&InputEvent::KeyPress(Key::MouseRight)).is_empty());
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::MouseRight))
+            .is_empty());
         let _ = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
         let _ = engine.suspend_mouse_inputs();
 

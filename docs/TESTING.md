@@ -61,6 +61,12 @@ sudo waydroid status
 sudo phantom --trace --daemon
 ```
 
+For raw evdev/device detail only when required:
+
+```bash
+sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
+```
+
 Required Waydroid state:
 
 - `Session: RUNNING`
@@ -108,6 +114,12 @@ If `F2` works but `F1`, `F8`, or `F10` do not:
 
 That is a keyboard behavior issue on many compact keyboards, not usually a Phantom backend failure.
 
+For `F10`, also remember:
+
+- the current overlay is an experimental host-side debug window
+- if it does not appear, inspect `~/.config/phantom/overlay.log`
+- if the log mentions missing `WAYLAND_DISPLAY` or `DISPLAY`, the overlay child was launched without a usable desktop session environment
+
 ## 5. GUI Profile Discovery Validation
 
 Open:
@@ -142,6 +154,8 @@ This order isolates:
 - transport failures
 - profile failures
 - game-specific layout failures
+
+For complex shooter profiles, validate each named layer independently after the base combat layer is stable. See [GAME_PATTERNS.md](GAME_PATTERNS.md).
 
 ## 7. Profile-Specific Smoke Tests
 

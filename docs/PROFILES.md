@@ -110,6 +110,8 @@ Rules:
 - a base-layer key may not also be reused in a non-base layer
 - the same key may be reused across different non-base layers
 
+For practical large-profile design, especially shooters with vehicles and parachutes, see [GAME_PATTERNS.md](GAME_PATTERNS.md).
+
 ## 7. Node Types
 
 ### `tap`
@@ -281,6 +283,8 @@ Important:
 - runtime mouse grab or `F1` alone does not enable camera movement; the loaded profile must contain a `mouse_camera` node
 - toggled mouse-look state survives `F1` mouse routing changes
 - `while_held` mouse activation keys are resynced when mouse routing is re-enabled
+
+For recommended shooter setups such as ADS-driven look, layered contexts, and sprint-lock drag patterns, see [GAME_PATTERNS.md](GAME_PATTERNS.md).
 
 ### `repeat_tap`
 

@@ -6,6 +6,7 @@ pub mod error;
 pub mod inject;
 pub mod input;
 pub mod ipc;
+pub mod logging;
 pub mod overlay;
 pub mod profile;
 pub mod touch;
