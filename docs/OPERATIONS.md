@@ -31,6 +31,12 @@ sudo waydroid status
 sudo phantom --trace --daemon
 ```
 
+For raw low-level device tracing only when needed:
+
+```bash
+sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
+```
+
 If `sudo phantom` is not found after install, rerun `./install.sh`. The installer now places a sudo-visible `phantom` launcher in `/usr/local/bin` when possible.
 
 Required Waydroid state:
@@ -82,6 +88,8 @@ Typical workflow:
 7. enter capture
 8. test in the game
 
+For recommended profile structures for shooters, layered contexts, sprint-lock drags, and large game layouts, see [GAME_PATTERNS.md](GAME_PATTERNS.md).
+
 Runtime actions available in the GUI:
 
 - start daemon
@@ -123,7 +131,7 @@ Defaults:
 - `F1` -> toggle mouse routing
 - `F8` -> toggle capture
 - `F9` -> toggle pause
-- `F10` -> toggle the transparent control preview overlay
+- `F10` -> toggle the experimental debug overlay preview
 - `F2` -> shutdown daemon
 
 Fn row warning:
@@ -133,8 +141,20 @@ Fn row warning:
 
 Overlay notes:
 
-- `F10` shows or hides a transparent click-through preview of the current profile
-- the overlay is visual only and does not intercept desktop or game input
+- `F10` shows or hides an experimental host-side debug preview of the current profile
+- it is not intended for normal gameplay
+- it may behave differently across compositors and sessions
+- overlay launcher output is written to `~/.config/phantom/overlay.log`
+
+## Tracing Levels
+
+Use:
+
+- `phantom --daemon` for normal operation
+- `phantom --trace --daemon` for useful runtime diagnosis
+- `PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon` only for raw input/device forensics
+
+The detail flag exists because the raw evdev path is intentionally much noisier than normal trace logging.
 
 ## Mouse Look Operations
 

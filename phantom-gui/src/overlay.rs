@@ -1,33 +1,30 @@
 use std::path::Path;
-use std::time::Duration;
 
 use eframe::egui;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
-use phantom::profile::{
-    JoystickMode, MouseCameraActivationMode, Node, Profile, Region, RelPos,
-};
+use phantom::profile::{JoystickMode, MouseCameraActivationMode, Node, Profile, Region, RelPos};
 
-const OVERLAY_BG: Color32 = Color32::TRANSPARENT;
+const OVERLAY_BG: Color32 = Color32::from_rgb(11, 13, 18);
 const MARKER_RADIUS: f32 = 14.0;
 const SMALL_MARKER_RADIUS: f32 = 9.0;
 const TEXT_SHADOW: Color32 = Color32::from_black_alpha(190);
 const GUIDE_LENGTH: f32 = 14.0;
+const HEADER_TEXT: &str = "Experimental debug preview — not gameplay-safe";
 pub fn run_overlay(profile_path: &Path) -> eframe::Result<()> {
-    let profile = Profile::load(profile_path).map_err(|e| {
-        eframe::Error::AppCreation(Box::new(std::io::Error::other(e.to_string())))
-    })?;
+    let profile = Profile::load(profile_path)
+        .map_err(|e| eframe::Error::AppCreation(Box::new(std::io::Error::other(e.to_string()))))?;
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Phantom GUI Overlay")
+            .with_title("Phantom Overlay Preview (Experimental)")
             .with_app_id("phantom-overlay")
             .with_fullscreen(true)
             .with_always_on_top()
-            .with_transparent(true)
+            .with_transparent(false)
             .with_decorations(false)
             .with_resizable(false)
-            .with_mouse_passthrough(true),
+            .with_mouse_passthrough(false),
         ..Default::default()
     };
 
@@ -57,12 +54,8 @@ impl eframe::App for OverlayApp {
                 let rect = ui.max_rect();
                 let painter = ui.painter_at(rect);
                 draw_profile_overlay(&painter, rect, &self.profile);
+                draw_overlay_header(&painter, rect);
             });
-        ctx.request_repaint_after(Duration::from_millis(500));
-    }
-
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
 }
 
@@ -102,7 +95,13 @@ fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) 
 
 fn draw_button_marker(painter: &egui::Painter, rect: Rect, node: &Node, pos: &RelPos) {
     let center = to_canvas_pos(rect, pos);
-    draw_ring_marker(painter, center, MARKER_RADIUS, marker_stroke(node), compact_label(node));
+    draw_ring_marker(
+        painter,
+        center,
+        MARKER_RADIUS,
+        marker_stroke(node),
+        compact_label(node),
+    );
 }
 
 fn draw_fixed_joystick(
@@ -153,12 +152,7 @@ fn draw_fixed_joystick(
     }
 }
 
-fn draw_floating_joystick(
-    painter: &egui::Painter,
-    rect: Rect,
-    node: &Node,
-    region: &Region,
-) {
+fn draw_floating_joystick(painter: &egui::Painter, rect: Rect, node: &Node, region: &Region) {
     let zone = region_rect(rect, region);
     draw_corner_guides(painter, zone, joystick_stroke());
     draw_ring_marker(
@@ -187,7 +181,11 @@ fn draw_drag_gesture(
         Stroke::new(1.5, drag_stroke()),
         compact_label(node),
     );
-    painter.circle_stroke(end, 8.0, Stroke::new(1.5, drag_stroke().gamma_multiply(0.85)));
+    painter.circle_stroke(
+        end,
+        8.0,
+        Stroke::new(1.5, drag_stroke().gamma_multiply(0.85)),
+    );
 }
 
 fn draw_mouse_region(
@@ -203,7 +201,12 @@ fn draw_mouse_region(
         MouseCameraActivationMode::WhileHeld => "Hold Look",
         MouseCameraActivationMode::Toggle => "Toggle Look",
     };
-    draw_tag_text(painter, zone.center_top() + Vec2::new(0.0, 18.0), mode, look_stroke());
+    draw_tag_text(
+        painter,
+        zone.center_top() + Vec2::new(0.0, 18.0),
+        mode,
+        look_stroke(),
+    );
 }
 
 fn draw_ring_marker(
@@ -216,6 +219,21 @@ fn draw_ring_marker(
     painter.circle_stroke(center, radius, stroke);
     painter.circle_filled(center, radius - 2.0, marker_fill(stroke.color));
     draw_centered_text(painter, center, text.as_ref(), Color32::WHITE);
+}
+
+fn draw_overlay_header(painter: &egui::Painter, rect: Rect) {
+    let header_rect = Rect::from_min_size(
+        rect.left_top() + Vec2::new(20.0, 20.0),
+        Vec2::new(360.0, 30.0),
+    );
+    painter.rect_filled(header_rect, 8.0, Color32::from_black_alpha(190));
+    painter.text(
+        header_rect.center(),
+        Align2::CENTER_CENTER,
+        HEADER_TEXT,
+        FontId::proportional(13.0),
+        Color32::from_rgb(255, 226, 150),
+    );
 }
 
 fn draw_centered_text(painter: &egui::Painter, center: Pos2, text: &str, color: Color32) {
@@ -251,10 +269,34 @@ fn draw_tag_text(painter: &egui::Painter, pos: Pos2, text: &str, color: Color32)
 
 fn draw_corner_guides(painter: &egui::Painter, rect: Rect, color: Color32) {
     let stroke = Stroke::new(2.0, color);
-    draw_corner_guide(painter, rect.left_top(), Vec2::new(GUIDE_LENGTH, 0.0), Vec2::new(0.0, GUIDE_LENGTH), stroke);
-    draw_corner_guide(painter, rect.right_top(), Vec2::new(-GUIDE_LENGTH, 0.0), Vec2::new(0.0, GUIDE_LENGTH), stroke);
-    draw_corner_guide(painter, rect.left_bottom(), Vec2::new(GUIDE_LENGTH, 0.0), Vec2::new(0.0, -GUIDE_LENGTH), stroke);
-    draw_corner_guide(painter, rect.right_bottom(), Vec2::new(-GUIDE_LENGTH, 0.0), Vec2::new(0.0, -GUIDE_LENGTH), stroke);
+    draw_corner_guide(
+        painter,
+        rect.left_top(),
+        Vec2::new(GUIDE_LENGTH, 0.0),
+        Vec2::new(0.0, GUIDE_LENGTH),
+        stroke,
+    );
+    draw_corner_guide(
+        painter,
+        rect.right_top(),
+        Vec2::new(-GUIDE_LENGTH, 0.0),
+        Vec2::new(0.0, GUIDE_LENGTH),
+        stroke,
+    );
+    draw_corner_guide(
+        painter,
+        rect.left_bottom(),
+        Vec2::new(GUIDE_LENGTH, 0.0),
+        Vec2::new(0.0, -GUIDE_LENGTH),
+        stroke,
+    );
+    draw_corner_guide(
+        painter,
+        rect.right_bottom(),
+        Vec2::new(-GUIDE_LENGTH, 0.0),
+        Vec2::new(0.0, -GUIDE_LENGTH),
+        stroke,
+    );
 }
 
 fn draw_corner_guide(
@@ -285,9 +327,7 @@ fn compact_label(node: &Node) -> String {
             MouseCameraActivationMode::WhileHeld => {
                 activation_key.as_deref().unwrap_or("Look").into()
             }
-            MouseCameraActivationMode::Toggle => {
-                activation_key.as_deref().unwrap_or("Look").into()
-            }
+            MouseCameraActivationMode::Toggle => activation_key.as_deref().unwrap_or("Look").into(),
         },
         Node::Macro { id, .. } | Node::LayerShift { id, .. } => id.clone(),
     }

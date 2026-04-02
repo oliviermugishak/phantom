@@ -240,6 +240,12 @@ Then start Phantom:
 sudo phantom --trace --daemon
 ```
 
+If you need raw device-level input tracing beyond the normal runtime trace:
+
+```bash
+sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
+```
+
 If the container is `FROZEN`, open the UI or game first.
 
 ## 11. Verify Bring-Up

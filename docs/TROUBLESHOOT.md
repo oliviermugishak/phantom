@@ -42,6 +42,29 @@ Fix:
 
 - enable Fn Lock so the top row emits real `F1`, `F8`, `F9`, and `F10` function keys
 
+## `F10` Works But No Overlay Appears
+
+Symptom:
+
+- the daemon accepts `F10`
+- no preview window appears
+
+Important:
+
+- the current `F10` overlay is an experimental host-side debug window
+- it is not an Android in-surface overlay
+
+Checks:
+
+- inspect `~/.config/phantom/overlay.log`
+- verify the desktop session allows always-on-top fullscreen windows
+- if the log says `neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set`, the overlay child was launched without a usable desktop display environment
+
+If it still does not behave reliably:
+
+- treat the overlay as unavailable on that desktop session
+- use it only as a debug feature, not a gameplay feature
+
 ## Waydroid Is Running But Phantom Still Cannot Connect
 
 Check:

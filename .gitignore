@@ -8,3 +8,4 @@ Cargo.lock
 .DS_Store
 /contrib/android-server/build/
 /.codex
+/dev/

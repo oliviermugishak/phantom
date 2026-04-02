@@ -10,6 +10,7 @@ use phantom::engine::KeymapEngine;
 use phantom::error::{PhantomError, Result};
 use phantom::input::{InputCapture, InputEvent};
 use phantom::ipc::{self, DaemonState, IpcRequest};
+use phantom::logging::trace_detail_enabled;
 use phantom::profile::Profile;
 use phantom::touch;
 
@@ -46,11 +47,12 @@ KEYS (while daemon running, configurable in config.toml [runtime_hotkeys]):
     F1   Toggle mouse grab (default)
     F8   Toggle capture mode (default)
     F9   Toggle pause (default)
-    F10  Toggle transparent control overlay (default)
+    F10  Toggle experimental debug overlay preview (default)
 
 FLAGS:
     --daemon      Run as daemon (requires root)
     --trace       Force trace logging for this run
+                  Use PHANTOM_TRACE_DETAIL=1 for raw-device trace detail
     -h, --help    Show this help
     -V, --version Show version"#,
         app_name = APP_NAME,
@@ -314,7 +316,9 @@ async fn run_daemon() -> Result<()> {
                                 continue;
                             }
                         };
-                        tracing::trace!(events = ?input_events, "translated input batch");
+                        if !input_events.is_empty() {
+                            tracing::trace!(events = ?input_events, "translated input batch");
+                        }
 
                         let mut gameplay_events = Vec::new();
                         let (mut mouse_routed, mut keyboard_routed) = match ipc::lock_capture(&state)
@@ -350,17 +354,21 @@ async fn run_daemon() -> Result<()> {
                                 // We may still be in gameplay capture while the user has
                                 // temporarily released only the mouse back to the desktop.
                                 if event.is_mouse_input() && !mouse_routed {
-                                    tracing::trace!(
-                                        event = ?event,
-                                        "dropping gameplay event because mouse routing is disabled"
-                                    );
+                                    if trace_detail_enabled() {
+                                        tracing::trace!(
+                                            event = ?event,
+                                            "dropping gameplay event because mouse routing is disabled"
+                                        );
+                                    }
                                     continue;
                                 }
                                 if event.is_keyboard_input() && !keyboard_routed {
-                                    tracing::trace!(
-                                        event = ?event,
-                                        "dropping gameplay event because keyboard routing is disabled"
-                                    );
+                                    if trace_detail_enabled() {
+                                        tracing::trace!(
+                                            event = ?event,
+                                            "dropping gameplay event because keyboard routing is disabled"
+                                        );
+                                    }
                                     continue;
                                 }
                                 gameplay_events.push(event);
@@ -370,7 +378,12 @@ async fn run_daemon() -> Result<()> {
                                         tracing::warn!("desktop keyboard relay error: {}", e);
                                     }
                                 }
-                                tracing::trace!(event = ?event, "dropping gameplay event because capture is inactive");
+                                if trace_detail_enabled() {
+                                    tracing::trace!(
+                                        event = ?event,
+                                        "dropping gameplay event because capture is inactive"
+                                    );
+                                }
                             }
                         }
 
@@ -512,9 +525,9 @@ async fn handle_runtime_shortcut(
             tracing::info!(
                 "{}",
                 if visible {
-                    "control overlay enabled"
+                    "experimental overlay preview enabled"
                 } else {
-                    "control overlay disabled"
+                    "experimental overlay preview disabled"
                 }
             );
             Ok(true)

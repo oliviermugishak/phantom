@@ -38,8 +38,9 @@ const LEFT_PANEL_RUNTIME_RESERVE: f32 = 200.0;
 const RIGHT_PANEL_WIDTH: f32 = 390.0;
 const CONTROL_CARD_ACTION_BUTTON_WIDTH: f32 = 26.0;
 const MAX_HISTORY: usize = 128;
-const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const REPAINT_INTERVAL: Duration = Duration::from_millis(50);
+const RUNTIME_POLL_INTERVAL_ACTIVE: Duration = Duration::from_millis(250);
+const RUNTIME_POLL_INTERVAL_CONNECTED: Duration = Duration::from_secs(1);
+const RUNTIME_POLL_INTERVAL_IDLE: Duration = Duration::from_secs(5);
 const MIN_CANVAS_ZOOM: f32 = 0.75;
 const MAX_CANVAS_ZOOM: f32 = 3.0;
 const SNAP_GRID_STEP: f64 = 0.05;
@@ -606,9 +607,11 @@ impl PhantomGui {
         ui.heading("Layers");
         ui.add_space(6.0);
         ui.label(
-            RichText::new("Base is always active. Named layers turn on through Layer Switch nodes.")
-                .small()
-                .color(Color32::from_gray(155)),
+            RichText::new(
+                "Base is always active. Named layers turn on through Layer Switch nodes.",
+            )
+            .small()
+            .color(Color32::from_gray(155)),
         );
         ui.add_space(4.0);
 
@@ -1325,14 +1328,31 @@ impl PhantomGui {
     }
 
     fn maybe_poll_runtime(&mut self) {
+        let interval = self.runtime_poll_interval();
         let should_poll = self
             .runtime
             .last_checked
-            .map(|t| t.elapsed() >= RUNTIME_POLL_INTERVAL)
+            .map(|t| t.elapsed() >= interval)
             .unwrap_or(true);
         if should_poll {
             self.refresh_status();
         }
+    }
+
+    fn runtime_poll_interval(&self) -> Duration {
+        if self.runtime.last_checked.is_none()
+            || matches!(self.right_panel_tab, RightPanelTab::Runtime)
+        {
+            RUNTIME_POLL_INTERVAL_ACTIVE
+        } else if self.runtime.connected {
+            RUNTIME_POLL_INTERVAL_CONNECTED
+        } else {
+            RUNTIME_POLL_INTERVAL_IDLE
+        }
+    }
+
+    fn background_tick_interval(&self) -> Duration {
+        self.runtime_poll_interval()
     }
 
     fn next_slot(&self) -> Option<u8> {
@@ -3161,7 +3181,10 @@ impl PhantomGui {
                         self.selected == Some(idx),
                         hovered_hit.is_some_and(|hit| {
                             hit.idx() == idx
-                                && matches!(hit, HitTarget::Region(_) | HitTarget::RegionHandle(_, _))
+                                && matches!(
+                                    hit,
+                                    HitTarget::Region(_) | HitTarget::RegionHandle(_, _)
+                                )
                         }),
                         !node.layer().trim().is_empty()
                             && self
@@ -3574,7 +3597,7 @@ impl eframe::App for PhantomGui {
         self.handle_shortcuts(ctx);
         self.handle_binding_capture(ctx);
         self.maybe_poll_runtime();
-        ctx.request_repaint_after(REPAINT_INTERVAL);
+        ctx.request_repaint_after(self.background_tick_interval());
 
         self.draw_top_bar(ctx);
         self.draw_left_panel(ctx);
@@ -3855,7 +3878,14 @@ fn draw_node(
                 Color32::BLACK,
             );
             if show_labels {
-                draw_joystick_compass_labels(painter, center, radius_px, node, accent, layer_active);
+                draw_joystick_compass_labels(
+                    painter,
+                    center,
+                    radius_px,
+                    node,
+                    accent,
+                    layer_active,
+                );
             }
         }
         if selected || hovered_region {
@@ -3983,10 +4013,9 @@ fn region_badge_text(node: &Node) -> String {
 fn profile_source_badge(path: Option<&Path>) -> (String, Color32) {
     match path {
         None => ("Unsaved draft".into(), Color32::from_rgb(255, 218, 121)),
-        Some(path) if path.starts_with(config::profiles_dir()) => (
-            "Library profile".into(),
-            Color32::from_rgb(182, 255, 216),
-        ),
+        Some(path) if path.starts_with(config::profiles_dir()) => {
+            ("Library profile".into(), Color32::from_rgb(182, 255, 216))
+        }
         Some(_) => ("External profile".into(), Color32::from_rgb(166, 208, 255)),
     }
 }
@@ -5175,7 +5204,7 @@ FLAGS:
     -V, --version    Show version
 
 INTERNAL:
-    --overlay <profile.json>    Launch the transparent preview overlay"#,
+    --overlay <profile.json>    Launch the experimental debug overlay preview"#,
         binary = binary,
         version = env!("CARGO_PKG_VERSION"),
     );

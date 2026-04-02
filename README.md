@@ -122,6 +122,12 @@ Before starting Phantom, confirm:
 sudo phantom --trace --daemon
 ```
 
+For deeper raw-device tracing only when needed:
+
+```bash
+sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
+```
+
 5. Verify status and load a profile:
 
 ```bash
@@ -144,7 +150,7 @@ Default daemon hotkeys:
 - `F1` -> toggle mouse routing
 - `F8` -> toggle capture
 - `F9` -> toggle pause
-- `F10` -> toggle the transparent control preview overlay
+- `F10` -> toggle the experimental debug overlay preview
 - `F2` -> shutdown daemon
 
 These are configured in:
@@ -159,7 +165,7 @@ Important keyboard note:
 
 ## Overlay Preview
 
-Press `F10` while the daemon is running to show or hide a transparent click-through preview overlay.
+Press `F10` while the daemon is running to show or hide the experimental debug overlay preview.
 
 What it shows:
 
@@ -168,11 +174,30 @@ What it shows:
 - drag gestures as subtle swipe arrows
 - mouse-look as a faint region outline
 
-What it does not do:
+Important:
 
-- it does not block clicks or touches behind it
-- it does not inject any input by itself
-- it is a static preview of the currently loaded profile
+- this is a host-side debug window, not an Android in-surface overlay
+- it is intended for brief previewing and debugging, not for normal gameplay
+- it may not behave consistently across compositors and desktop sessions
+- overlay launcher output is written to `~/.config/phantom/overlay.log`
+
+Current product direction:
+
+- the host-side overlay is experimental and may be removed later
+- the preferred long-term direction is an Android-side in-surface overlay and is tracked in [docs/ROADMAP.md](docs/ROADMAP.md)
+
+## Tracing And Logging
+
+Normal guidance:
+
+- use `sudo phantom --daemon` for day-to-day runtime use
+- use `sudo phantom --trace --daemon` when you need lifecycle, translated input, engine, and injection logs
+
+Detail mode:
+
+- `PHANTOM_TRACE_DETAIL=1` enables the raw/noisy per-device trace path
+- that includes raw evdev events, touchpad re-anchor suppression, and dropped-event detail
+- only use it when debugging low-level input behavior
 
 ## Mouse Look
 
@@ -232,8 +257,10 @@ Read these in this order:
 3. [docs/OPERATIONS.md](docs/OPERATIONS.md)
 4. [docs/TESTING.md](docs/TESTING.md)
 5. [docs/PROFILES.md](docs/PROFILES.md)
-6. [docs/TROUBLESHOOT.md](docs/TROUBLESHOOT.md)
-7. [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
+6. [docs/GAME_PATTERNS.md](docs/GAME_PATTERNS.md)
+7. [docs/TROUBLESHOOT.md](docs/TROUBLESHOOT.md)
+8. [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
+9. [docs/ROADMAP.md](docs/ROADMAP.md)
 
 Reference docs:
 

@@ -5,6 +5,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::str::FromStr;
 
 use crate::error::{PhantomError, Result};
+use crate::logging::trace_detail_enabled;
 
 nix::ioctl_write_int!(eviocgrab, b'E', 0x90);
 
@@ -745,8 +746,9 @@ impl InputCapture {
         let name_lower = device_name.to_lowercase();
         let has_abs_pointer =
             has_abs && abs_ret >= 0 && test_bit(ABS_X, &abs_bits) && test_bit(ABS_Y, &abs_bits);
-        let is_touchpad_like =
-            name_lower.contains("touchpad") || name_lower.contains("trackpad") || has_pointer_buttons;
+        let is_touchpad_like = name_lower.contains("touchpad")
+            || name_lower.contains("trackpad")
+            || has_pointer_buttons;
 
         let pointer_kind = if has_rel_pointer {
             PointerKind::Relative
@@ -876,13 +878,15 @@ impl InputCapture {
         let mut result = Vec::new();
 
         for (fd, event) in raw {
-            tracing::trace!(
-                fd = *fd,
-                type_ = event.type_,
-                code = event.code,
-                value = event.value,
-                "raw evdev event"
-            );
+            if trace_detail_enabled() {
+                tracing::trace!(
+                    fd = *fd,
+                    type_ = event.type_,
+                    code = event.code,
+                    value = event.value,
+                    "raw evdev event"
+                );
+            }
             let Some(device) = self.device_for_fd_mut(*fd) else {
                 tracing::warn!("received input event for unknown fd {}", fd);
                 continue;
@@ -926,35 +930,54 @@ impl InputCapture {
                 if let Some(key) = evdev_code_to_key(event.code) {
                     if event.value == 1 {
                         if device.pressed_keys.insert(key) {
-                            tracing::trace!(
-                                device = %device.path,
-                                key = ?key,
-                                pressed = %format_pressed_keys(&device.pressed_keys),
-                                "translated key press"
-                            );
+                            if tracing::enabled!(tracing::Level::TRACE) {
+                                tracing::trace!(
+                                    device = %device.path,
+                                    key = ?key,
+                                    pressed = %format_pressed_keys(&device.pressed_keys),
+                                    "translated key press"
+                                );
+                            }
                             result.push(InputEvent::KeyPress(key));
                         }
                     } else if event.value == 0 {
                         device.pressed_keys.remove(&key);
-                        tracing::trace!(
-                            device = %device.path,
-                            key = ?key,
-                            pressed = %format_pressed_keys(&device.pressed_keys),
-                            "translated key release"
-                        );
+                        if tracing::enabled!(tracing::Level::TRACE) {
+                            tracing::trace!(
+                                device = %device.path,
+                                key = ?key,
+                                pressed = %format_pressed_keys(&device.pressed_keys),
+                                "translated key release"
+                            );
+                        }
                         result.push(InputEvent::KeyRelease(key));
                     }
                 }
             } else if event.type_ == EV_REL {
                 if event.code == REL_X && matches!(device.pointer_kind, PointerKind::Relative) {
-                    tracing::trace!(device = %device.path, dx = event.value, dy = 0, "translated mouse move");
+                    if trace_detail_enabled() {
+                        tracing::trace!(
+                            device = %device.path,
+                            dx = event.value,
+                            dy = 0,
+                            "translated mouse move"
+                        );
+                    }
                     result.push(InputEvent::MouseMove {
                         dx: event.value,
                         dy: 0,
                     });
-                } else if event.code == REL_Y && matches!(device.pointer_kind, PointerKind::Relative)
+                } else if event.code == REL_Y
+                    && matches!(device.pointer_kind, PointerKind::Relative)
                 {
-                    tracing::trace!(device = %device.path, dx = 0, dy = event.value, "translated mouse move");
+                    if trace_detail_enabled() {
+                        tracing::trace!(
+                            device = %device.path,
+                            dx = 0,
+                            dy = event.value,
+                            "translated mouse move"
+                        );
+                    }
                     result.push(InputEvent::MouseMove {
                         dx: 0,
                         dy: event.value,
@@ -971,7 +994,8 @@ impl InputCapture {
                         result.push(InputEvent::KeyRelease(key));
                     }
                 }
-            } else if event.type_ == EV_ABS && matches!(device.pointer_kind, PointerKind::Absolute) {
+            } else if event.type_ == EV_ABS && matches!(device.pointer_kind, PointerKind::Absolute)
+            {
                 if event.code == ABS_X {
                     device.abs_x = Some(event.value);
                     device.abs_dirty = true;
@@ -1064,12 +1088,14 @@ impl InputCapture {
         if absolute_reanchor_jump(dx, device.abs_range_x)
             || absolute_reanchor_jump(dy, device.abs_range_y)
         {
-            tracing::trace!(
-                device = %device.path,
-                dx = dx,
-                dy = dy,
-                "ignoring touchpad re-anchor jump"
-            );
+            if trace_detail_enabled() {
+                tracing::trace!(
+                    device = %device.path,
+                    dx = dx,
+                    dy = dy,
+                    "ignoring touchpad re-anchor jump"
+                );
+            }
             return None;
         }
         if dx == 0 && dy == 0 {
@@ -1079,7 +1105,9 @@ impl InputCapture {
             return None;
         }
 
-        tracing::trace!(device = %device.path, dx = dx, dy = dy, "translated touchpad move");
+        if trace_detail_enabled() {
+            tracing::trace!(device = %device.path, dx = dx, dy = dy, "translated touchpad move");
+        }
         Some(InputEvent::MouseMove { dx, dy })
     }
 
