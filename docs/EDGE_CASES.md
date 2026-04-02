@@ -4,13 +4,15 @@ This document describes current product boundaries.
 
 These are not normal troubleshooting cases. For common operational failures, see [TROUBLESHOOT.md](TROUBLESHOOT.md).
 
-## 1. A Profile Has At Most 10 Touch-Bearing Nodes
+## 1. Runtime Touch Concurrency Is Limited To 10
 
-Current touch slots are:
+Profiles may define more than 10 touch-bearing nodes.
 
-- `0..9`
+The real limit is runtime concurrency:
 
-That means a profile can only contain 10 independently slotted touch-bearing nodes at once.
+- Android and the current backends support at most 10 simultaneous active touches
+- Phantom now allocates physical touch slots dynamically from logical profile slots
+- if gameplay would exceed 10 live touches at once, the extra activation is rejected
 
 Affected node types:
 
@@ -24,7 +26,7 @@ Affected node types:
 
 Implication:
 
-- very large layouts such as full PUBG setups may need tradeoffs, layers, or future profile-model extensions
+- very large layouts are supported, but impossible input combinations that would require more than 10 simultaneous fingers are still outside the runtime model
 
 ## 2. Tilt And Other Sensors Are Not Supported
 

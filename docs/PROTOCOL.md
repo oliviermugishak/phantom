@@ -19,7 +19,7 @@ The `uinput` backend turns abstract `TouchCommand`s into Linux kernel multi-touc
 
 That means Phantom is responsible for:
 
-- slot selection
+- runtime physical slot selection
 - tracking IDs
 - touch-down/up sequencing
 - final `SYN_REPORT` batching
@@ -48,7 +48,8 @@ Enabled capabilities include:
 
 Current model:
 
-- 10 slots
+- dynamic logical-to-physical slot allocation
+- up to 10 concurrent active touches
 - monotonic tracking IDs
 - MT Protocol B
 - batched writes ending in `SYN_REPORT`

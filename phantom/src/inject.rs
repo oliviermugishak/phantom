@@ -7,7 +7,7 @@ use std::time::Duration;
 use nix::errno::Errno;
 
 use crate::error::{PhantomError, Result};
-use crate::touch::TouchDevice;
+use crate::touch::{SlotAllocator, TouchDevice};
 
 nix::ioctl_write_int!(ui_set_evbit, b'U', 100);
 nix::ioctl_write_int!(ui_set_keybit, b'U', 101);
@@ -112,8 +112,7 @@ pub struct UinputDevice {
     file: File,
     screen_width: i32,
     screen_height: i32,
-    active_slots: [bool; SLOT_COUNT],
-    active_touches: usize,
+    slots: SlotAllocator,
     next_tracking_id: i32,
 }
 
@@ -143,8 +142,7 @@ impl UinputDevice {
             file,
             screen_width: screen_width as i32,
             screen_height: screen_height as i32,
-            active_slots: [false; SLOT_COUNT],
-            active_touches: 0,
+            slots: SlotAllocator::default(),
             next_tracking_id: 1,
         })
     }
@@ -332,23 +330,23 @@ impl UinputDevice {
         self.update_touch_state()?;
         self.sync_report()?;
         tracing::trace!(
-            active_touches = self.active_touches,
+            active_touches = self.slots.active_count(),
             active_slots = ?self.active_slot_ids(),
             "touch batch applied"
         );
         Ok(())
     }
 
-    fn touch_down_inner(&mut self, slot: u8, x: f64, y: f64, sync: bool) -> Result<()> {
-        let slot_idx = self.slot_index(slot)?;
-        if self.active_slots[slot_idx] {
+    fn touch_down_inner(&mut self, logical_slot: u8, x: f64, y: f64, sync: bool) -> Result<()> {
+        if self.slots.physical_for(logical_slot).is_some() {
             tracing::debug!(
-                "slot {} already active, treating touch_down as touch_move",
-                slot
+                "logical slot {} already active, treating touch_down as touch_move",
+                logical_slot
             );
-            return self.touch_move_inner(slot, x, y, sync);
+            return self.touch_move_inner(logical_slot, x, y, sync);
         }
 
+        let slot = self.slots.ensure_physical(logical_slot)?;
         let (px, py) = self.scale_coords(x, y);
         let tracking_id = self.alloc_tracking_id();
 
@@ -358,8 +356,6 @@ impl UinputDevice {
         self.write_event(EV_ABS, ABS_MT_POSITION_Y, py)?;
         self.write_event(EV_ABS, ABS_MT_TOUCH_MAJOR, TOUCH_MAJOR_MAX)?;
         self.write_event(EV_ABS, ABS_MT_PRESSURE, PRESSURE_MAX)?;
-        self.active_slots[slot_idx] = true;
-        self.active_touches += 1;
         if sync {
             self.update_touch_state()?;
             self.sync_report()?;
@@ -367,14 +363,13 @@ impl UinputDevice {
         Ok(())
     }
 
-    fn touch_move_inner(&mut self, slot: u8, x: f64, y: f64, sync: bool) -> Result<()> {
-        let slot_idx = self.slot_index(slot)?;
-        if !self.active_slots[slot_idx] {
+    fn touch_move_inner(&mut self, logical_slot: u8, x: f64, y: f64, sync: bool) -> Result<()> {
+        let Some(slot) = self.slots.physical_for(logical_slot) else {
             return Err(PhantomError::Profile(format!(
-                "touch_move on inactive slot {}",
-                slot
+                "touch_move on inactive logical slot {}",
+                logical_slot
             )));
-        }
+        };
 
         let (px, py) = self.scale_coords(x, y);
 
@@ -389,16 +384,13 @@ impl UinputDevice {
         Ok(())
     }
 
-    fn touch_up_inner(&mut self, slot: u8, sync: bool) -> Result<()> {
-        let slot_idx = self.slot_index(slot)?;
-        if !self.active_slots[slot_idx] {
+    fn touch_up_inner(&mut self, logical_slot: u8, sync: bool) -> Result<()> {
+        let Some(slot) = self.slots.release(logical_slot) else {
             return Ok(());
-        }
+        };
 
         self.write_event(EV_ABS, ABS_MT_SLOT, slot as i32)?;
         self.write_event(EV_ABS, ABS_MT_TRACKING_ID, -1)?;
-        self.active_slots[slot_idx] = false;
-        self.active_touches = self.active_touches.saturating_sub(1);
         if sync {
             self.update_touch_state()?;
             self.sync_report()?;
@@ -407,10 +399,14 @@ impl UinputDevice {
     }
 
     pub fn release_all(&mut self) -> Result<()> {
-        for slot in 0..SLOT_COUNT as u8 {
-            if self.active_slots[slot as usize] {
-                self.touch_up_inner(slot, false)?;
-            }
+        let logical_slots: Vec<u8> = self
+            .slots
+            .active_pairs()
+            .into_iter()
+            .map(|(logical, _)| logical)
+            .collect();
+        for logical_slot in logical_slots {
+            self.touch_up_inner(logical_slot, false)?;
         }
         self.update_touch_state()?;
         self.sync_report()
@@ -434,17 +430,6 @@ impl UinputDevice {
         )
     }
 
-    fn slot_index(&self, slot: u8) -> Result<usize> {
-        let idx = slot as usize;
-        if idx >= self.active_slots.len() {
-            return Err(PhantomError::Profile(format!(
-                "slot {} out of range 0-{}",
-                slot, MAX_SLOTS
-            )));
-        }
-        Ok(idx)
-    }
-
     fn alloc_tracking_id(&mut self) -> i32 {
         let id = self.next_tracking_id;
         self.next_tracking_id = if self.next_tracking_id == i32::MAX {
@@ -456,7 +441,7 @@ impl UinputDevice {
     }
 
     fn update_touch_state(&mut self) -> Result<()> {
-        self.write_event(EV_KEY, BTN_TOUCH, i32::from(self.active_touches > 0))
+        self.write_event(EV_KEY, BTN_TOUCH, i32::from(self.slots.active_count() > 0))
     }
 
     fn sync_report(&mut self) -> Result<()> {
@@ -464,11 +449,7 @@ impl UinputDevice {
     }
 
     fn active_slot_ids(&self) -> Vec<u8> {
-        self.active_slots
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, active)| active.then_some(idx as u8))
-            .collect()
+        self.slots.active_physical_slots()
     }
 }
 
@@ -737,8 +718,7 @@ mod tests {
             file,
             screen_width: 1920,
             screen_height: 1080,
-            active_slots: [false; SLOT_COUNT],
-            active_touches: 0,
+            slots: crate::touch::SlotAllocator::default(),
             next_tracking_id: 1,
         };
         (ManuallyDrop::new(dev), path)

@@ -256,6 +256,13 @@ impl KeymapEngine {
         self.profile.clone()
     }
 
+    pub fn has_mouse_camera(&self) -> bool {
+        self.profile
+            .nodes
+            .iter()
+            .any(|node| matches!(node, Node::MouseCamera { .. }))
+    }
+
     pub fn process(&mut self, event: &InputEvent) -> Vec<TouchCommand> {
         if self.paused {
             return vec![];

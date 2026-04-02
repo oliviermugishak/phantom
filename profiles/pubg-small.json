@@ -1,0 +1,126 @@
+{
+  "name": "PUBG Small",
+  "version": 1,
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
+  "global_sensitivity": 1.0,
+  "nodes": [
+    {
+      "type": "joystick",
+      "id": "move",
+      "slot": 0,
+      "pos": {
+        "x": 0.282,
+        "y": 0.532
+      },
+      "radius": 0.03,
+      "keys": {
+        "up": "W",
+        "down": "S",
+        "left": "A",
+        "right": "D"
+      }
+    },
+    {
+      "type": "drag",
+      "id": "sprint_lock",
+      "slot": 1,
+      "start": {
+        "x": 0.282,
+        "y": 0.532
+      },
+      "end": {
+        "x": 0.282,
+        "y": 0.328
+      },
+      "key": "LeftShift",
+      "duration_ms": 110
+    },
+    {
+      "type": "mouse_camera",
+      "id": "camera",
+      "slot": 2,
+      "region": {
+        "x": 0.34,
+        "y": 0.0,
+        "w": 0.66,
+        "h": 1.0
+      },
+      "sensitivity": 1.15,
+      "activation_mode": "always_on",
+      "invert_y": false
+    },
+    {
+      "type": "hold_tap",
+      "id": "fire",
+      "slot": 3,
+      "pos": {
+        "x": 0.75,
+        "y": 0.532
+      },
+      "key": "MouseLeft"
+    },
+    {
+      "type": "hold_tap",
+      "id": "free_look",
+      "slot": 4,
+      "pos": {
+        "x": 0.686,
+        "y": 0.25
+      },
+      "key": "LeftAlt"
+    },
+    {
+      "type": "hold_tap",
+      "id": "interact_hold",
+      "slot": 5,
+      "pos": {
+        "x": 0.219,
+        "y": 0.365
+      },
+      "key": "E"
+    },
+    {
+      "type": "tap",
+      "id": "jump",
+      "slot": 6,
+      "pos": {
+        "x": 0.813,
+        "y": 0.485
+      },
+      "key": "Space"
+    },
+    {
+      "type": "hold_tap",
+      "id": "prone_left",
+      "slot": 7,
+      "pos": {
+        "x": 0.8,
+        "y": 0.65
+      },
+      "key": "Z"
+    },
+    {
+      "type": "hold_tap",
+      "id": "prone_right",
+      "slot": 8,
+      "pos": {
+        "x": 0.737,
+        "y": 0.65
+      },
+      "key": "Z"
+    },
+    {
+      "type": "tap",
+      "id": "grenade",
+      "slot": 9,
+      "pos": {
+        "x": 0.634,
+        "y": 0.65
+      },
+      "key": "G"
+    }
+  ]
+}

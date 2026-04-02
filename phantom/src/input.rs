@@ -11,6 +11,7 @@ nix::ioctl_write_int!(eviocgrab, b'E', 0x90);
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
+const EV_ABS: u16 = 0x03;
 
 const SYN_REPORT: u16 = 0x00;
 const SYN_DROPPED: u16 = 0x03;
@@ -18,6 +19,9 @@ const SYN_DROPPED: u16 = 0x03;
 const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
 const REL_WHEEL: u16 = 0x08;
+
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
 
 const EVDEV_CAP_MAX: usize = 0x20;
 const EVDEV_KEY_MAX: usize = 0x2ff;
@@ -546,6 +550,11 @@ pub struct DeviceInfo {
     pub file: File,
     pub is_keyboard: bool,
     pub is_mouse: bool,
+    pointer_kind: PointerKind,
+    abs_x: Option<i32>,
+    abs_y: Option<i32>,
+    last_abs_position: Option<(i32, i32)>,
+    abs_dirty: bool,
     pressed_keys: HashSet<Key>,
     desynced: bool,
 }
@@ -562,6 +571,13 @@ pub struct InputCapture {
     epoll_fd: RawFd,
     mouse_grabbed: bool,
     keyboard_grabbed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerKind {
+    None,
+    Relative,
+    Absolute,
 }
 
 impl InputCapture {
@@ -672,6 +688,7 @@ impl InputCapture {
 
         let has_key = test_bit(EV_KEY, &ev_bits);
         let has_rel = test_bit(EV_REL, &ev_bits);
+        let has_abs = test_bit(EV_ABS, &ev_bits);
 
         if !has_key && !has_rel {
             return Ok(None);
@@ -688,6 +705,8 @@ impl InputCapture {
             )
         };
         let is_keyboard = ret >= 0 && test_bit(30 /* KEY_A */, &key_bits);
+        let has_pointer_buttons =
+            ret >= 0 && (test_bit(0x110 /* BTN_LEFT */, &key_bits) || test_bit(0x111, &key_bits));
 
         // Check relative axis capabilities for mouse detection
         let mut rel_bits = [0u8; (REL_Y as usize + 1).div_ceil(8)];
@@ -698,8 +717,32 @@ impl InputCapture {
                 rel_bits.as_mut_ptr(),
             )
         };
-        let is_mouse =
+        let has_rel_pointer =
             has_rel && ret >= 0 && test_bit(REL_X, &rel_bits) && test_bit(REL_Y, &rel_bits);
+
+        let mut abs_bits = [0u8; (ABS_Y as usize + 1).div_ceil(8)];
+        let abs_ret = unsafe {
+            libc::ioctl(
+                fd,
+                eviocgbit_request(EV_ABS, abs_bits.len()),
+                abs_bits.as_mut_ptr(),
+            )
+        };
+        let name_lower = device_name.to_lowercase();
+        let has_abs_pointer =
+            has_abs && abs_ret >= 0 && test_bit(ABS_X, &abs_bits) && test_bit(ABS_Y, &abs_bits);
+        let is_touchpad_like =
+            name_lower.contains("touchpad") || name_lower.contains("trackpad") || has_pointer_buttons;
+
+        let pointer_kind = if has_rel_pointer {
+            PointerKind::Relative
+        } else if has_abs_pointer && is_touchpad_like {
+            PointerKind::Absolute
+        } else {
+            PointerKind::None
+        };
+
+        let is_mouse = !matches!(pointer_kind, PointerKind::None);
 
         if !is_keyboard && !is_mouse {
             return Ok(None);
@@ -719,6 +762,11 @@ impl InputCapture {
             file,
             is_keyboard,
             is_mouse,
+            pointer_kind,
+            abs_x: None,
+            abs_y: None,
+            last_abs_position: None,
+            abs_dirty: false,
             pressed_keys: HashSet::new(),
             desynced: false,
         }))
@@ -832,6 +880,11 @@ impl InputCapture {
                         }
                     }
                 }
+                if event.code == SYN_REPORT {
+                    if let Some(mouse_move) = Self::flush_absolute_pointer_motion(device) {
+                        result.push(mouse_move);
+                    }
+                }
                 continue;
             }
 
@@ -867,13 +920,14 @@ impl InputCapture {
                     }
                 }
             } else if event.type_ == EV_REL {
-                if event.code == REL_X {
+                if event.code == REL_X && matches!(device.pointer_kind, PointerKind::Relative) {
                     tracing::trace!(device = %device.path, dx = event.value, dy = 0, "translated mouse move");
                     result.push(InputEvent::MouseMove {
                         dx: event.value,
                         dy: 0,
                     });
-                } else if event.code == REL_Y {
+                } else if event.code == REL_Y && matches!(device.pointer_kind, PointerKind::Relative)
+                {
                     tracing::trace!(device = %device.path, dx = 0, dy = event.value, "translated mouse move");
                     result.push(InputEvent::MouseMove {
                         dx: 0,
@@ -890,6 +944,14 @@ impl InputCapture {
                         result.push(InputEvent::KeyPress(key));
                         result.push(InputEvent::KeyRelease(key));
                     }
+                }
+            } else if event.type_ == EV_ABS && matches!(device.pointer_kind, PointerKind::Absolute) {
+                if event.code == ABS_X {
+                    device.abs_x = Some(event.value);
+                    device.abs_dirty = true;
+                } else if event.code == ABS_Y {
+                    device.abs_y = Some(event.value);
+                    device.abs_dirty = true;
                 }
             }
         }
@@ -956,6 +1018,32 @@ impl InputCapture {
             }
         }
         *events = merged;
+    }
+
+    fn flush_absolute_pointer_motion(device: &mut DeviceInfo) -> Option<InputEvent> {
+        if !matches!(device.pointer_kind, PointerKind::Absolute) || !device.abs_dirty {
+            return None;
+        }
+
+        device.abs_dirty = false;
+        let (next_x, next_y) = match (device.abs_x, device.abs_y) {
+            (Some(x), Some(y)) => (x, y),
+            _ => return None,
+        };
+
+        let (prev_x, prev_y) = match device.last_abs_position.replace((next_x, next_y)) {
+            Some(prev) => prev,
+            None => return None,
+        };
+
+        let dx = next_x - prev_x;
+        let dy = next_y - prev_y;
+        if dx == 0 && dy == 0 {
+            return None;
+        }
+
+        tracing::trace!(device = %device.path, dx = dx, dy = dy, "translated touchpad move");
+        Some(InputEvent::MouseMove { dx, dy })
     }
 
     pub fn device_count(&self) -> usize {
@@ -1137,6 +1225,7 @@ fn eviocgkey_request(len: usize) -> libc::c_ulong {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::io::AsRawFd;
 
     #[test]
     fn ioctl_requests_match_kernel_headers_on_x86_64() {
@@ -1173,5 +1262,101 @@ mod tests {
         assert!(InputEvent::KeyPress(Key::MouseRight).is_mouse_input());
         assert!(InputEvent::KeyPress(Key::A).is_keyboard_input());
         assert!(!InputEvent::KeyRelease(Key::MouseLeft).is_keyboard_input());
+    }
+
+    #[test]
+    fn absolute_pointer_devices_emit_mouse_move_on_syn_report() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Touchpad".into(),
+                file,
+                is_keyboard: false,
+                is_mouse: true,
+                pointer_kind: PointerKind::Absolute,
+                abs_x: None,
+                abs_y: None,
+                last_abs_position: None,
+                abs_dirty: false,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        let first = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_X,
+                    value: 100,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_Y,
+                    value: 200,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+        ]);
+        assert!(first.is_empty());
+
+        let second = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_X,
+                    value: 112,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_Y,
+                    value: 206,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+        ]);
+
+        assert_eq!(second.len(), 1);
+        assert!(matches!(second[0], InputEvent::MouseMove { dx: 12, dy: 6 }));
     }
 }

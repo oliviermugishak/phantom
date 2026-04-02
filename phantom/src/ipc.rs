@@ -534,6 +534,14 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
         capture.set_grabbed_mouse_only(active)?;
     }
     state.capture_active.store(active, Ordering::Release);
+    if active {
+        let engine = state.engine.read().await;
+        if !engine.has_mouse_camera() {
+            tracing::info!(
+                "capture enabled without a mouse_camera node in the loaded profile; mouse movement will not steer the camera"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -557,8 +565,18 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
         apply_commands(state, &cmds)?;
     }
 
-    let mut capture = lock_capture(state)?;
-    capture.set_grabbed_mouse_only(routed)?;
+    {
+        let mut capture = lock_capture(state)?;
+        capture.set_grabbed_mouse_only(routed)?;
+    }
+    if routed {
+        let engine = state.engine.read().await;
+        if !engine.has_mouse_camera() {
+            tracing::info!(
+                "mouse routed to gameplay, but the loaded profile has no mouse_camera node"
+            );
+        }
+    }
     Ok(())
 }
 

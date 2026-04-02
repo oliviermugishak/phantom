@@ -63,6 +63,7 @@ The repository ships starter profiles in [`profiles/`](profiles/):
 
 - `pubg.json`
 - `pubg-mobile-layout1.json`
+- `pubg-small.json`
 - `genshin.json`
 - `efootball-template.json`
 - `temple-run.json`
@@ -176,6 +177,11 @@ What it does not do:
 ## Mouse Look
 
 `mouse_camera` is Phantom's camera/look primitive. It is touch-drag camera emulation, not desktop pointer emulation.
+
+Important:
+
+- runtime mouse grab only routes host mouse input into Phantom
+- actual camera movement only happens if the loaded profile contains a `mouse_camera` node
 
 Supported activation modes:
 

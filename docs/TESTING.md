@@ -37,7 +37,7 @@ phantom audit ~/.config/phantom/profiles/pubg-mobile-layout1.json
 Look for:
 
 - correct screen contract
-- distinct slots for controls you expect to coexist
+- distinct logical slots for controls you expect to coexist
 - correct `mouse_camera` activation mode
 - intended joystick mode
 - intended drag start/end positions

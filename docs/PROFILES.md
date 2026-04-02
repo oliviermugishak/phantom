@@ -81,18 +81,18 @@ pixel_y = rel_y * screen_height
 
 ## 5. Slot Rules
 
-Touch-bearing nodes use unique touch slots:
-
-- `0..9`
+Touch-bearing nodes use unique logical touch slots.
 
 That means:
 
-- slot-bearing nodes must use unique slots
-- one profile can contain at most 10 independently slotted touch-bearing nodes
+- slot-bearing nodes must use unique slot ids within the profile
+- the profile may define more than 10 touch-bearing nodes
+- Phantom allocates physical touch slots dynamically at runtime
 
-Important consequence:
+Important runtime limit:
 
-- large games may need tradeoffs or future model extensions because a profile cannot be infinitely large under the current slot model
+- Android and the current backends still support at most 10 simultaneous active touches
+- if gameplay would exceed 10 concurrent touches, the backend rejects the extra touch activation
 
 ## 6. Layers
 
@@ -275,6 +275,7 @@ Important:
 
 - `mouse_camera` is touch-drag camera emulation
 - it is not desktop pointer emulation
+- runtime mouse grab or `F1` alone does not enable camera movement; the loaded profile must contain a `mouse_camera` node
 
 ### `repeat_tap`
 
@@ -341,7 +342,7 @@ Important rules:
 - `screen` required
 - `global_sensitivity > 0`
 - node IDs unique
-- slot-bearing nodes use unique slots in `0..9`
+- slot-bearing nodes use unique logical slots
 - coordinates and regions stay within `[0, 1]`
 - joystick radius is in `(0, 1]`
 - `mouse_camera.sensitivity > 0`

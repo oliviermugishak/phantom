@@ -472,12 +472,6 @@ impl Profile {
             }
 
             if let Some(slot) = node.slot() {
-                if slot > 9 {
-                    return Err(PhantomError::ProfileValidation {
-                        field: format!("nodes.{}.slot", node.id()),
-                        message: format!("slot {} out of range 0-9", slot),
-                    });
-                }
                 if !slots.insert(slot) {
                     return Err(PhantomError::ProfileValidation {
                         field: format!("nodes.{}.slot", node.id()),
@@ -714,12 +708,6 @@ fn validate_node(node: &Node) -> Result<()> {
                 if let Some(pos) = &step.pos {
                     validate_pos(pos, &format!("nodes.{id}.sequence[{i}].pos"))?;
                 }
-                if step.slot > 9 {
-                    return Err(PhantomError::ProfileValidation {
-                        field: format!("nodes.{id}.sequence[{i}].slot"),
-                        message: format!("slot {} out of range 0-9", step.slot),
-                    });
-                }
             }
         }
         Node::LayerShift {
@@ -880,16 +868,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_slot_out_of_range() {
+    fn accepts_logical_slots_above_nine() {
         let mut p = valid_profile();
         p.nodes = vec![Node::Tap {
-            id: "bad".into(),
+            id: "logical".into(),
             layer: default_layer(),
             slot: 10,
             pos: RelPos { x: 0.5, y: 0.5 },
             key: "A".into(),
         }];
-        assert!(p.validate().is_err());
+        assert!(p.validate().is_ok());
     }
 
     #[test]

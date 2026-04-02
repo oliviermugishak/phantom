@@ -6,10 +6,8 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::engine::TouchCommand;
 use crate::error::{PhantomError, Result};
-use crate::touch::TouchDevice;
+use crate::touch::{SlotAllocator, TouchDevice};
 use crate::waydroid;
-
-const MAX_SLOTS: usize = 10;
 
 const CMD_TOUCH_DOWN: u8 = 0x00;
 const CMD_TOUCH_MOVE: u8 = 0x01;
@@ -23,8 +21,7 @@ pub struct AndroidInjector {
     endpoint: String,
     screen_width: i32,
     screen_height: i32,
-    active_slots: [bool; MAX_SLOTS],
-    active_touches: usize,
+    slots: SlotAllocator,
 }
 
 impl AndroidInjector {
@@ -98,8 +95,7 @@ impl AndroidInjector {
             endpoint,
             screen_width: screen_width as i32,
             screen_height: screen_height as i32,
-            active_slots: [false; MAX_SLOTS],
-            active_touches: 0,
+            slots: SlotAllocator::default(),
         })
     }
 
@@ -176,41 +172,37 @@ impl AndroidInjector {
         self.write_frame(&frame)
     }
 
-    fn touch_down_inner(&mut self, slot: u8, x: f64, y: f64) -> Result<()> {
-        let slot_idx = self.slot_index(slot)?;
-        if self.active_slots[slot_idx] {
+    fn touch_down_inner(&mut self, logical_slot: u8, x: f64, y: f64) -> Result<()> {
+        if self.slots.physical_for(logical_slot).is_some() {
             tracing::debug!(
-                "android slot {} already active, treating touch_down as touch_move",
-                slot
+                "android logical slot {} already active, treating touch_down as touch_move",
+                logical_slot
             );
-            return self.touch_move_inner(slot, x, y);
+            return self.touch_move_inner(logical_slot, x, y);
         }
 
+        let slot = self.slots.ensure_physical(logical_slot)?;
         let (px, py) = self.scale_coords(x, y);
         self.write_position_frame(CMD_TOUCH_DOWN, slot, px, py)?;
-        self.active_slots[slot_idx] = true;
-        self.active_touches += 1;
         Ok(())
     }
 
-    fn touch_move_inner(&mut self, slot: u8, x: f64, y: f64) -> Result<()> {
-        let slot_idx = self.slot_index(slot)?;
-        if !self.active_slots[slot_idx] {
+    fn touch_move_inner(&mut self, logical_slot: u8, x: f64, y: f64) -> Result<()> {
+        let Some(slot) = self.slots.physical_for(logical_slot) else {
             return Err(PhantomError::Profile(format!(
-                "touch_move on inactive slot {}",
-                slot
+                "touch_move on inactive logical slot {}",
+                logical_slot
             )));
-        }
+        };
 
         let (px, py) = self.scale_coords(x, y);
         self.write_position_frame(CMD_TOUCH_MOVE, slot, px, py)
     }
 
-    fn touch_up_inner(&mut self, slot: u8, cancel: bool) -> Result<()> {
-        let slot_idx = self.slot_index(slot)?;
-        if !self.active_slots[slot_idx] {
+    fn touch_up_inner(&mut self, logical_slot: u8, cancel: bool) -> Result<()> {
+        let Some(slot) = self.slots.release(logical_slot) else {
             return Ok(());
-        }
+        };
 
         self.write_slot_frame(
             if cancel {
@@ -219,10 +211,7 @@ impl AndroidInjector {
                 CMD_TOUCH_UP
             },
             slot,
-        )?;
-        self.active_slots[slot_idx] = false;
-        self.active_touches = self.active_touches.saturating_sub(1);
-        Ok(())
+        )
     }
 
     fn scale_coords(&self, x: f64, y: f64) -> (i32, i32) {
@@ -233,26 +222,6 @@ impl AndroidInjector {
             px.clamp(0, self.screen_width.saturating_sub(1)),
             py.clamp(0, self.screen_height.saturating_sub(1)),
         )
-    }
-
-    fn slot_index(&self, slot: u8) -> Result<usize> {
-        let idx = slot as usize;
-        if idx >= self.active_slots.len() {
-            return Err(PhantomError::Profile(format!(
-                "slot {} out of range 0-{}",
-                slot,
-                self.active_slots.len().saturating_sub(1)
-            )));
-        }
-        Ok(idx)
-    }
-
-    fn active_slot_ids(&self) -> Vec<u8> {
-        self.active_slots
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, active)| active.then_some(idx as u8))
-            .collect()
     }
 
     fn position_frame(kind: u8, slot: u8, x: i32, y: i32) -> [u8; 10] {
@@ -290,18 +259,22 @@ impl TouchDevice for AndroidInjector {
         }
 
         tracing::trace!(
-            active_touches = self.active_touches,
-            active_slots = ?self.active_slot_ids(),
+            active_touches = self.slots.active_count(),
+            active_slots = ?self.slots.active_pairs(),
             "android touch batch applied"
         );
         Ok(())
     }
 
     fn release_all(&mut self) -> Result<()> {
-        for slot in 0..MAX_SLOTS as u8 {
-            if self.active_slots[slot as usize] {
-                self.touch_up_inner(slot, true)?;
-            }
+        let logical_slots: Vec<u8> = self
+            .slots
+            .active_pairs()
+            .into_iter()
+            .map(|(logical, _)| logical)
+            .collect();
+        for logical_slot in logical_slots {
+            self.touch_up_inner(logical_slot, true)?;
         }
         Ok(())
     }
