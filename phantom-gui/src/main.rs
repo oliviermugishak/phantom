@@ -216,6 +216,7 @@ struct RuntimeState {
     capture_active: bool,
     mouse_grabbed: bool,
     mouse_touch_active: bool,
+    mouse_touch_backend: Option<String>,
     keyboard_grabbed: bool,
     screen: Option<(u32, u32)>,
     active_layers: Vec<String>,
@@ -840,6 +841,9 @@ impl PhantomGui {
                     "inactive"
                 }
             ));
+            if let Some(backend) = &self.runtime.mouse_touch_backend {
+                ui.label(format!("Menu touch backend: {}", backend));
+            }
             ui.label(format!(
                 "Keyboard ownership: {}",
                 if self.runtime.keyboard_grabbed {
@@ -1273,6 +1277,7 @@ impl PhantomGui {
         self.runtime.mouse_touch_active = response
             .mouse_touch_active
             .unwrap_or(self.runtime.capture_active && !self.runtime.mouse_grabbed);
+        self.runtime.mouse_touch_backend = response.mouse_touch_backend.clone();
         self.runtime.keyboard_grabbed = response.keyboard_grabbed.unwrap_or(false);
         self.runtime.active_layers = response.active_layers.clone().unwrap_or_default();
         self.runtime.screen = match (response.screen_width, response.screen_height) {
@@ -2420,6 +2425,9 @@ impl PhantomGui {
                         "inactive"
                     }
                 ));
+                if let Some(backend) = &self.runtime.mouse_touch_backend {
+                    ui.label(format!("Menu touch backend: {}", backend));
+                }
                 ui.label(format!(
                     "Processing: {}",
                     if self.runtime.paused {

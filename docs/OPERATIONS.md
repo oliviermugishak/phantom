@@ -167,6 +167,20 @@ Runtime note:
 - `F1` switches between gameplay aim routing and menu-touch navigation
 - it no longer destroys toggle-look state
 - `while_held` mouse buttons are resynced when mouse routing is turned back on
+- status output now includes the active menu-touch backend
+
+## Menu Touch Operations
+
+When capture is active and the mouse is released, Phantom routes:
+
+- left click -> touch down / up
+- mouse drag -> touch move
+
+Backend behavior:
+
+- Hyprland prefers compositor-native cursor/client mapping
+- X11 sessions prefer exact visible-cursor to touch mapping
+- if exact host cursor coordinates are unavailable, Phantom falls back to its virtual cursor path
 
 ### `always_on`
 

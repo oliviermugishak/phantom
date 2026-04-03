@@ -66,6 +66,8 @@ pub struct IpcResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mouse_touch_active: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse_touch_backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sensitivity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_width: Option<u32>,
@@ -269,6 +271,10 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 Ok(active) => active,
                 Err(e) => return error_response(e.to_string()),
             };
+            let mouse_touch_backend = match lock_mouse_touch(state) {
+                Ok(mouse_touch) => mouse_touch.backend_name().to_string(),
+                Err(e) => return error_response(e.to_string()),
+            };
             IpcResponse {
                 ok: true,
                 error: None,
@@ -287,6 +293,7 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 mouse_grabbed: Some(mouse_grabbed),
                 keyboard_grabbed: Some(keyboard_grabbed),
                 mouse_touch_active: Some(mouse_touch_active),
+                mouse_touch_backend: Some(mouse_touch_backend),
                 sensitivity: None,
                 screen_width: Some(state.screen_width),
                 screen_height: Some(state.screen_height),
@@ -335,6 +342,10 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 Ok(active) => active,
                 Err(e) => return error_response(e.to_string()),
             };
+            let mouse_touch_backend = match lock_mouse_touch(state) {
+                Ok(mouse_touch) => mouse_touch.backend_name().to_string(),
+                Err(e) => return error_response(e.to_string()),
+            };
             IpcResponse {
                 ok: true,
                 error: None,
@@ -348,6 +359,7 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 mouse_grabbed: None,
                 keyboard_grabbed: None,
                 mouse_touch_active: Some(mouse_touch_active),
+                mouse_touch_backend: Some(mouse_touch_backend),
                 sensitivity: None,
                 screen_width: None,
                 screen_height: None,
@@ -524,6 +536,7 @@ async fn load_profile_into_state(
         mouse_grabbed: Some(mouse_grabbed),
         keyboard_grabbed: Some(keyboard_grabbed),
         mouse_touch_active: Some(mouse_touch_enabled(state)?),
+        mouse_touch_backend: Some(lock_mouse_touch(state)?.backend_name().to_string()),
         sensitivity: None,
         screen_width: Some(state.screen_width),
         screen_height: Some(state.screen_height),
@@ -728,6 +741,7 @@ fn error_response(error: String) -> IpcResponse {
         mouse_grabbed: None,
         keyboard_grabbed: None,
         mouse_touch_active: None,
+        mouse_touch_backend: None,
         sensitivity: None,
         screen_width: None,
         screen_height: None,
@@ -750,6 +764,7 @@ fn ok_response() -> IpcResponse {
         mouse_grabbed: None,
         keyboard_grabbed: None,
         mouse_touch_active: None,
+        mouse_touch_backend: None,
         sensitivity: None,
         screen_width: None,
         screen_height: None,

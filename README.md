@@ -210,6 +210,8 @@ What that means:
 - mouse motion while held becomes touch drag
 - this is the intended way to navigate menus in games that reject raw mouse input
 - `F1` switches between gameplay aim routing and menu-touch navigation
+- Phantom prefers exact X11 cursor-to-touch mapping when it can see the real host cursor position
+- if exact cursor mapping is unavailable, Phantom falls back to its virtual cursor path
 
 ## Aim
 
@@ -222,6 +224,8 @@ Important:
 - when the mouse is released while capture stays on, Phantom falls back to mouse-to-touch UI navigation
 - touchpads are supported, but a real mouse will usually feel smoother for camera movement
 - `F1` now preserves toggle-look state and resyncs `while_held` mouse buttons when routing is restored
+- `phantom status` shows whether menu touch is active and which backend is in use
+  - on Hyprland, Phantom now prefers compositor-native cursor/client geometry first
 
 Supported activation modes:
 

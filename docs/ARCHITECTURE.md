@@ -277,7 +277,12 @@ Why the enabled state exists:
 - `while_held` should behave like a temporary camera mode
 - `toggle` should preserve mode state across movement pauses
 
-When capture is active and gameplay mouse routing is released, the daemon also runs a separate mouse-to-touch path for menu navigation. That path is runtime-only and is not expressed as a profile node.
+When capture is active and gameplay mouse routing is released, the daemon also runs a separate mouse-to-touch path for menu navigation. That path is runtime-only and is not expressed as a profile node. On Hyprland it prefers compositor-native cursor/client geometry, then falls back to X11/XWayland helper mapping, then finally to Phantom's internal virtual cursor.
+
+Current menu-touch backend order:
+
+- prefer exact X11 visible-cursor to window-relative touch mapping
+- fall back to Phantom's virtual cursor path when exact host cursor coordinates are unavailable
 
 ## 7. Why `android_socket` Is The Primary Backend
 

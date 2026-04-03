@@ -175,6 +175,30 @@ Expected behavior:
 - moving while held becomes drag
 - `F1` grabs the mouse back for gameplay aim when needed
 
+## Menu Touch Lands Away From The Visible Cursor
+
+Check:
+
+- `phantom status` while capture is active and the mouse is released
+- look for `menu touch backend`
+
+Expected:
+
+- `hyprland-client-absolute+x11-helper+virtual-fallback` is the accurate compositor-native path on Hyprland
+- `x11-helper+virtual-fallback` is the accurate host-cursor path
+- `virtual-cursor` is the fallback path and can still drift from the visible desktop cursor
+
+What it means:
+
+- on X11/XWayland, Phantom can query the real visible cursor and map touches exactly to the active host window
+- on sessions where exact cursor position is not available, Phantom falls back to its internal cursor path
+
+If you still see drift:
+
+- confirm the game window is actually the active X11/XWayland window
+- test from the same desktop session where `DISPLAY` is available
+- use `phantom status` to verify the backend instead of assuming
+
 ## PUBG Sprint-Lock Drag Does Not Feel Right
 
 Check:

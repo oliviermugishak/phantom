@@ -684,6 +684,9 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
         if let Some(mouse_touch_active) = response.mouse_touch_active {
             eprintln!("menu touch: {}", mouse_touch_active);
         }
+        if let Some(mouse_touch_backend) = &response.mouse_touch_backend {
+            eprintln!("menu touch backend: {}", mouse_touch_backend);
+        }
         if let Some(keyboard_grabbed) = response.keyboard_grabbed {
             eprintln!("keyboard grabbed: {}", keyboard_grabbed);
         }
@@ -719,6 +722,20 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
 #[tokio::main]
 async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|s| s.as_str()) == Some("__hyprland_cursor_helper") {
+        if let Err(e) = phantom::hyprland_cursor::run_helper_stdio() {
+            eprintln!("hyprland cursor helper error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(|s| s.as_str()) == Some("__x11_cursor_helper") {
+        if let Err(e) = phantom::x11_cursor::run_helper_stdio() {
+            eprintln!("x11 cursor helper error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
     let force_trace = args.iter().any(|a| a == "--trace");
     args.retain(|arg| arg != "--trace");
     init_logging(force_trace);
