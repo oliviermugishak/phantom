@@ -1,6 +1,6 @@
 # Roadmap
 
-This file tracks the highest-value next work after `0.6.1`.
+This file tracks the highest-value next work after `0.7.0`.
 
 It is intentionally short and product-oriented. It is not meant to be a complete issue tracker.
 
