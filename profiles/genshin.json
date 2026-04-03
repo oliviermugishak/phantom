@@ -18,9 +18,10 @@
     },
     {
       "id": "camera",
-      "type": "mouse_camera",
+      "type": "aim",
       "slot": 1,
-      "region": { "x": 0.30, "y": 0.0, "w": 0.70, "h": 1.0 },
+      "anchor": { "x": 0.72, "y": 0.5 },
+      "reach": 0.18,
       "sensitivity": 1.0,
       "activation_mode": "always_on",
       "invert_y": false

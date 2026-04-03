@@ -137,7 +137,7 @@ Keep prefixes minimal and conventional:
 Examples:
 
 - `feat: add floating joystick zones`
-- `fix: resync mouse look after re-grab`
+- `fix: resync aim after re-grab`
 - `docs: clarify overlay preview limitations`
 - `release: bump workspace to 0.6.1`
 

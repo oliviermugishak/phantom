@@ -354,10 +354,21 @@ async fn run_daemon() -> Result<()> {
                                 // We may still be in gameplay capture while the user has
                                 // temporarily released only the mouse back to the desktop.
                                 if event.is_mouse_input() && !mouse_routed {
-                                    if trace_detail_enabled() {
+                                    let mouse_touch_cmds = match ipc::lock_mouse_touch(&state) {
+                                        Ok(mut mouse_touch) => mouse_touch.process(&event),
+                                        Err(e) => {
+                                            tracing::warn!("mouse-touch lock error: {}", e);
+                                            Vec::new()
+                                        }
+                                    };
+                                    if let Err(e) = ipc::apply_commands(&state, &mouse_touch_cmds) {
+                                        tracing::warn!("mouse-touch inject error: {}", e);
+                                    }
+                                    if trace_detail_enabled() && !mouse_touch_cmds.is_empty() {
                                         tracing::trace!(
                                             event = ?event,
-                                            "dropping gameplay event because mouse routing is disabled"
+                                            commands = ?mouse_touch_cmds,
+                                            "translated mouse input into menu touch"
                                         );
                                     }
                                     continue;
@@ -461,6 +472,17 @@ async fn run_daemon() -> Result<()> {
     }
 
     {
+        if let Ok(mut mouse_touch) = ipc::lock_mouse_touch(&state) {
+            let cmds = mouse_touch.suspend();
+            if !cmds.is_empty() {
+                if let Ok(mut dev) = ipc::lock_touch_device(&state) {
+                    let _ = dev.apply_commands(&cmds);
+                }
+            }
+        }
+    }
+
+    {
         let mut capture = ipc::lock_capture(&state)?;
         capture.force_release_all();
     }
@@ -546,9 +568,9 @@ async fn handle_runtime_shortcut(
             tracing::info!(
                 "{}",
                 if currently_grabbed {
-                    "mouse released to desktop"
+                    "mouse released to menu touch navigation"
                 } else {
-                    "mouse grabbed for gameplay"
+                    "mouse grabbed for gameplay aim"
                 }
             );
             Ok(true)
@@ -658,6 +680,9 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
         }
         if let Some(mouse_grabbed) = response.mouse_grabbed {
             eprintln!("mouse grabbed: {}", mouse_grabbed);
+        }
+        if let Some(mouse_touch_active) = response.mouse_touch_active {
+            eprintln!("menu touch: {}", mouse_touch_active);
         }
         if let Some(keyboard_grabbed) = response.keyboard_grabbed {
             eprintln!("keyboard grabbed: {}", keyboard_grabbed);

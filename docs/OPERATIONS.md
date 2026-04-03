@@ -157,13 +157,14 @@ Use:
 
 The detail flag exists because the raw evdev path is intentionally much noisier than normal trace logging.
 
-## Mouse Look Operations
+## Aim Operations
 
-`mouse_camera` has three modes.
+`aim` has three modes.
 
 Runtime note:
 
-- `F1` only changes mouse routing
+- entering capture with the mouse released leaves Phantom in menu-touch navigation mode
+- `F1` switches between gameplay aim routing and menu-touch navigation
 - it no longer destroys toggle-look state
 - `while_held` mouse buttons are resynced when mouse routing is turned back on
 
@@ -178,7 +179,7 @@ Use when:
 Use when:
 
 - one key should temporarily enable look mode
-- right mouse button should both ADS and enable camera look
+- right mouse button should both ADS and enable aim
 
 ### `toggle`
 
@@ -227,7 +228,7 @@ Typical mapping model:
 
 - `WASD` -> movement joystick
 - `MouseLeft` -> fire
-- `MouseRight` -> ADS and/or `mouse_camera`
+- `MouseRight` -> ADS and/or `aim`
 - `LeftShift` -> sprint-lock drag
 
 ### Temple Run / Subway Surfers

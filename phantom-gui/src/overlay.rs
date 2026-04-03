@@ -79,10 +79,10 @@ fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) 
             } => draw_floating_joystick(painter, rect, node, region),
             Node::Drag { start, end, .. } => draw_drag_gesture(painter, rect, node, start, end),
             Node::MouseCamera {
-                region,
+                anchor,
                 activation_mode,
                 ..
-            } => draw_mouse_region(painter, rect, region, activation_mode),
+            } => draw_aim_marker(painter, rect, anchor, activation_mode),
             Node::Macro { .. } | Node::LayerShift { .. } => {}
             Node::Joystick {
                 mode: JoystickMode::Floating,
@@ -188,24 +188,24 @@ fn draw_drag_gesture(
     );
 }
 
-fn draw_mouse_region(
+fn draw_aim_marker(
     painter: &egui::Painter,
     rect: Rect,
-    region: &Region,
+    anchor: &RelPos,
     activation_mode: &MouseCameraActivationMode,
 ) {
-    let zone = region_rect(rect, region);
-    draw_corner_guides(painter, zone, look_stroke());
+    let center = to_canvas_pos(rect, anchor);
     let mode = match activation_mode {
-        MouseCameraActivationMode::AlwaysOn => "Look",
-        MouseCameraActivationMode::WhileHeld => "Hold Look",
-        MouseCameraActivationMode::Toggle => "Toggle Look",
+        MouseCameraActivationMode::AlwaysOn => "Aim",
+        MouseCameraActivationMode::WhileHeld => "Hold Aim",
+        MouseCameraActivationMode::Toggle => "Toggle Aim",
     };
-    draw_tag_text(
+    draw_ring_marker(
         painter,
-        zone.center_top() + Vec2::new(0.0, 18.0),
+        center,
+        MARKER_RADIUS,
+        Stroke::new(2.0, look_stroke()),
         mode,
-        look_stroke(),
     );
 }
 
@@ -253,18 +253,6 @@ fn draw_centered_text(painter: &egui::Painter, center: Pos2, text: &str, color: 
         TEXT_SHADOW,
     );
     painter.text(center, Align2::CENTER_CENTER, text, font, color);
-}
-
-fn draw_tag_text(painter: &egui::Painter, pos: Pos2, text: &str, color: Color32) {
-    let font = FontId::proportional(12.0);
-    painter.text(
-        pos + Vec2::new(1.0, 1.0),
-        Align2::CENTER_CENTER,
-        text,
-        font.clone(),
-        TEXT_SHADOW,
-    );
-    painter.text(pos, Align2::CENTER_CENTER, text, font, color);
 }
 
 fn draw_corner_guides(painter: &egui::Painter, rect: Rect, color: Color32) {
@@ -323,11 +311,11 @@ fn compact_label(node: &Node) -> String {
             activation_key,
             ..
         } => match activation_mode {
-            MouseCameraActivationMode::AlwaysOn => "Look".into(),
+            MouseCameraActivationMode::AlwaysOn => "Aim".into(),
             MouseCameraActivationMode::WhileHeld => {
-                activation_key.as_deref().unwrap_or("Look").into()
+                activation_key.as_deref().unwrap_or("Aim").into()
             }
-            MouseCameraActivationMode::Toggle => activation_key.as_deref().unwrap_or("Look").into(),
+            MouseCameraActivationMode::Toggle => activation_key.as_deref().unwrap_or("Aim").into(),
         },
         Node::Macro { id, .. } | Node::LayerShift { id, .. } => id.clone(),
     }

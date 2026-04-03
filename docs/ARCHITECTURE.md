@@ -252,9 +252,9 @@ Two important recent consequences of that abstraction:
 
 The engine stays responsible for gesture meaning. The backend stays responsible for touch realization.
 
-## 6. `mouse_camera` Design
+## 6. `aim` Design
 
-`mouse_camera` is the camera/look primitive.
+`aim` is the camera/look primitive.
 
 It is not a general cursor.
 
@@ -266,9 +266,9 @@ Current modes:
 
 The engine stores:
 
-- whether mouse look is enabled
+- whether aim is enabled
 - whether a synthetic finger is currently down
-- current pointer position inside the region
+- current pointer position around the anchor
 - last motion time
 
 Why the enabled state exists:
@@ -276,6 +276,8 @@ Why the enabled state exists:
 - `always_on` should behave continuously
 - `while_held` should behave like a temporary camera mode
 - `toggle` should preserve mode state across movement pauses
+
+When capture is active and gameplay mouse routing is released, the daemon also runs a separate mouse-to-touch path for menu navigation. That path is runtime-only and is not expressed as a profile node.
 
 ## 7. Why `android_socket` Is The Primary Backend
 

@@ -31,16 +31,13 @@ fn pubg_profile() -> Profile {
                 id: "camera".into(),
                 layer: String::new(),
                 slot: 1,
-                region: Region {
-                    x: 0.35,
-                    y: 0.0,
-                    w: 0.65,
-                    h: 1.0,
-                },
+                anchor: RelPos { x: 0.75, y: 0.5 },
+                reach: 0.18,
                 sensitivity: 1.2,
                 activation_mode: MouseCameraActivationMode::AlwaysOn,
                 activation_key: None,
                 invert_y: false,
+                legacy_region: None,
             },
             Node::HoldTap {
                 id: "fire".into(),
@@ -372,7 +369,7 @@ fn load_pubg_profile_from_file() {
     if path.exists() {
         let profile = Profile::load(&path).expect("failed to load pubg.json");
         assert_eq!(profile.name, "PUBG Mobile");
-        assert_eq!(profile.nodes.len(), 9);
+        assert_eq!(profile.nodes.len(), 21);
     }
 }
 
@@ -492,8 +489,8 @@ fn global_sensitivity_affects_camera() {
     engine_low.process(&InputEvent::MouseMove { dx: 0, dy: 0 });
 
     // Second mouse move — now the sensitivity difference matters
-    let cmds_high = engine_high.process(&InputEvent::MouseMove { dx: 100, dy: 0 });
-    let cmds_low = engine_low.process(&InputEvent::MouseMove { dx: 100, dy: 0 });
+    let cmds_high = engine_high.process(&InputEvent::MouseMove { dx: 40, dy: 0 });
+    let cmds_low = engine_low.process(&InputEvent::MouseMove { dx: 40, dy: 0 });
 
     let move_high = cmds_high
         .iter()

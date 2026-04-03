@@ -7,6 +7,7 @@ pub mod inject;
 pub mod input;
 pub mod ipc;
 pub mod logging;
+pub mod mouse_touch;
 pub mod overlay;
 pub mod profile;
 pub mod touch;

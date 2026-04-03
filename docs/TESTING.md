@@ -38,7 +38,7 @@ Look for:
 
 - correct screen contract
 - distinct logical slots for controls you expect to coexist
-- correct `mouse_camera` activation mode
+- correct `aim` activation mode
 - intended joystick mode
 - intended drag start/end positions
 
@@ -144,7 +144,7 @@ Run these in order:
 4. hold two controls at once
 5. double-tap style action
 6. joystick plus button
-7. mouse-look plus button
+7. aim plus button
 8. floating joystick movement
 9. one-shot drag gesture
 10. layer shift or macro, if used
@@ -165,7 +165,7 @@ Test:
 
 - `WASD` movement
 - `LeftShift` sprint-lock drag if the profile uses it
-- `MouseRight` mouse-look activation
+- `MouseRight` aim activation
 - `MouseLeft` firing while looking
 - jump, crouch, prone, interact
 
@@ -189,7 +189,7 @@ Test:
 
 These are keyboard starter layouts, not a dedicated analog steering-wheel implementation.
 
-## 8. Mouse Look Validation
+## 8. Aim Validation
 
 ### `always_on`
 

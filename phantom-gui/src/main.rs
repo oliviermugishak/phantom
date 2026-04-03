@@ -127,7 +127,7 @@ const BINDABLE_KEYS: &[&str] = &[
     "WheelDown",
 ];
 
-const MAX_LOGICAL_TOUCH_SLOT: u8 = u8::MAX;
+const MAX_LOGICAL_TOUCH_SLOT: u8 = u8::MAX - 1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -215,6 +215,7 @@ struct RuntimeState {
     paused: bool,
     capture_active: bool,
     mouse_grabbed: bool,
+    mouse_touch_active: bool,
     keyboard_grabbed: bool,
     screen: Option<(u32, u32)>,
     active_layers: Vec<String>,
@@ -666,6 +667,13 @@ impl PhantomGui {
         );
         ui.label(
             RichText::new(
+                "When capture is on, releasing the mouse leaves Phantom in menu-touch mode. Grab the mouse to switch back into gameplay aim.",
+            )
+            .small()
+            .color(Color32::from_gray(170)),
+        );
+        ui.label(
+            RichText::new(
                 "Pause is mainly a debug shortcut. Set pause_toggle = \"none\" in config if it is not part of your workflow.",
             )
             .small()
@@ -726,12 +734,12 @@ impl PhantomGui {
 
         ui.add_space(8.0);
         ui.group(|ui| {
-            ui.label(RichText::new("Mouse Look").strong());
+            ui.label(RichText::new("Aim").strong());
             if mouse_look_nodes.is_empty() {
-                ui.label("No Mouse Look node in this profile yet.");
+                ui.label("No Aim node in this profile yet.");
                 ui.label(
                     RichText::new(
-                        "Add a Mouse Look control, then select it to edit activation mode and activation key.",
+                        "Add an Aim control, then select it to edit activation mode, anchor, and activation key.",
                     )
                     .small(),
                 );
@@ -750,7 +758,7 @@ impl PhantomGui {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(
-                        "Mouse look is touch-drag camera emulation. It is not a desktop cursor or native raw mouse path.",
+                        "Aim is engine-managed touch-drag camera emulation. It is not a desktop cursor or native raw mouse path.",
                     )
                     .small()
                     .color(Color32::from_gray(170)),
@@ -781,7 +789,7 @@ impl PhantomGui {
         ui.add_space(8.0);
         ui.label(
             RichText::new(
-                "Select a control from the list or canvas to edit bindings, position, mouse-look behavior, and layer settings.",
+                "Select a control from the list or canvas to edit bindings, position, aim behavior, and layer settings.",
             )
             .small()
             .color(Color32::from_gray(170)),
@@ -819,9 +827,17 @@ impl PhantomGui {
             ui.label(format!(
                 "Mouse routing: {}",
                 if self.runtime.mouse_grabbed {
-                    "on"
+                    "gameplay aim"
                 } else {
-                    "off"
+                    "released"
+                }
+            ));
+            ui.label(format!(
+                "Menu touch: {}",
+                if self.runtime.mouse_touch_active {
+                    "active"
+                } else {
+                    "inactive"
                 }
             ));
             ui.label(format!(
@@ -913,9 +929,9 @@ impl PhantomGui {
                     self.send_runtime_request(IpcRequest::ToggleCapture, "capture toggled");
                 }
                 let mouse_label = if self.runtime.mouse_grabbed {
-                    "Release Mouse"
+                    "Release To Menu"
                 } else {
-                    "Grab Mouse"
+                    "Grab For Aim"
                 };
                 if ui
                     .add_enabled(self.runtime.capture_active, egui::Button::new(mouse_label))
@@ -1254,6 +1270,9 @@ impl PhantomGui {
         self.runtime.paused = response.paused.unwrap_or(false);
         self.runtime.capture_active = response.capture_active.unwrap_or(false);
         self.runtime.mouse_grabbed = response.mouse_grabbed.unwrap_or(false);
+        self.runtime.mouse_touch_active = response
+            .mouse_touch_active
+            .unwrap_or(self.runtime.capture_active && !self.runtime.mouse_grabbed);
         self.runtime.keyboard_grabbed = response.keyboard_grabbed.unwrap_or(false);
         self.runtime.active_layers = response.active_layers.clone().unwrap_or_default();
         self.runtime.screen = match (response.screen_width, response.screen_height) {
@@ -1411,9 +1430,9 @@ impl PhantomGui {
                     }
                 }
             }
-            Node::MouseCamera { slot, region, .. } => {
+            Node::MouseCamera { slot, anchor, .. } => {
                 *slot = self.next_slot()?;
-                *region = offset_region(*region);
+                *anchor = offset_rel_pos(*anchor);
             }
             Node::Macro { .. } | Node::LayerShift { .. } => {}
         }
@@ -1655,27 +1674,18 @@ impl PhantomGui {
                 key: "Up".into(),
                 duration_ms: 90,
             },
-            NodeTemplate::MouseLook => {
-                let width = 0.55;
-                let height = 1.0;
-                let x = (rel.x - width / 2.0).clamp(0.0, 1.0 - width);
-                let y = 0.0;
-                Node::MouseCamera {
-                    id: format!("look_{}", slot),
-                    layer: String::new(),
-                    slot,
-                    region: Region {
-                        x,
-                        y,
-                        w: width,
-                        h: height,
-                    },
-                    sensitivity: 1.0,
-                    activation_mode: MouseCameraActivationMode::AlwaysOn,
-                    activation_key: None,
-                    invert_y: false,
-                }
-            }
+            NodeTemplate::MouseLook => Node::MouseCamera {
+                id: format!("aim_{}", slot),
+                layer: String::new(),
+                slot,
+                anchor: rel,
+                reach: 0.18,
+                sensitivity: 1.0,
+                activation_mode: MouseCameraActivationMode::AlwaysOn,
+                activation_key: None,
+                invert_y: false,
+                legacy_region: None,
+            },
             NodeTemplate::RepeatTap => Node::RepeatTap {
                 id: format!("rapid_{}", slot),
                 layer: String::new(),
@@ -2089,7 +2099,7 @@ impl PhantomGui {
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::MouseLook),
-                        "Mouse Look (7)",
+                        "Aim (7)",
                     );
                     tool_button(
                         ui,
@@ -2148,9 +2158,9 @@ impl PhantomGui {
                         self.send_runtime_request(IpcRequest::ToggleCapture, "capture toggled");
                     }
                     let mouse_label = if self.runtime.mouse_grabbed {
-                        "Release Mouse"
+                        "Release To Menu"
                     } else {
-                        "Grab Mouse"
+                        "Grab For Aim"
                     };
                     if ui
                         .add_enabled(self.runtime.capture_active, egui::Button::new(mouse_label))
@@ -2200,6 +2210,7 @@ impl PhantomGui {
                             );
                         }
                         runtime_chip(ui, self.runtime.mouse_grabbed, "Mouse");
+                        runtime_chip(ui, self.runtime.mouse_touch_active, "MenuTouch");
                         runtime_chip(ui, self.runtime.keyboard_grabbed, "Keyboard");
                         runtime_chip(ui, self.runtime.capture_active, "Capture");
                         runtime_chip(ui, !self.runtime.paused, "Active");
@@ -2402,6 +2413,14 @@ impl PhantomGui {
                     }
                 ));
                 ui.label(format!(
+                    "Menu touch: {}",
+                    if self.runtime.mouse_touch_active {
+                        "active"
+                    } else {
+                        "inactive"
+                    }
+                ));
+                ui.label(format!(
                     "Processing: {}",
                     if self.runtime.paused {
                         "paused"
@@ -2504,13 +2523,13 @@ impl PhantomGui {
                         ui.label(RichText::new("Quick Starts").strong());
                         ui.label(
                             RichText::new(
-                                "Use Mouse Look for camera drag, Drag for one-shot swipes, and Layer Switch for context-specific remaps.",
+                                "Use Aim for camera drag, Drag for one-shot swipes, and Layer Switch for context-specific remaps.",
                             )
                             .small()
                             .color(Color32::from_gray(165)),
                         );
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("Add Mouse Look").clicked() {
+                            if ui.button("Add Aim").clicked() {
                                 self.tool = Tool::Place(NodeTemplate::MouseLook);
                             }
                             if ui.button("Add Drag").clicked() {
@@ -2707,7 +2726,12 @@ impl PhantomGui {
                             .color(Color32::from_gray(170)),
                         );
                     }
-                    Node::MouseCamera { layer, region, .. } => {
+                    Node::MouseCamera {
+                        layer,
+                        anchor,
+                        reach,
+                        ..
+                    } => {
                         layer_row(
                             ui,
                             layer,
@@ -2716,7 +2740,29 @@ impl PhantomGui {
                             suggested_layer,
                             &mut dirty,
                         );
-                        region_editor(ui, region, screen.as_ref(), &mut dirty);
+                        position_editor(ui, anchor, screen.as_ref(), &mut dirty);
+                        ui.horizontal(|ui| {
+                            ui.label("Reach");
+                            let mut value = *reach;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut value)
+                                        .speed(0.005)
+                                        .range(0.05..=0.45),
+                                )
+                                .changed()
+                            {
+                                *reach = round3(value);
+                                dirty = true;
+                            }
+                        });
+                        ui.label(
+                            RichText::new(
+                                "Aim is engine-managed camera drag. The anchor is where Phantom re-centers the hidden look touch.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(170)),
+                        );
                     }
                     Node::Macro { layer, .. } => {
                         layer_row(
@@ -2909,7 +2955,7 @@ impl PhantomGui {
                                 "While Held: hold the activation key to enable camera drag. Good for ADS-style workflows."
                             }
                             MouseCameraActivationMode::Toggle => {
-                                "Toggle: press the activation key once to enable mouse look, then again to disable it."
+                                "Toggle: press the activation key once to enable aim, then again to disable it."
                             }
                         };
                         ui.label(
@@ -3968,7 +4014,7 @@ fn display_type(node: &Node) -> &'static str {
         Node::ToggleTap { .. } => "Toggle Button",
         Node::Joystick { .. } => "Left Stick",
         Node::Drag { .. } => "Drag Gesture",
-        Node::MouseCamera { .. } => "Mouse Look",
+        Node::MouseCamera { .. } => "Aim",
         Node::RepeatTap { .. } => "Rapid Tap",
         Node::Macro { .. } => "Macro",
         Node::LayerShift { .. } => "Layer Switch",
@@ -3992,12 +4038,12 @@ fn display_binding(node: &Node) -> String {
             activation_key,
             ..
         } => match activation_mode {
-            MouseCameraActivationMode::AlwaysOn => "Mouse Look".into(),
+            MouseCameraActivationMode::AlwaysOn => "Aim".into(),
             MouseCameraActivationMode::WhileHeld => {
-                format!("Look: hold {}", activation_key.as_deref().unwrap_or("?"))
+                format!("Aim: hold {}", activation_key.as_deref().unwrap_or("?"))
             }
             MouseCameraActivationMode::Toggle => {
-                format!("Look: toggle {}", activation_key.as_deref().unwrap_or("?"))
+                format!("Aim: toggle {}", activation_key.as_deref().unwrap_or("?"))
             }
         },
     }
@@ -4137,8 +4183,7 @@ fn node_region(node: &Node) -> Option<&Region> {
             mode: JoystickMode::Floating,
             region: Some(region),
             ..
-        }
-        | Node::MouseCamera { region, .. } => Some(region),
+        } => Some(region),
         _ => None,
     }
 }
@@ -4149,8 +4194,7 @@ fn node_region_mut(node: &mut Node) -> Option<&mut Region> {
             mode: JoystickMode::Floating,
             region: Some(region),
             ..
-        }
-        | Node::MouseCamera { region, .. } => Some(region),
+        } => Some(region),
         _ => None,
     }
 }
@@ -4174,7 +4218,7 @@ fn marker_glyph(node: &Node) -> &'static str {
         Node::ToggleTap { .. } => "G",
         Node::Joystick { .. } => "J",
         Node::Drag { .. } => "D",
-        Node::MouseCamera { .. } => "M",
+        Node::MouseCamera { .. } => "A",
         Node::RepeatTap { .. } => "R",
         Node::Macro { .. } => "C",
         Node::LayerShift { .. } => "L",
@@ -4192,12 +4236,12 @@ fn node_pos(node: &Node) -> Option<&RelPos> {
             mode: JoystickMode::Fixed,
             pos,
             ..
-        } => Some(pos),
+        }
+        | Node::MouseCamera { anchor: pos, .. } => Some(pos),
         Node::Joystick {
             mode: JoystickMode::Floating,
             ..
         }
-        | Node::MouseCamera { .. }
         | Node::Macro { .. }
         | Node::LayerShift { .. } => None,
     }
@@ -4214,12 +4258,12 @@ fn node_pos_mut(node: &mut Node) -> Option<&mut RelPos> {
             mode: JoystickMode::Fixed,
             pos,
             ..
-        } => Some(pos),
+        }
+        | Node::MouseCamera { anchor: pos, .. } => Some(pos),
         Node::Joystick {
             mode: JoystickMode::Floating,
             ..
         }
-        | Node::MouseCamera { .. }
         | Node::Macro { .. }
         | Node::LayerShift { .. } => None,
     }
@@ -4247,7 +4291,7 @@ fn tool_label(tool: Tool) -> &'static str {
         Tool::Place(NodeTemplate::ToggleTap) => "toggle button",
         Tool::Place(NodeTemplate::Joystick) => "left stick",
         Tool::Place(NodeTemplate::Drag) => "drag gesture",
-        Tool::Place(NodeTemplate::MouseLook) => "mouse look region",
+        Tool::Place(NodeTemplate::MouseLook) => "aim anchor",
         Tool::Place(NodeTemplate::RepeatTap) => "rapid tap button",
         Tool::Place(NodeTemplate::Macro) => "macro",
         Tool::Place(NodeTemplate::LayerShift) => "layer switch",
@@ -4263,7 +4307,7 @@ fn binding_target_label(target: &BindingTarget) -> &'static str {
             JoyDir::Left => "stick left",
             JoyDir::Right => "stick right",
         },
-        BindingTarget::MouseLookActivation(_) => "mouse look activator",
+        BindingTarget::MouseLookActivation(_) => "aim activator",
     }
 }
 
@@ -4861,7 +4905,7 @@ fn node_id_prefix(node: &Node) -> &'static str {
         Node::ToggleTap { .. } => "toggle",
         Node::Joystick { .. } => "stick",
         Node::Drag { .. } => "drag",
-        Node::MouseCamera { .. } => "look",
+        Node::MouseCamera { .. } => "aim",
         Node::RepeatTap { .. } => "rapid",
         Node::Macro { .. } => "macro",
         Node::LayerShift { .. } => "layer",
@@ -4953,16 +4997,15 @@ fn draw_hover_card(
             }
         }
         Node::MouseCamera {
-            region,
+            anchor,
+            reach,
             activation_mode,
             activation_key,
             sensitivity,
             ..
         } => {
-            lines.push(format!(
-                "Region: {:.3}, {:.3}, {:.3}, {:.3}",
-                region.x, region.y, region.w, region.h
-            ));
+            lines.push(format!("Anchor: {:.3}, {:.3}", anchor.x, anchor.y));
+            lines.push(format!("Reach: {:.3}", reach));
             lines.push(format!("Sensitivity: {:.2}", sensitivity));
             lines.push(format!(
                 "Mode: {}",

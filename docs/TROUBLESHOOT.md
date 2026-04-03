@@ -124,40 +124,56 @@ Fix:
 
 - align the profile and daemon screen contracts with the real fullscreen Android surface
 
-## Mouse Look Does Not Work
+## Aim Does Not Work
 
 Check:
 
 - mouse routing is enabled
 - capture is enabled
-- `mouse_camera` region is correct
-- `mouse_camera` activation mode matches the intended workflow
+- `aim` anchor and reach are reasonable
+- `aim` activation mode matches the intended workflow
 - activation key is present if mode is `while_held` or `toggle`
-- the loaded profile actually contains a `mouse_camera` node
+- the loaded profile actually contains an `aim` node
 
 Useful cases:
 
-- start with `always_on` to prove the region itself is correct
+- start with `always_on` to prove the aim node itself is correct
 - then switch to `while_held` or `toggle`
 
 Note:
 
 - touchpads now work, but they may still feel less smooth than a real mouse because Phantom must derive relative motion from absolute touchpad coordinates
-- Phantom now filters large touchpad re-anchor jumps and preserves mouse-look mode across `F1`, but a real mouse is still the best path for fast aim-heavy games
+- Phantom now filters large touchpad re-anchor jumps and preserves aim mode across `F1`, but a real mouse is still the best path for fast aim-heavy games
 
-## Mouse Look Stops After `F1` Mouse Toggle
+## Aim Stops After `F1` Mouse Toggle
 
 Expected behavior now:
 
-- `F1` lifts the active mouse-look finger
-- `toggle` mouse-look stays enabled across the routing change
-- `while_held` mouse-look is resynced from the real current mouse-button state when routing is re-enabled
+- `F1` lifts the active aim finger
+- `toggle` aim stays enabled across the routing change
+- `while_held` aim is resynced from the real current mouse-button state when routing is re-enabled
 
 If it still feels wrong:
 
 - check whether the profile uses `toggle` or `while_held`
 - verify the activation key is a real mouse button such as `MouseRight`
 - test with a real mouse to separate touchpad-feel issues from routing-state issues
+
+## Menus Need Touch Instead Of Raw Mouse
+
+Some games accept taps and drags in menus but ignore plain desktop mouse input.
+
+Use this workflow:
+
+- enter capture
+- leave the mouse released instead of grabbing gameplay aim
+- navigate with left click and drag
+
+Expected behavior:
+
+- left click becomes touch down / up
+- moving while held becomes drag
+- `F1` grabs the mouse back for gameplay aim when needed
 
 ## PUBG Sprint-Lock Drag Does Not Feel Right
 

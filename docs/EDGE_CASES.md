@@ -21,7 +21,7 @@ Affected node types:
 - `toggle_tap`
 - `joystick`
 - `drag`
-- `mouse_camera`
+- `aim`
 - `repeat_tap`
 
 Implication:
@@ -37,9 +37,9 @@ That means:
 - Temple Run tilt-to-collect-coins is unsupported
 - any game that requires sensors and offers no touch alternative is outside the current feature set
 
-## 3. `mouse_camera` Is Not A Desktop Cursor
+## 3. `aim` Is Not A Desktop Cursor
 
-`mouse_camera` is a bounded drag-based look primitive.
+`aim` is a bounded drag-based look primitive.
 
 It is good for:
 
@@ -51,6 +51,8 @@ It is not:
 
 - a desktop pointer
 - a generic Android cursor substitute
+
+For UI navigation while capture is active and the mouse is released, Phantom now provides runtime mouse-to-touch behavior separately from `aim`.
 
 ## 4. Dedicated Steering-Wheel Input Is Not First-Class Yet
 

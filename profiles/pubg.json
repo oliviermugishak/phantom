@@ -40,15 +40,14 @@
       "duration_ms": 110
     },
     {
-      "type": "mouse_camera",
+      "type": "aim",
       "id": "camera",
       "slot": 2,
-      "region": {
-        "x": 0.0,
-        "y": 0.0,
-        "w": 1.0,
-        "h": 1.0
+      "anchor": {
+        "x": 0.75,
+        "y": 0.5
       },
+      "reach": 0.18,
       "sensitivity": 1.15,
       "activation_mode": "toggle",
       "activation_key": "Tab",
