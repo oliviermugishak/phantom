@@ -267,6 +267,8 @@ Fields:
   Normalized internal recenter point for the hidden look touch.
 - `reach`
   Maximum normalized travel from the anchor before Phantom re-segments the gesture.
+  In practice, Phantom keeps aim tighter than this for stability, so larger
+  values have diminishing returns.
 - `sensitivity`
   Node-local multiplier.
 - `activation_mode`
@@ -285,6 +287,9 @@ Important:
 - it is not desktop pointer emulation
 - menu-touch navigation is runtime behavior, not a profile node
 - runtime mouse grab or `F1` alone does not enable camera movement; the loaded profile must contain an `aim` node
+- aim motion is still emitted immediately from input movement
+- touchpad roughness is reduced in input translation by splitting large absolute
+  touchpad jumps into smaller motion steps before they reach the engine
 - toggled aim state survives `F1` mouse routing changes
 - `while_held` mouse activation keys are resynced when mouse routing is re-enabled
 - older profiles using `type = "mouse_camera"` and `region` still load; Phantom normalizes them to `aim` semantics internally
@@ -308,6 +313,8 @@ Behavior:
 
 - key press starts a repeating touch cycle
 - key release stops it and releases the slot
+- `interval_ms` must be greater than zero
+- practical repeat timing is bounded by the daemon tick cadence; Phantom now runs that at `4ms`, so values below that may collapse toward the same effective rate depending on scheduler timing
 
 ### `macro`
 

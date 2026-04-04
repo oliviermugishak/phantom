@@ -2997,7 +2997,7 @@ impl PhantomGui {
                             .add(
                                 egui::DragValue::new(&mut value)
                                     .speed(1.0)
-                                    .range(16.0..=1000.0),
+                                    .range(1.0..=1000.0),
                             )
                             .changed()
                         {

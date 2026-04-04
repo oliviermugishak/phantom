@@ -16,6 +16,7 @@ use phantom::touch;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const ENGINE_TICK_INTERVAL_MS: u64 = 4;
 
 fn print_help() {
     println!(
@@ -280,7 +281,9 @@ async fn run_daemon() -> Result<()> {
 
     let mut input_interval = tokio::time::interval(Duration::from_millis(1));
     input_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut tick_interval = tokio::time::interval(Duration::from_millis(16));
+    // 4 ms is a better compromise for repeat-tap, drag, and macro timing than
+    // the old frame-like 16 ms cadence, while still avoiding a 1 ms hot loop.
+    let mut tick_interval = tokio::time::interval(Duration::from_millis(ENGINE_TICK_INTERVAL_MS));
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {

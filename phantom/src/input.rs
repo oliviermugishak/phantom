@@ -27,6 +27,7 @@ const ABS_Y: u16 = 0x01;
 const EVDEV_CAP_MAX: usize = 0x20;
 const EVDEV_KEY_MAX: usize = 0x2ff;
 const EVDEV_KEY_BUF_SIZE: usize = (EVDEV_KEY_MAX + 1).div_ceil(8);
+const ABSOLUTE_POINTER_MAX_STEP: i32 = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -56,7 +57,17 @@ const _: [(); 24] = [(); std::mem::size_of::<InputAbsInfo>()];
 pub enum InputEvent {
     KeyPress(Key),
     KeyRelease(Key),
-    MouseMove { dx: i32, dy: i32 },
+    MouseMove {
+        dx: i32,
+        dy: i32,
+        source: MouseMotionSource,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseMotionSource {
+    Relative,
+    Absolute,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -911,9 +922,7 @@ impl InputCapture {
                     }
                 }
                 if event.code == SYN_REPORT {
-                    if let Some(mouse_move) = Self::flush_absolute_pointer_motion(device) {
-                        result.push(mouse_move);
-                    }
+                    result.extend(Self::flush_absolute_pointer_motion(device));
                 }
                 continue;
             }
@@ -966,6 +975,7 @@ impl InputCapture {
                     result.push(InputEvent::MouseMove {
                         dx: event.value,
                         dy: 0,
+                        source: MouseMotionSource::Relative,
                     });
                 } else if event.code == REL_Y
                     && matches!(device.pointer_kind, PointerKind::Relative)
@@ -981,6 +991,7 @@ impl InputCapture {
                     result.push(InputEvent::MouseMove {
                         dx: 0,
                         dy: event.value,
+                        source: MouseMotionSource::Relative,
                     });
                 } else if event.code == REL_WHEEL {
                     // Map scroll wheel to key press+release
@@ -1055,10 +1066,15 @@ impl InputCapture {
         for event in original {
             match (merged.last_mut(), event) {
                 (
-                    Some(InputEvent::MouseMove { dx, dy }),
+                    Some(InputEvent::MouseMove {
+                        dx,
+                        dy,
+                        source: MouseMotionSource::Relative,
+                    }),
                     InputEvent::MouseMove {
                         dx: next_dx,
                         dy: next_dy,
+                        source: MouseMotionSource::Relative,
                     },
                 ) => {
                     *dx += next_dx;
@@ -1070,18 +1086,20 @@ impl InputCapture {
         *events = merged;
     }
 
-    fn flush_absolute_pointer_motion(device: &mut DeviceInfo) -> Option<InputEvent> {
+    fn flush_absolute_pointer_motion(device: &mut DeviceInfo) -> Vec<InputEvent> {
         if !matches!(device.pointer_kind, PointerKind::Absolute) || !device.abs_dirty {
-            return None;
+            return Vec::new();
         }
 
         device.abs_dirty = false;
         let (next_x, next_y) = match (device.abs_x, device.abs_y) {
             (Some(x), Some(y)) => (x, y),
-            _ => return None,
+            _ => return Vec::new(),
         };
 
-        let (prev_x, prev_y) = device.last_abs_position.replace((next_x, next_y))?;
+        let Some((prev_x, prev_y)) = device.last_abs_position.replace((next_x, next_y)) else {
+            return Vec::new();
+        };
 
         let dx = next_x - prev_x;
         let dy = next_y - prev_y;
@@ -1096,19 +1114,19 @@ impl InputCapture {
                     "ignoring touchpad re-anchor jump"
                 );
             }
-            return None;
+            return Vec::new();
         }
         if dx == 0 && dy == 0 {
-            return None;
+            return Vec::new();
         }
         if dx.abs() <= 1 && dy.abs() <= 1 {
-            return None;
+            return Vec::new();
         }
 
         if trace_detail_enabled() {
             tracing::trace!(device = %device.path, dx = dx, dy = dy, "translated touchpad move");
         }
-        Some(InputEvent::MouseMove { dx, dy })
+        split_absolute_pointer_motion(dx, dy)
     }
 
     pub fn device_count(&self) -> usize {
@@ -1315,6 +1333,35 @@ fn absolute_reanchor_jump(delta: i32, range: Option<(i32, i32)>) -> bool {
     delta.abs() >= threshold
 }
 
+fn split_absolute_pointer_motion(dx: i32, dy: i32) -> Vec<InputEvent> {
+    let max_component = dx.abs().max(dy.abs());
+    let steps = (max_component.max(1) + ABSOLUTE_POINTER_MAX_STEP - 1) / ABSOLUTE_POINTER_MAX_STEP;
+    let mut events = Vec::with_capacity(steps as usize);
+    let mut emitted_x = 0;
+    let mut emitted_y = 0;
+
+    for step in 1..=steps {
+        let target_x = (dx * step) / steps;
+        let target_y = (dy * step) / steps;
+        let step_dx = target_x - emitted_x;
+        let step_dy = target_y - emitted_y;
+        emitted_x = target_x;
+        emitted_y = target_y;
+
+        if step_dx == 0 && step_dy == 0 {
+            continue;
+        }
+
+        events.push(InputEvent::MouseMove {
+            dx: step_dx,
+            dy: step_dy,
+            source: MouseMotionSource::Absolute,
+        });
+    }
+
+    events
+}
+
 fn eviocgname_request(len: usize) -> libc::c_ulong {
     nix::request_code_read!(b'E', 0x06, len) as libc::c_ulong
 }
@@ -1351,24 +1398,55 @@ mod tests {
     #[test]
     fn merge_mouse_moves_only_merges_adjacent_moves() {
         let mut events = vec![
-            InputEvent::MouseMove { dx: 1, dy: 0 },
-            InputEvent::MouseMove { dx: 0, dy: 2 },
+            InputEvent::MouseMove {
+                dx: 1,
+                dy: 0,
+                source: MouseMotionSource::Relative,
+            },
+            InputEvent::MouseMove {
+                dx: 0,
+                dy: 2,
+                source: MouseMotionSource::Relative,
+            },
             InputEvent::KeyPress(Key::A),
-            InputEvent::MouseMove { dx: 3, dy: 4 },
+            InputEvent::MouseMove {
+                dx: 3,
+                dy: 4,
+                source: MouseMotionSource::Relative,
+            },
         ];
         InputCapture::merge_mouse_moves(&mut events);
 
         assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], InputEvent::MouseMove { dx: 1, dy: 2 }));
+        assert!(matches!(
+            events[0],
+            InputEvent::MouseMove {
+                dx: 1,
+                dy: 2,
+                source: MouseMotionSource::Relative
+            }
+        ));
         assert!(matches!(events[1], InputEvent::KeyPress(Key::A)));
-        assert!(matches!(events[2], InputEvent::MouseMove { dx: 3, dy: 4 }));
+        assert!(matches!(
+            events[2],
+            InputEvent::MouseMove {
+                dx: 3,
+                dy: 4,
+                source: MouseMotionSource::Relative
+            }
+        ));
     }
 
     #[test]
     fn input_origin_helpers_distinguish_mouse_and_keyboard() {
         assert!(Key::MouseLeft.is_mouse());
         assert!(!Key::A.is_mouse());
-        assert!(InputEvent::MouseMove { dx: 1, dy: 1 }.is_mouse_input());
+        assert!(InputEvent::MouseMove {
+            dx: 1,
+            dy: 1,
+            source: MouseMotionSource::Relative
+        }
+        .is_mouse_input());
         assert!(InputEvent::KeyPress(Key::MouseRight).is_mouse_input());
         assert!(InputEvent::KeyPress(Key::A).is_keyboard_input());
         assert!(!InputEvent::KeyRelease(Key::MouseLeft).is_keyboard_input());
@@ -1468,8 +1546,23 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(second.len(), 1);
-        assert!(matches!(second[0], InputEvent::MouseMove { dx: 12, dy: 6 }));
+        assert_eq!(second.len(), 2);
+        assert!(matches!(
+            second[0],
+            InputEvent::MouseMove {
+                dx: 6,
+                dy: 3,
+                source: MouseMotionSource::Absolute
+            }
+        ));
+        assert!(matches!(
+            second[1],
+            InputEvent::MouseMove {
+                dx: 6,
+                dy: 3,
+                source: MouseMotionSource::Absolute
+            }
+        ));
     }
 
     #[test]

@@ -96,7 +96,7 @@ impl MouseTouchEmulator {
 
     pub fn process(&mut self, event: &InputEvent) -> Vec<TouchCommand> {
         match event {
-            InputEvent::MouseMove { dx, dy } => self.handle_move(*dx, *dy),
+            InputEvent::MouseMove { dx, dy, .. } => self.handle_move(*dx, *dy),
             InputEvent::KeyPress(Key::MouseLeft) => self.handle_press(),
             InputEvent::KeyRelease(Key::MouseLeft) => self.handle_release(),
             _ => Vec::new(),
@@ -201,6 +201,7 @@ impl MouseTouchEmulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::MouseMotionSource;
 
     #[test]
     fn left_click_becomes_touch_down_and_up() {
@@ -228,7 +229,11 @@ mod tests {
     fn drag_moves_active_touch() {
         let mut emulator = MouseTouchEmulator::new_virtual(100, 100);
         let _ = emulator.process(&InputEvent::KeyPress(Key::MouseLeft));
-        let cmds = emulator.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let cmds = emulator.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 5,
+            source: MouseMotionSource::Relative,
+        });
         assert!(matches!(
             cmds.as_slice(),
             [TouchCommand::TouchMove {

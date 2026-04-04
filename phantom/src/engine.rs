@@ -9,6 +9,7 @@ use crate::profile::{
 
 const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
 const MOUSE_LOOK_SCALE: f64 = 1.0 / 500.0;
+const MOUSE_LOOK_OPERATIONAL_REACH_CAP: f64 = 0.08;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TouchCommand {
@@ -77,8 +78,14 @@ pub struct KeymapEngine {
 }
 
 impl KeymapEngine {
+    fn mouse_camera_effective_reach(reach: f64) -> f64 {
+        reach
+            .clamp(0.01, 0.45)
+            .min(MOUSE_LOOK_OPERATIONAL_REACH_CAP)
+    }
+
     fn mouse_camera_center(anchor: &RelPos, reach: f64) -> (f64, f64) {
-        let reach = reach.clamp(0.01, 0.45);
+        let reach = Self::mouse_camera_effective_reach(reach);
         (
             anchor.x.clamp(reach, 1.0 - reach),
             anchor.y.clamp(reach, 1.0 - reach),
@@ -212,12 +219,10 @@ impl KeymapEngine {
         if !finger_active {
             cmds.push(TouchCommand::TouchDown {
                 slot,
-                x: anchor_x,
-                y: anchor_y,
+                x: current_x,
+                y: current_y,
             });
             finger_active = true;
-            current_x = anchor_x;
-            current_y = anchor_y;
         }
 
         for _ in 0..8 {
@@ -383,7 +388,7 @@ impl KeymapEngine {
         let cmds = match event {
             InputEvent::KeyPress(key) => self.handle_key_press(*key),
             InputEvent::KeyRelease(key) => self.handle_key_release(*key),
-            InputEvent::MouseMove { dx, dy } => self.handle_mouse_move(*dx, *dy),
+            InputEvent::MouseMove { dx, dy, .. } => self.handle_mouse_move(*dx, *dy),
         };
         if !cmds.is_empty() || trace_detail_enabled() {
             tracing::trace!(
@@ -1078,7 +1083,6 @@ impl KeymapEngine {
 
     fn handle_mouse_move(&mut self, dx: i32, dy: i32) -> Vec<TouchCommand> {
         let mut cmds = Vec::new();
-
         for idx in 0..self.profile.nodes.len() {
             let node = &self.profile.nodes[idx];
             if !self.is_node_active(node) {
@@ -1383,6 +1387,8 @@ impl KeymapEngine {
                 NodeState::MouseCamera {
                     enabled,
                     finger_active,
+                    current_x,
+                    current_y,
                     ..
                 },
             ) => {
@@ -1392,9 +1398,8 @@ impl KeymapEngine {
                         cmds.push(TouchCommand::TouchUp { slot });
                     }
                 }
-                let (center_x, center_y) = Self::mouse_camera_center(anchor, *reach);
                 self.states[idx] = Self::suspended_mouse_camera_state(
-                    anchor, *reach, *enabled, center_x, center_y,
+                    anchor, *reach, *enabled, *current_x, *current_y,
                 );
                 cmds
             }
@@ -1557,6 +1562,7 @@ fn lerp(start: f64, end: f64, t: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::MouseMotionSource;
     use crate::profile::*;
 
     fn screen() -> Option<ScreenOverride> {
@@ -1744,7 +1750,11 @@ mod tests {
             nodes: vec![aim_node(MouseCameraActivationMode::AlwaysOn, None)],
         };
         let mut engine = KeymapEngine::new(profile);
-        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 5,
+            source: MouseMotionSource::Relative,
+        });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
         assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
     }
@@ -1763,12 +1773,20 @@ mod tests {
         };
         let mut engine = KeymapEngine::new(profile);
         assert!(engine
-            .process(&InputEvent::MouseMove { dx: 10, dy: 5 })
+            .process(&InputEvent::MouseMove {
+                dx: 10,
+                dy: 5,
+                source: MouseMotionSource::Relative,
+            })
             .is_empty());
         assert!(engine
             .process(&InputEvent::KeyPress(Key::MouseRight))
             .is_empty());
-        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 5,
+            source: MouseMotionSource::Relative,
+        });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
         assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
         let cmds = engine.process(&InputEvent::KeyRelease(Key::MouseRight));
@@ -1792,12 +1810,20 @@ mod tests {
         };
         let mut engine = KeymapEngine::new(profile);
         assert!(engine
-            .process(&InputEvent::MouseMove { dx: 10, dy: 5 })
+            .process(&InputEvent::MouseMove {
+                dx: 10,
+                dy: 5,
+                source: MouseMotionSource::Relative,
+            })
             .is_empty());
         assert!(engine
             .process(&InputEvent::KeyPress(Key::MouseRight))
             .is_empty());
-        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 5,
+            source: MouseMotionSource::Relative,
+        });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
         assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
         assert!(engine
@@ -1809,7 +1835,11 @@ mod tests {
             [TouchCommand::TouchUp { slot: 1 }]
         ));
         assert!(engine
-            .process(&InputEvent::MouseMove { dx: 10, dy: 5 })
+            .process(&InputEvent::MouseMove {
+                dx: 10,
+                dy: 5,
+                source: MouseMotionSource::Relative,
+            })
             .is_empty());
     }
 
@@ -1829,13 +1859,21 @@ mod tests {
         assert!(engine
             .process(&InputEvent::KeyPress(Key::MouseRight))
             .is_empty());
-        let _ = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let _ = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 5,
+            source: MouseMotionSource::Relative,
+        });
         let cmds = engine.suspend_mouse_inputs();
         assert!(matches!(
             cmds.as_slice(),
             [TouchCommand::TouchUp { slot: 1 }]
         ));
-        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 5,
+            source: MouseMotionSource::Relative,
+        });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
     }
 
@@ -1855,13 +1893,21 @@ mod tests {
         assert!(engine
             .process(&InputEvent::KeyPress(Key::MouseRight))
             .is_empty());
-        let _ = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let _ = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 5,
+            source: MouseMotionSource::Relative,
+        });
         let _ = engine.suspend_mouse_inputs();
 
         let mut pressed = HashSet::new();
         pressed.insert(Key::MouseRight);
         assert!(engine.resync_mouse_buttons(&pressed).is_empty());
-        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 5,
+            source: MouseMotionSource::Relative,
+        });
         assert_eq!(cmds.len(), 2);
 
         pressed.clear();
@@ -1873,7 +1919,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_camera_idle_releases_and_recenters() {
+    fn mouse_camera_idle_releases_and_resumes_from_last_position() {
         let profile = Profile {
             name: "Cam".into(),
             version: 1,
@@ -1882,7 +1928,11 @@ mod tests {
             nodes: vec![aim_node(MouseCameraActivationMode::AlwaysOn, None)],
         };
         let mut engine = KeymapEngine::new(profile);
-        let cmds = engine.process(&InputEvent::MouseMove { dx: 50, dy: 0 });
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 50,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
         let moved_x = match &cmds[1] {
             TouchCommand::TouchMove { x, .. } => *x,
             other => panic!("expected move, got {other:?}"),
@@ -1893,7 +1943,11 @@ mod tests {
             cmds.as_slice(),
             [TouchCommand::TouchUp { slot: 1 }]
         ));
-        let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 0 });
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
         let restart_x = match &cmds[0] {
             TouchCommand::TouchDown { x, .. } => *x,
             other => panic!("expected down, got {other:?}"),
