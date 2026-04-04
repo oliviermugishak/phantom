@@ -24,9 +24,9 @@ use wayland_client::{
 
 use phantom::overlay::CursorOverlayState;
 
-const CURSOR_SURFACE_SIZE: u32 = 32;
-const CURSOR_HOTSPOT_X: i32 = 4;
-const CURSOR_HOTSPOT_Y: i32 = 3;
+const CURSOR_SURFACE_SIZE: u32 = 40;
+const CURSOR_HOTSPOT_X: i32 = 5;
+const CURSOR_HOTSPOT_Y: i32 = 4;
 
 pub fn run_cursor_overlay(state_path: &Path) -> Result<()> {
     if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some()
@@ -420,42 +420,77 @@ fn draw_canvas(canvas: &mut [u8], width: u32, height: u32, visible: bool, presse
         return;
     }
 
-    let outline = [16u8, 16u8, 16u8, 255u8];
-    let fill = if pressed {
-        [255u8, 208u8, 120u8, 255u8]
-    } else {
-        [245u8, 245u8, 245u8, 255u8]
-    };
-
-    let polygon = [
-        (4.0f32, 3.0f32),
-        (4.0, 24.0),
-        (9.5, 18.5),
-        (13.5, 28.5),
-        (17.5, 26.5),
-        (13.0, 16.5),
-        (22.0, 16.5),
+    let arrow = [
+        (5.0f32, 4.0f32),
+        (5.0, 30.0),
+        (10.6, 24.7),
+        (14.2, 35.0),
+        (16.9, 33.8),
+        (13.4, 23.9),
+        (22.4, 23.9),
     ];
+    let shadow_offset = (2.4f32, 1.9f32);
+    let shadow_arrow = translated_polygon(&arrow, shadow_offset.0, shadow_offset.1);
+    let outline = [34u8, 34u8, 38u8, 255u8];
+    let fill = if pressed {
+        [236u8, 238u8, 242u8, 255u8]
+    } else {
+        [248u8, 248u8, 250u8, 255u8]
+    };
 
     for y in 0..height {
         for x in 0..width {
-            let point = (x as f32 + 0.5, y as f32 + 0.5);
-            let inside = point_in_polygon(point, &polygon);
-            let near_edge = polygon_edge_distance(point, &polygon) <= 1.05;
-            let color = if near_edge {
-                Some(outline)
-            } else if inside {
-                Some(fill)
-            } else {
-                None
-            };
+            let point = (x as f32, y as f32);
+            let shadow_cov = sample_polygon_coverage(point, &shadow_arrow);
+            let fill_cov = sample_polygon_coverage(point, &arrow);
+            let outline_cov = sample_outline_coverage(point, &arrow, 1.05);
 
-            if let Some([b, g, r, a]) = color {
-                let index = ((y * width + x) * 4) as usize;
-                canvas[index..index + 4].copy_from_slice(&[b, g, r, a]);
+            let index = ((y * width + x) * 4) as usize;
+            if shadow_cov > 0.0 {
+                let alpha = (shadow_cov * 74.0).round() as u8;
+                canvas[index..index + 4].copy_from_slice(&[0, 0, 0, alpha]);
+            }
+            if fill_cov > 0.0 {
+                let alpha = (fill_cov * fill[3] as f32).round() as u8;
+                canvas[index..index + 4].copy_from_slice(&[fill[0], fill[1], fill[2], alpha]);
+            }
+            if outline_cov > 0.0 {
+                let alpha = (outline_cov * outline[3] as f32).round() as u8;
+                canvas[index..index + 4]
+                    .copy_from_slice(&[outline[0], outline[1], outline[2], alpha]);
             }
         }
     }
+}
+
+fn translated_polygon(polygon: &[(f32, f32)], dx: f32, dy: f32) -> Vec<(f32, f32)> {
+    polygon.iter().map(|(x, y)| (x + dx, y + dy)).collect()
+}
+
+fn sample_polygon_coverage(origin: (f32, f32), polygon: &[(f32, f32)]) -> f32 {
+    let mut inside = 0u32;
+    for sample_y in [0.125f32, 0.375, 0.625, 0.875] {
+        for sample_x in [0.125f32, 0.375, 0.625, 0.875] {
+            if point_in_polygon((origin.0 + sample_x, origin.1 + sample_y), polygon) {
+                inside += 1;
+            }
+        }
+    }
+    inside as f32 / 16.0
+}
+
+fn sample_outline_coverage(origin: (f32, f32), polygon: &[(f32, f32)], thickness: f32) -> f32 {
+    let mut covered = 0u32;
+    for sample_y in [0.125f32, 0.375, 0.625, 0.875] {
+        for sample_x in [0.125f32, 0.375, 0.625, 0.875] {
+            let point = (origin.0 + sample_x, origin.1 + sample_y);
+            let distance = polygon_edge_distance(point, polygon);
+            if point_in_polygon(point, polygon) && distance <= thickness {
+                covered += 1;
+            }
+        }
+    }
+    covered as f32 / 16.0
 }
 
 fn point_in_polygon(point: (f32, f32), polygon: &[(f32, f32)]) -> bool {

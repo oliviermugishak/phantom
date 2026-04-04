@@ -308,17 +308,24 @@ async fn run_daemon() -> Result<()> {
 
                 match raw_events {
                     Ok(raw_events) => {
-                        if raw_events.is_empty() {
-                            continue;
-                        }
-
                         let input_events = match ipc::lock_capture(&state) {
-                            Ok(mut capture) => capture.process_events(&raw_events),
+                            Ok(mut capture) => {
+                                let mut events = if raw_events.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    capture.process_events(&raw_events)
+                                };
+                                events.extend(capture.flush_pending_touchpad_taps());
+                                events
+                            }
                             Err(e) => {
                                 tracing::warn!("input capture lock error: {}", e);
                                 continue;
                             }
                         };
+                        if input_events.is_empty() {
+                            continue;
+                        }
                         if !input_events.is_empty() {
                             tracing::trace!(events = ?input_events, "translated input batch");
                         }
