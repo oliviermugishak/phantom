@@ -45,6 +45,8 @@ For example:
 - `joystick` on `W/A/S/D`
 - `aim` on `MouseRight` in `while_held` or `toggle`
 - `hold_tap` on `MouseLeft` for fire
+- `repeat_tap` on an auxiliary key when the game benefits from repeated taps
+- `wheel` for scroll-driven stance, zoom, or context actions
 - `tap` on `Space` for jump
 - `tap` on `C` for crouch
 - `tap` on `Z` for prone
@@ -169,6 +171,19 @@ Good for:
 - temporary free-look
 
 This is the best default for shooter profiles.
+
+## 5.5 Turbo Fire Patterns
+
+Use `repeat_tap` when:
+
+- you only need a simple repeating interval
+- the game responds well to equally spaced taps
+
+Good shooter examples:
+
+- `repeat_tap` for a generic fast interaction spam
+- `wheel` for scroll-up / scroll-down actions that should hit two different
+  on-screen buttons without inventing separate one-off bindings
 
 ### `toggle`
 

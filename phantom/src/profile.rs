@@ -135,6 +135,15 @@ pub enum Node {
         key: String,
         interval_ms: u64,
     },
+    Wheel {
+        id: String,
+        #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
+        layer: String,
+        up_slot: u8,
+        up_pos: RelPos,
+        down_slot: u8,
+        down_pos: RelPos,
+    },
     Macro {
         id: String,
         #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
@@ -266,6 +275,7 @@ impl Node {
             Node::Drag { .. } => "drag",
             Node::MouseCamera { .. } => "aim",
             Node::RepeatTap { .. } => "repeat_tap",
+            Node::Wheel { .. } => "wheel",
             Node::Macro { .. } => "macro",
             Node::LayerShift { .. } => "layer_shift",
         }
@@ -280,6 +290,7 @@ impl Node {
             | Node::Drag { id, .. }
             | Node::MouseCamera { id, .. }
             | Node::RepeatTap { id, .. }
+            | Node::Wheel { id, .. }
             | Node::Macro { id, .. }
             | Node::LayerShift { id, .. } => id,
         }
@@ -294,6 +305,7 @@ impl Node {
             | Node::Drag { layer, .. }
             | Node::MouseCamera { layer, .. }
             | Node::RepeatTap { layer, .. }
+            | Node::Wheel { layer, .. }
             | Node::Macro { layer, .. } => layer.as_str(),
             Node::LayerShift { .. } => "",
         }
@@ -308,7 +320,7 @@ impl Node {
             | Node::Drag { slot, .. }
             | Node::MouseCamera { slot, .. }
             | Node::RepeatTap { slot, .. } => Some(*slot),
-            Node::Macro { .. } | Node::LayerShift { .. } => None,
+            Node::Wheel { .. } | Node::Macro { .. } | Node::LayerShift { .. } => None,
         }
     }
 
@@ -321,6 +333,7 @@ impl Node {
             | Node::Drag { key, .. }
             | Node::Macro { key, .. }
             | Node::LayerShift { key, .. } => vec![key.as_str()],
+            Node::Wheel { .. } => vec!["WheelUp", "WheelDown"],
             Node::Joystick { keys, .. } => vec![
                 keys.up.as_str(),
                 keys.down.as_str(),
@@ -342,7 +355,7 @@ impl Node {
             | Node::Drag { key, .. }
             | Node::Macro { key, .. }
             | Node::LayerShift { key, .. } => Some(key),
-            Node::Joystick { .. } => None,
+            Node::Joystick { .. } | Node::Wheel { .. } => None,
             Node::MouseCamera { activation_key, .. } => activation_key.as_deref(),
         }
     }
@@ -356,6 +369,7 @@ impl Node {
             | Node::Drag { key, .. }
             | Node::Macro { key, .. }
             | Node::LayerShift { key, .. } => vec![key.clone()],
+            Node::Wheel { .. } => vec!["WheelUp".into(), "WheelDown".into()],
             Node::Joystick { keys, .. } => vec![
                 keys.up.clone(),
                 keys.down.clone(),
@@ -407,7 +421,7 @@ impl Node {
                 invert_y,
                 ..
             } => Some(format!(
-                "anchor=({:.3},{:.3}) reach={:.3} sensitivity={:.3} mode={} key={} invert_y={}",
+                "anchor=({:.3},{:.3}) configured_reach={:.3} operational_cap=0.080 sensitivity={:.3} mode={} key={} invert_y={}",
                 anchor.x,
                 anchor.y,
                 reach,
@@ -419,6 +433,16 @@ impl Node {
                 },
                 activation_key.as_deref().unwrap_or("-"),
                 invert_y
+            )),
+            Node::Wheel {
+                up_slot,
+                up_pos,
+                down_slot,
+                down_pos,
+                ..
+            } => Some(format!(
+                "up_slot={} up=({:.3},{:.3}) down_slot={} down=({:.3},{:.3})",
+                up_slot, up_pos.x, up_pos.y, down_slot, down_pos.x, down_pos.y
             )),
             Node::Macro { sequence, .. } => Some(format!("steps={}", sequence.len())),
             Node::LayerShift {
@@ -524,13 +548,30 @@ impl Profile {
                 });
             }
 
-            if let Some(slot) = node.slot() {
-                validate_slot_value(slot, &format!("nodes.{}.slot", node.id()))?;
-                if !slots.insert(slot) {
-                    return Err(PhantomError::ProfileValidation {
-                        field: format!("nodes.{}.slot", node.id()),
-                        message: format!("duplicate slot {}", slot),
-                    });
+            match node {
+                Node::Wheel {
+                    up_slot, down_slot, ..
+                } => {
+                    for (field, slot) in [("up_slot", *up_slot), ("down_slot", *down_slot)] {
+                        validate_slot_value(slot, &format!("nodes.{}.{}", node.id(), field))?;
+                        if !slots.insert(slot) {
+                            return Err(PhantomError::ProfileValidation {
+                                field: format!("nodes.{}.{}", node.id(), field),
+                                message: format!("duplicate slot {}", slot),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(slot) = node.slot() {
+                        validate_slot_value(slot, &format!("nodes.{}.slot", node.id()))?;
+                        if !slots.insert(slot) {
+                            return Err(PhantomError::ProfileValidation {
+                                field: format!("nodes.{}.slot", node.id()),
+                                message: format!("duplicate slot {}", slot),
+                            });
+                        }
+                    }
                 }
             }
 
@@ -589,23 +630,47 @@ impl Profile {
             let bindings = node.audit_bindings();
             let detail = node.audit_detail();
 
-            if let Some(slot) = node.slot() {
-                touch_entries.push(SlotAuditEntry {
-                    slot,
-                    node_id: node.id().to_string(),
-                    node_type: node.kind(),
-                    layer,
-                    bindings,
-                    detail,
-                });
-            } else {
-                auxiliary_entries.push(AuxiliaryAuditEntry {
-                    node_id: node.id().to_string(),
-                    node_type: node.kind(),
-                    layer,
-                    bindings,
-                    detail,
-                });
+            match node {
+                Node::Wheel {
+                    up_slot, down_slot, ..
+                } => {
+                    touch_entries.push(SlotAuditEntry {
+                        slot: *up_slot,
+                        node_id: format!("{}:up", node.id()),
+                        node_type: node.kind(),
+                        layer: layer.clone(),
+                        bindings: vec!["WheelUp".into()],
+                        detail: detail.clone(),
+                    });
+                    touch_entries.push(SlotAuditEntry {
+                        slot: *down_slot,
+                        node_id: format!("{}:down", node.id()),
+                        node_type: node.kind(),
+                        layer,
+                        bindings: vec!["WheelDown".into()],
+                        detail,
+                    });
+                }
+                _ => {
+                    if let Some(slot) = node.slot() {
+                        touch_entries.push(SlotAuditEntry {
+                            slot,
+                            node_id: node.id().to_string(),
+                            node_type: node.kind(),
+                            layer,
+                            bindings,
+                            detail,
+                        });
+                    } else {
+                        auxiliary_entries.push(AuxiliaryAuditEntry {
+                            node_id: node.id().to_string(),
+                            node_type: node.kind(),
+                            layer,
+                            bindings,
+                            detail,
+                        });
+                    }
+                }
             }
         }
 
@@ -649,6 +714,24 @@ fn validate_node(node: &Node) -> Result<()> {
         | Node::RepeatTap { pos, key, .. } => {
             validate_pos(pos, &format!("nodes.{id}.pos"))?;
             validate_key_name(key, &format!("nodes.{id}.key"))?;
+        }
+        Node::Wheel {
+            up_pos,
+            down_pos,
+            up_slot,
+            down_slot,
+            ..
+        } => {
+            validate_pos(up_pos, &format!("nodes.{id}.up_pos"))?;
+            validate_pos(down_pos, &format!("nodes.{id}.down_pos"))?;
+            validate_slot_value(*up_slot, &format!("nodes.{id}.up_slot"))?;
+            validate_slot_value(*down_slot, &format!("nodes.{id}.down_slot"))?;
+            if up_slot == down_slot {
+                return Err(PhantomError::ProfileValidation {
+                    field: format!("nodes.{id}.down_slot"),
+                    message: "up_slot and down_slot must be different".into(),
+                });
+            }
         }
         Node::Joystick {
             pos,
@@ -1091,6 +1174,20 @@ mod tests {
             activation_key: Some("MouseRight".into()),
             invert_y: false,
             legacy_region: None,
+        }];
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_wheel_with_duplicate_up_and_down_slot() {
+        let mut p = valid_profile();
+        p.nodes = vec![Node::Wheel {
+            id: "wheel".into(),
+            layer: default_layer(),
+            up_slot: 0,
+            up_pos: RelPos { x: 0.5, y: 0.4 },
+            down_slot: 0,
+            down_pos: RelPos { x: 0.5, y: 0.6 },
         }];
         assert!(p.validate().is_err());
     }

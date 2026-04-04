@@ -84,6 +84,26 @@ fn repeat_tap_profile() -> Profile {
     }
 }
 
+fn wheel_profile() -> Profile {
+    Profile {
+        name: "WheelTest".into(),
+        version: 1,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
+        global_sensitivity: 1.0,
+        nodes: vec![Node::Wheel {
+            id: "scroll".into(),
+            layer: String::new(),
+            up_slot: 0,
+            up_pos: RelPos { x: 0.55, y: 0.4 },
+            down_slot: 1,
+            down_pos: RelPos { x: 0.55, y: 0.6 },
+        }],
+    }
+}
+
 fn empty_profile() -> Profile {
     Profile {
         name: "Empty".into(),
@@ -281,6 +301,72 @@ fn mouse_camera_releases_after_idle() {
 }
 
 #[test]
+fn absolute_contact_end_lifts_aim_immediately() {
+    let mut engine = KeymapEngine::new(pubg_profile());
+
+    let cmds = engine.process(&InputEvent::MouseMove {
+        dx: 20,
+        dy: 0,
+        source: MouseMotionSource::Absolute,
+    });
+    assert!(cmds
+        .iter()
+        .any(|cmd| matches!(cmd, TouchCommand::TouchDown { slot: 1, .. })));
+
+    let release = engine.process(&InputEvent::PointerContactEnd {
+        source: MouseMotionSource::Absolute,
+    });
+    assert!(release
+        .iter()
+        .any(|cmd| matches!(cmd, TouchCommand::TouchUp { slot: 1 })));
+}
+
+#[test]
+fn absolute_contact_start_recenters_aim_for_next_swipe() {
+    let mut engine = KeymapEngine::new(pubg_profile());
+
+    let first = engine.process(&InputEvent::MouseMove {
+        dx: 40,
+        dy: 0,
+        source: MouseMotionSource::Absolute,
+    });
+    let first_move_x = first
+        .iter()
+        .find_map(|cmd| match cmd {
+            TouchCommand::TouchMove { slot, x, .. } if *slot == 1 => Some(*x),
+            _ => None,
+        })
+        .expect("expected initial aim move");
+
+    let _ = engine.process(&InputEvent::PointerContactEnd {
+        source: MouseMotionSource::Absolute,
+    });
+    let _ = engine.process(&InputEvent::PointerContactStart {
+        source: MouseMotionSource::Absolute,
+    });
+    let second = engine.process(&InputEvent::MouseMove {
+        dx: 40,
+        dy: 0,
+        source: MouseMotionSource::Absolute,
+    });
+
+    assert!(matches!(
+        second.first(),
+        Some(TouchCommand::TouchDown { slot: 1, .. })
+    ));
+
+    let second_move_x = second
+        .iter()
+        .find_map(|cmd| match cmd {
+            TouchCommand::TouchMove { slot, x, .. } if *slot == 1 => Some(*x),
+            _ => None,
+        })
+        .expect("expected recentered aim move");
+
+    assert!((second_move_x - first_move_x).abs() < 0.0001);
+}
+
+#[test]
 fn release_all_clears_everything() {
     let mut engine = KeymapEngine::new(pubg_profile());
 
@@ -333,6 +419,26 @@ fn repeat_tap_does_not_double_press() {
     // Second press should be ignored (already active)
     let cmds = engine.process(&InputEvent::KeyPress(Key::F));
     assert!(cmds.is_empty());
+}
+
+#[test]
+fn wheel_up_triggers_up_target_tap() {
+    let mut engine = KeymapEngine::new(wheel_profile());
+
+    let cmds = engine.process(&InputEvent::KeyPress(Key::WheelUp));
+    assert_eq!(cmds.len(), 2);
+    assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 0, .. }));
+    assert!(matches!(&cmds[1], TouchCommand::TouchUp { slot: 0 }));
+}
+
+#[test]
+fn wheel_down_triggers_down_target_tap() {
+    let mut engine = KeymapEngine::new(wheel_profile());
+
+    let cmds = engine.process(&InputEvent::KeyPress(Key::WheelDown));
+    assert_eq!(cmds.len(), 2);
+    assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+    assert!(matches!(&cmds[1], TouchCommand::TouchUp { slot: 1 }));
 }
 
 // ===== Macro tests =====

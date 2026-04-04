@@ -48,6 +48,7 @@ Profile primitives:
 - `drag`
 - `aim`
 - `repeat_tap`
+- `wheel`
 - `macro`
 - `layer_shift`
 
