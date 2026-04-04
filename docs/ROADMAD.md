@@ -1,11 +1,9 @@
 # Roadmad
 
-This file is the detailed architecture backlog for Phantom after `0.8.0`.
+This file is the detailed architecture backlog for Phantom after `0.8.1`.
 
-It is intentionally deeper than [ROADMAP.md](ROADMAP.md). The short roadmap
-tracks product direction at a high level. This file records the specific system
-decisions, module boundaries, and implementation checklists for the highest
-value next work.
+This file records the specific system decisions, module boundaries, and
+implementation checklists for the highest-value next work.
 
 The focus here is only on work that fits Phantom's current architecture and can
 be implemented cleanly. It does not include speculative work that would require
@@ -339,6 +337,10 @@ Potential conflict checks:
 
 ## 6. Macro Improvements
 
+Status:
+
+- partially implemented in `0.8.x`
+
 ### Problem
 
 Macros are useful, but still basic for advanced game workflows.
@@ -349,7 +351,7 @@ Extend them only where the behavior stays explicit and testable.
 
 ### High-Value Items
 
-- cancelable macros
+- explicit run modes for cancelable versus one-shot macros
 - hold-until-release behavior
 - clearer step waveform control
 
@@ -362,10 +364,11 @@ Primary files:
 
 ### Implementation Checklist
 
-- [ ] decide the smallest useful macro extension
-- [ ] keep state transitions explicit
-- [ ] add targeted tests for cancellation and release behavior
-- [ ] document exact cancellation semantics
+- [x] decide the smallest useful macro extension
+- [x] keep state transitions explicit
+- [x] add targeted tests for cancellation and release behavior
+- [x] document exact cancellation semantics
+- [ ] consider hold-until-release behavior only if it remains cleaner than a dedicated future primitive
 
 ### Acceptance Criteria
 

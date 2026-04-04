@@ -130,6 +130,7 @@ fn macro_profile() -> Profile {
             id: "combo".into(),
             layer: String::new(),
             key: "G".into(),
+            mode: MacroRunMode::CancelOnRelease,
             sequence: vec![
                 MacroStep {
                     action: MacroAction::Down,
@@ -154,6 +155,38 @@ fn macro_profile() -> Profile {
                     pos: None,
                     slot: 0,
                     delay_ms: 30,
+                },
+            ],
+        }],
+    }
+}
+
+fn macro_one_shot_profile() -> Profile {
+    Profile {
+        name: "MacroOneShot".into(),
+        version: 1,
+        screen: Some(ScreenOverride {
+            width: 1920,
+            height: 1080,
+        }),
+        global_sensitivity: 1.0,
+        nodes: vec![Node::Macro {
+            id: "combo".into(),
+            layer: String::new(),
+            key: "G".into(),
+            mode: MacroRunMode::OneShot,
+            sequence: vec![
+                MacroStep {
+                    action: MacroAction::Down,
+                    pos: Some(RelPos { x: 0.5, y: 0.3 }),
+                    slot: 0,
+                    delay_ms: 0,
+                },
+                MacroStep {
+                    action: MacroAction::Up,
+                    pos: None,
+                    slot: 0,
+                    delay_ms: 0,
                 },
             ],
         }],
@@ -478,6 +511,23 @@ fn macro_release_stops_execution() {
     // After release, ticks should produce nothing
     let cmds = engine.tick();
     assert!(cmds.is_empty());
+}
+
+#[test]
+fn macro_one_shot_ignores_key_release_and_finishes() {
+    let mut engine = KeymapEngine::new(macro_one_shot_profile());
+
+    engine.process(&InputEvent::KeyPress(Key::G));
+    let cmds = engine.tick();
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 0, .. }));
+
+    let release = engine.process(&InputEvent::KeyRelease(Key::G));
+    assert!(release.is_empty());
+
+    let cmds = engine.tick();
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
 }
 
 // ===== Profile loading tests =====

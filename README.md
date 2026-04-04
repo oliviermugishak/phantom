@@ -57,6 +57,7 @@ Important recent additions:
 - `joystick` now supports both `fixed` and `floating` modes
 - `drag` now supports swipe-style games such as Temple Run and Subway Surfers
 - capture-on mouse navigation now defaults to owned menu-touch while gameplay aim is inactive
+- macros now support explicit run modes so a sequence can either cancel on key release or continue as a one-shot
 - GUI profile discovery now reads the real user profile library from `~/.config/phantom/profiles/`
 
 ## Shipped Profile Library
@@ -186,7 +187,7 @@ Important:
 Current product direction:
 
 - the host-side overlay is experimental and may be removed later
-- the preferred long-term direction is an Android-side in-surface overlay and is tracked in [docs/ROADMAP.md](docs/ROADMAP.md)
+- the preferred long-term direction is an Android-side in-surface overlay and is tracked in [docs/ROADMAD.md](docs/ROADMAD.md)
 
 ## Tracing And Logging
 
@@ -218,6 +219,11 @@ What that means:
 - the seed path prefers Hyprland compositor geometry, then X11/XWayland helper mapping, then finally Phantom's internal cursor state
 - when Phantom owns a touchpad in menu-touch, it also provides its own tap-to-click and double-tap-hold drag behavior
 - `phantom status` shows:
+
+Gameplay note:
+
+- for high-paced shooter aim, a real mouse is still the recommended hardware path
+- touchpad aim remains best-effort and should be treated as a fallback, not the premium experience
   - `menu touch backend`
   - `mouse mode`
 - because Phantom now owns the mouse during capture, menu-touch no longer depends on a first host click being consumed for window activation
@@ -285,7 +291,7 @@ Read these in this order:
 6. [docs/GAME_PATTERNS.md](docs/GAME_PATTERNS.md)
 7. [docs/TROUBLESHOOT.md](docs/TROUBLESHOOT.md)
 8. [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
-9. [docs/ROADMAP.md](docs/ROADMAP.md)
+9. [docs/ROADMAD.md](docs/ROADMAD.md)
 
 Reference docs:
 

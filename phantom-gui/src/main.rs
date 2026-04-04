@@ -14,8 +14,8 @@ use phantom::config;
 use phantom::input::Key;
 use phantom::ipc::{self, IpcRequest, IpcResponse};
 use phantom::profile::{
-    JoystickKeys, JoystickMode, LayerMode, MacroAction, MacroStep, MouseCameraActivationMode, Node,
-    Profile, Region, RelPos, ScreenOverride,
+    JoystickKeys, JoystickMode, LayerMode, MacroAction, MacroRunMode, MacroStep,
+    MouseCameraActivationMode, Node, Profile, Region, RelPos, ScreenOverride,
 };
 
 const COLOR_TAP: Color32 = Color32::from_rgb(66, 133, 244);
@@ -41,8 +41,11 @@ const RIGHT_PANEL_WIDTH: f32 = 390.0;
 const CONTROL_CARD_ACTION_BUTTON_WIDTH: f32 = 26.0;
 const MAX_HISTORY: usize = 128;
 const RUNTIME_POLL_INTERVAL_ACTIVE: Duration = Duration::from_millis(250);
+const RUNTIME_POLL_INTERVAL_ACTIVE_UNFOCUSED: Duration = Duration::from_secs(2);
 const RUNTIME_POLL_INTERVAL_CONNECTED: Duration = Duration::from_secs(1);
+const RUNTIME_POLL_INTERVAL_CONNECTED_UNFOCUSED: Duration = Duration::from_secs(3);
 const RUNTIME_POLL_INTERVAL_IDLE: Duration = Duration::from_secs(5);
+const RUNTIME_POLL_INTERVAL_IDLE_UNFOCUSED: Duration = Duration::from_secs(12);
 const MIN_CANVAS_ZOOM: f32 = 0.75;
 const MAX_CANVAS_ZOOM: f32 = 3.0;
 const SNAP_GRID_STEP: f64 = 0.05;
@@ -1382,8 +1385,8 @@ impl PhantomGui {
         }
     }
 
-    fn maybe_poll_runtime(&mut self) {
-        let interval = self.runtime_poll_interval();
+    fn maybe_poll_runtime(&mut self, window_focused: bool) {
+        let interval = self.runtime_poll_interval(window_focused);
         let should_poll = self
             .runtime
             .last_checked
@@ -1394,20 +1397,32 @@ impl PhantomGui {
         }
     }
 
-    fn runtime_poll_interval(&self) -> Duration {
+    fn runtime_poll_interval(&self, window_focused: bool) -> Duration {
         if self.runtime.last_checked.is_none()
             || matches!(self.right_panel_tab, RightPanelTab::Runtime)
         {
-            RUNTIME_POLL_INTERVAL_ACTIVE
+            if window_focused {
+                RUNTIME_POLL_INTERVAL_ACTIVE
+            } else {
+                RUNTIME_POLL_INTERVAL_ACTIVE_UNFOCUSED
+            }
         } else if self.runtime.connected {
-            RUNTIME_POLL_INTERVAL_CONNECTED
+            if window_focused {
+                RUNTIME_POLL_INTERVAL_CONNECTED
+            } else {
+                RUNTIME_POLL_INTERVAL_CONNECTED_UNFOCUSED
+            }
         } else {
-            RUNTIME_POLL_INTERVAL_IDLE
+            if window_focused {
+                RUNTIME_POLL_INTERVAL_IDLE
+            } else {
+                RUNTIME_POLL_INTERVAL_IDLE_UNFOCUSED
+            }
         }
     }
 
-    fn background_tick_interval(&self) -> Duration {
-        self.runtime_poll_interval()
+    fn background_tick_interval(&self, window_focused: bool) -> Duration {
+        self.runtime_poll_interval(window_focused)
     }
 
     fn used_touch_slots(&self) -> Option<std::collections::HashSet<u8>> {
@@ -1665,6 +1680,7 @@ impl PhantomGui {
                 id: format!("macro_{}", profile.nodes.len() + 1),
                 layer: String::new(),
                 key: "G".into(),
+                mode: MacroRunMode::CancelOnRelease,
                 sequence: vec![
                     MacroStep {
                         action: MacroAction::Down,
@@ -2933,7 +2949,7 @@ impl PhantomGui {
                             );
                         });
                     }
-                    Node::Macro { layer, .. } => {
+                    Node::Macro { layer, mode, .. } => {
                         layer_row(
                             ui,
                             layer,
@@ -2941,6 +2957,43 @@ impl PhantomGui {
                             &layer_choices,
                             suggested_layer,
                             &mut dirty,
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Run mode");
+                            egui::ComboBox::from_id_salt(("macro_mode", idx))
+                                .selected_text(match mode {
+                                    MacroRunMode::CancelOnRelease => "Cancel On Release",
+                                    MacroRunMode::OneShot => "One Shot",
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(mode, MacroRunMode::CancelOnRelease),
+                                            "Cancel On Release",
+                                        )
+                                        .clicked()
+                                    {
+                                        *mode = MacroRunMode::CancelOnRelease;
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(mode, MacroRunMode::OneShot),
+                                            "One Shot",
+                                        )
+                                        .clicked()
+                                    {
+                                        *mode = MacroRunMode::OneShot;
+                                        dirty = true;
+                                    }
+                                });
+                        });
+                        ui.label(
+                            RichText::new(
+                                "Cancel On Release matches the old behavior. One Shot continues after the key is released until the sequence completes.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(160)),
                         );
                     }
                     Node::LayerShift { .. } => {}
@@ -3140,6 +3193,13 @@ impl PhantomGui {
                             RichText::new(mode_hint)
                                 .small()
                                 .color(Color32::from_gray(170)),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "For fast shooter aim, a real mouse is the recommended hardware path. Touchpad aim remains best-effort and is mainly for fallback use.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(150)),
                         );
                         if !matches!(activation_mode, MouseCameraActivationMode::AlwaysOn) {
                             let key = activation_key.get_or_insert_with(|| "MouseRight".into());
@@ -3819,10 +3879,11 @@ impl PhantomGui {
 impl eframe::App for PhantomGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let prefs_before = self.studio_prefs();
+        let window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(i.focused));
         self.handle_shortcuts(ctx);
         self.handle_binding_capture(ctx);
-        self.maybe_poll_runtime();
-        ctx.request_repaint_after(self.background_tick_interval());
+        self.maybe_poll_runtime(window_focused);
+        ctx.request_repaint_after(self.background_tick_interval(window_focused));
 
         self.draw_top_bar(ctx);
         self.draw_left_panel(ctx);
@@ -5229,7 +5290,16 @@ fn draw_hover_card(
                 lines.push(format!("Activation: {}", key));
             }
         }
-        Node::Macro { sequence, .. } => lines.push(format!("Steps: {}", sequence.len())),
+        Node::Macro { sequence, mode, .. } => {
+            lines.push(format!("Steps: {}", sequence.len()));
+            lines.push(format!(
+                "Mode: {}",
+                match mode {
+                    MacroRunMode::CancelOnRelease => "cancel_on_release",
+                    MacroRunMode::OneShot => "one_shot",
+                }
+            ));
+        }
         Node::LayerShift {
             layer_name, mode, ..
         } => lines.push(format!(

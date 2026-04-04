@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use crate::input::{InputEvent, Key};
 use crate::logging::trace_detail_enabled;
 use crate::profile::{
-    JoystickMode, LayerMode, MacroAction, MouseCameraActivationMode, Node, Profile, Region, RelPos,
+    JoystickMode, LayerMode, MacroAction, MacroRunMode, MouseCameraActivationMode, Node, Profile,
+    Region, RelPos,
 };
 
 const AIM_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -584,7 +585,7 @@ impl KeymapEngine {
                     running,
                     step_index,
                     step_start,
-                    ..
+                    active_slots,
                 } = state
                 {
                     if *running && *step_index < sequence.len() {
@@ -593,6 +594,7 @@ impl KeymapEngine {
                         if now.duration_since(*step_start) >= delay {
                             let si = *step_index;
                             let step = step.clone();
+                            let mut next_active_slots = active_slots.clone();
 
                             match &step.action {
                                 MacroAction::Down => {
@@ -603,21 +605,19 @@ impl KeymapEngine {
                                             y: pos.y,
                                         });
                                     }
+                                    if !next_active_slots.contains(&step.slot) {
+                                        next_active_slots.push(step.slot);
+                                    }
                                 }
                                 MacroAction::Up => {
                                     cmds.push(TouchCommand::TouchUp { slot: step.slot });
+                                    next_active_slots.retain(|slot| *slot != step.slot);
                                 }
                             }
 
                             let next_idx = si + 1;
                             if next_idx >= sequence.len() {
-                                let mut slots_to_release = Vec::new();
-                                for s in sequence {
-                                    if !slots_to_release.contains(&s.slot) {
-                                        slots_to_release.push(s.slot);
-                                    }
-                                }
-                                for s in slots_to_release {
+                                for s in next_active_slots {
                                     cmds.push(TouchCommand::TouchUp { slot: s });
                                 }
                                 self.states[idx] = NodeState::Macro {
@@ -627,17 +627,11 @@ impl KeymapEngine {
                                     active_slots: Vec::new(),
                                 };
                             } else {
-                                let mut slots = Vec::new();
-                                for s in sequence {
-                                    if !slots.contains(&s.slot) {
-                                        slots.push(s.slot);
-                                    }
-                                }
                                 self.states[idx] = NodeState::Macro {
                                     running: true,
                                     step_index: next_idx,
                                     step_start: now,
-                                    active_slots: slots,
+                                    active_slots: next_active_slots,
                                 };
                             }
                         }
@@ -877,20 +871,14 @@ impl KeymapEngine {
                     }
                 }
             }
-            Node::Macro { sequence, .. } => {
+            Node::Macro { .. } => {
                 if let NodeState::Macro { running, .. } = &self.states[idx] {
                     if !*running {
-                        let mut slots = Vec::new();
-                        for s in sequence {
-                            if !slots.contains(&s.slot) {
-                                slots.push(s.slot);
-                            }
-                        }
                         self.states[idx] = NodeState::Macro {
                             running: true,
                             step_index: 0,
                             step_start: Instant::now(),
-                            active_slots: slots,
+                            active_slots: Vec::new(),
                         };
                     }
                 }
@@ -1024,22 +1012,24 @@ impl KeymapEngine {
             }
             Node::Wheel { .. } => {}
             Node::Drag { .. } => {}
-            Node::Macro { .. } => {
-                if let NodeState::Macro { running, .. } = &self.states[idx] {
-                    if *running {
-                        let slots = match &self.states[idx] {
-                            NodeState::Macro { active_slots, .. } => active_slots.clone(),
-                            _ => vec![],
-                        };
-                        for s in &slots {
-                            cmds.push(TouchCommand::TouchUp { slot: *s });
+            Node::Macro { mode, .. } => {
+                if matches!(mode, MacroRunMode::CancelOnRelease) {
+                    if let NodeState::Macro { running, .. } = &self.states[idx] {
+                        if *running {
+                            let slots = match &self.states[idx] {
+                                NodeState::Macro { active_slots, .. } => active_slots.clone(),
+                                _ => vec![],
+                            };
+                            for s in &slots {
+                                cmds.push(TouchCommand::TouchUp { slot: *s });
+                            }
+                            self.states[idx] = NodeState::Macro {
+                                running: false,
+                                step_index: 0,
+                                step_start: Instant::now(),
+                                active_slots: Vec::new(),
+                            };
                         }
-                        self.states[idx] = NodeState::Macro {
-                            running: false,
-                            step_index: 0,
-                            step_start: Instant::now(),
-                            active_slots: Vec::new(),
-                        };
                     }
                 }
             }

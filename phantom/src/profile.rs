@@ -47,6 +47,14 @@ pub enum JoystickMode {
     Floating,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MacroRunMode {
+    #[default]
+    CancelOnRelease,
+    OneShot,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
@@ -149,6 +157,8 @@ pub enum Node {
         #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
         layer: String,
         key: String,
+        #[serde(default, skip_serializing_if = "is_default_macro_run_mode")]
+        mode: MacroRunMode,
         sequence: Vec<MacroStep>,
     },
     LayerShift {
@@ -254,6 +264,10 @@ fn is_default_mouse_camera_activation_mode(mode: &MouseCameraActivationMode) -> 
 
 fn is_default_joystick_mode(mode: &JoystickMode) -> bool {
     matches!(mode, JoystickMode::Fixed)
+}
+
+fn is_default_macro_run_mode(mode: &MacroRunMode) -> bool {
+    matches!(mode, MacroRunMode::CancelOnRelease)
 }
 
 fn is_default_aim_anchor(anchor: &RelPos) -> bool {
@@ -444,7 +458,14 @@ impl Node {
                 "up_slot={} up=({:.3},{:.3}) down_slot={} down=({:.3},{:.3})",
                 up_slot, up_pos.x, up_pos.y, down_slot, down_pos.x, down_pos.y
             )),
-            Node::Macro { sequence, .. } => Some(format!("steps={}", sequence.len())),
+            Node::Macro { sequence, mode, .. } => Some(format!(
+                "steps={} mode={}",
+                sequence.len(),
+                match mode {
+                    MacroRunMode::CancelOnRelease => "cancel_on_release",
+                    MacroRunMode::OneShot => "one_shot",
+                }
+            )),
             Node::LayerShift {
                 layer_name, mode, ..
             } => Some(format!(
@@ -838,7 +859,12 @@ fn validate_node(node: &Node) -> Result<()> {
                 }
             }
         }
-        Node::Macro { key, sequence, .. } => {
+        Node::Macro {
+            key,
+            mode: _,
+            sequence,
+            ..
+        } => {
             validate_key_name(key, &format!("nodes.{id}.key"))?;
             if sequence.is_empty() {
                 return Err(PhantomError::ProfileValidation {
@@ -1243,6 +1269,7 @@ mod tests {
             id: "combo".into(),
             layer: default_layer(),
             key: "G".into(),
+            mode: MacroRunMode::CancelOnRelease,
             sequence: vec![],
         }];
         assert!(p.validate().is_err());

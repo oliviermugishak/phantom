@@ -295,6 +295,7 @@ Important:
 - toggled aim state survives `F1` mouse routing changes
 - `while_held` mouse activation keys are resynced when mouse routing is re-enabled
 - older profiles using `type = "mouse_camera"` and `region` still load; Phantom normalizes them to `aim` semantics internally
+- for high-paced shooter play, a real mouse is still the recommended hardware path; touchpad aim remains best-effort
 
 For recommended shooter setups such as ADS-driven look, layered contexts, and sprint-lock drag patterns, see [GAME_PATTERNS.md](GAME_PATTERNS.md).
 
@@ -351,6 +352,7 @@ context actions.
   "id": "combo",
   "type": "macro",
   "key": "G",
+  "mode": "one_shot",
   "sequence": [
     { "action": "down", "pos": { "x": 0.50, "y": 0.30 }, "slot": 6 },
     { "action": "up", "slot": 6, "delay_ms": 50 }
@@ -362,7 +364,8 @@ Behavior:
 
 - key press starts the sequence
 - each step waits for its `delay_ms`
-- key release stops the macro and releases active slots
+- `mode = "cancel_on_release"` keeps the old behavior: key release stops the macro and releases active slots immediately
+- `mode = "one_shot"` lets the macro continue to completion after the key is released
 
 ### `layer_shift`
 

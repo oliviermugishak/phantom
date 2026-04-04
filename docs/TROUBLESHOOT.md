@@ -167,6 +167,7 @@ Note:
 - touchpads now work, but they may still feel less smooth than a real mouse because Phantom must derive relative motion from absolute touchpad coordinates
 - Phantom now suppresses fresh-contact touchpad jumps before motion reaches aim and keeps tiny single-step movement available for held drags and careful cursor movement
 - a real mouse is still the best path for the highest-end fast aim-heavy play, but touchpad behavior should now be less jumpy without adding tick-latency to aim
+- this is intentional: Phantom does not add extra smoothing to the real relative-mouse path, because that would trade aim feel for latency
 
 ## Aim Stops After `F1` Mouse Toggle
 
