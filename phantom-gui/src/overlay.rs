@@ -35,7 +35,6 @@ const GUIDE_LENGTH: f32 = 14.0;
 const HEADER_TEXT: &str = "Experimental debug preview — not gameplay-safe";
 
 const MARKER_SIZE: u32 = 64;
-const DOT_SIZE: u32 = 20;
 const GUIDE_SIZE: u32 = 22;
 const JOYSTICK_PADDING: f32 = 34.0;
 
@@ -97,18 +96,10 @@ struct CornerGuideSpec {
 }
 
 #[derive(Clone)]
-struct DotSpec {
-    rect: PixelRect,
-    radius: f32,
-    color: Rgba,
-}
-
-#[derive(Clone)]
 enum PreviewSpec {
     Marker(MarkerSpec),
     FixedJoystick(FixedJoystickSpec),
     CornerGuide(CornerGuideSpec),
-    Dot(DotSpec),
 }
 
 impl PreviewSpec {
@@ -117,7 +108,6 @@ impl PreviewSpec {
             Self::Marker(spec) => spec.rect,
             Self::FixedJoystick(spec) => spec.rect,
             Self::CornerGuide(spec) => spec.rect,
-            Self::Dot(spec) => spec.rect,
         }
     }
 }
@@ -530,28 +520,7 @@ fn build_preview_specs(profile: &Profile, frame: OverlayFrame) -> Vec<PreviewSpe
                 let zone = frame_region(frame, region);
                 specs.extend(floating_joystick_specs(zone));
             }
-            Node::Drag {
-                start, end, key, ..
-            } => {
-                specs.push(PreviewSpec::Marker(button_marker_spec(
-                    frame,
-                    start,
-                    display_label(key),
-                    drag_color(),
-                )));
-                let (start_x, start_y) = frame_point(frame, start);
-                let (end_x, end_y) = frame_point(frame, end);
-                for step in 1..=4 {
-                    let t = step as f32 / 5.0;
-                    specs.push(PreviewSpec::Dot(dot_spec(
-                        lerp(start_x, end_x, t),
-                        lerp(start_y, end_y, t),
-                        4.0,
-                        drag_color(),
-                    )));
-                }
-                specs.push(PreviewSpec::Dot(dot_spec(end_x, end_y, 6.0, drag_color())));
-            }
+            Node::Drag { .. } => {}
             Node::MouseCamera {
                 anchor,
                 activation_mode,
@@ -592,7 +561,7 @@ fn button_marker_spec(frame: OverlayFrame, pos: &RelPos, label: String, color: R
             r: color.r,
             g: color.g,
             b: color.b,
-            a: 36,
+            a: 18,
         },
         label,
     }
@@ -682,24 +651,11 @@ fn floating_joystick_specs(zone: PixelRect) -> Vec<PreviewSpec> {
                 r: color.r,
                 g: color.g,
                 b: color.b,
-                a: 28,
+                a: 14,
             },
             label: "Move".into(),
         }),
     ]
-}
-
-fn dot_spec(x: f32, y: f32, radius: f32, color: Rgba) -> DotSpec {
-    DotSpec {
-        rect: PixelRect {
-            left: (x - DOT_SIZE as f32 * 0.5).round() as i32,
-            top: (y - DOT_SIZE as f32 * 0.5).round() as i32,
-            width: DOT_SIZE,
-            height: DOT_SIZE,
-        },
-        radius,
-        color,
-    }
 }
 
 fn frame_point(frame: OverlayFrame, pos: &RelPos) -> (f32, f32) {
@@ -760,7 +716,6 @@ fn draw_preview_spec(canvas: &mut [u8], width: u32, height: u32, spec: &PreviewS
         PreviewSpec::Marker(spec) => draw_marker(canvas, width, height, spec),
         PreviewSpec::FixedJoystick(spec) => draw_fixed_joystick(canvas, width, height, spec),
         PreviewSpec::CornerGuide(spec) => draw_bitmap_corner_guide(canvas, width, height, spec),
-        PreviewSpec::Dot(spec) => draw_dot(canvas, width, height, spec),
     }
 }
 
@@ -772,6 +727,19 @@ fn clear_canvas(canvas: &mut [u8]) {
 
 fn draw_marker(canvas: &mut [u8], width: u32, height: u32, spec: &MarkerSpec) {
     let center = (width as f32 * 0.5, height as f32 * 0.5);
+    draw_circle_fill(
+        canvas,
+        width,
+        height,
+        (center.0 + 1.2, center.1 + 2.0),
+        spec.radius + 0.4,
+        Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 44,
+        },
+    );
     draw_circle_fill(canvas, width, height, center, spec.radius - 1.6, spec.fill);
     draw_circle_stroke(canvas, width, height, center, spec.radius, 1.8, spec.stroke);
     draw_text_centered(
@@ -791,6 +759,19 @@ fn draw_marker(canvas: &mut [u8], width: u32, height: u32, spec: &MarkerSpec) {
 
 fn draw_fixed_joystick(canvas: &mut [u8], width: u32, height: u32, spec: &FixedJoystickSpec) {
     let center = (width as f32 * 0.5, height as f32 * 0.5);
+    draw_circle_fill(
+        canvas,
+        width,
+        height,
+        (center.0 + 1.6, center.1 + 2.2),
+        spec.radius + 1.8,
+        Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 26,
+        },
+    );
     draw_circle_stroke(canvas, width, height, center, spec.radius, 1.8, spec.color);
     draw_circle_stroke(
         canvas,
@@ -849,13 +830,26 @@ fn draw_small_bubble(
         canvas,
         width,
         height,
+        (center.0 + 0.8, center.1 + 1.2),
+        11.4,
+        Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 34,
+        },
+    );
+    draw_circle_fill(
+        canvas,
+        width,
+        height,
         center,
         10.5,
         Rgba {
             r: color.r,
             g: color.g,
             b: color.b,
-            a: 28,
+            a: 14,
         },
     );
     draw_circle_stroke(canvas, width, height, center, 11.0, 1.4, color);
@@ -958,11 +952,6 @@ fn draw_bitmap_corner_guide(canvas: &mut [u8], width: u32, height: u32, spec: &C
             );
         }
     }
-}
-
-fn draw_dot(canvas: &mut [u8], width: u32, height: u32, spec: &DotSpec) {
-    let center = (width as f32 * 0.5, height as f32 * 0.5);
-    draw_circle_fill(canvas, width, height, center, spec.radius, spec.color);
 }
 
 fn draw_circle_fill(
@@ -1077,13 +1066,47 @@ fn draw_text_centered(
 ) {
     let text = display_label(text);
     let upper = text.to_uppercase();
+    draw_text_bitmap(
+        canvas,
+        width,
+        height,
+        center.0.round() as i32 + 1,
+        center.1.round() as i32 + 1,
+        &upper,
+        Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 110,
+        },
+    );
+    draw_text_bitmap(
+        canvas,
+        width,
+        height,
+        center.0.round() as i32,
+        center.1.round() as i32,
+        &upper,
+        color,
+    );
+}
+
+fn draw_text_bitmap(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    center_x: i32,
+    center_y: i32,
+    upper: &str,
+    color: Rgba,
+) {
     let char_count = upper.chars().count() as i32;
     let scale = if char_count <= 2 { 2 } else { 1 };
     let glyph_w = 6 * scale;
     let glyph_h = 7 * scale;
     let total_w = glyph_w * char_count;
-    let start_x = center.0.round() as i32 - total_w / 2;
-    let start_y = center.1.round() as i32 - glyph_h / 2;
+    let start_x = center_x - total_w / 2;
+    let start_y = center_y - glyph_h / 2;
 
     for (index, ch) in upper.chars().enumerate() {
         let Some(glyph) = glyph_rows(ch) else {
@@ -1091,7 +1114,8 @@ fn draw_text_centered(
         };
         for (row, bits) in glyph.iter().enumerate() {
             for col in 0..5 {
-                if bits & (1 << col) == 0 {
+                let bit_index = 4 - col;
+                if bits & (1 << bit_index) == 0 {
                     continue;
                 }
                 for sy in 0..scale {
@@ -1273,10 +1297,6 @@ fn distance_to_segment(point: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     ((point.0 - closest.0).powi(2) + (point.1 - closest.1).powi(2)).sqrt()
 }
 
-fn lerp(start: f32, end: f32, t: f32) -> f32 {
-    start + (end - start) * t
-}
-
 fn marker_color(node: &Node) -> Rgba {
     match node {
         Node::Tap { .. } => rgba(66, 133, 244, 230),
@@ -1289,10 +1309,6 @@ fn marker_color(node: &Node) -> Rgba {
 
 fn joystick_color() -> Rgba {
     rgba(114, 227, 146, 220)
-}
-
-fn drag_color() -> Rgba {
-    rgba(0, 200, 140, 220)
 }
 
 fn wheel_color() -> Rgba {
