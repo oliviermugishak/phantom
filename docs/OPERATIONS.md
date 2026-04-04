@@ -163,24 +163,33 @@ The detail flag exists because the raw evdev path is intentionally much noisier 
 
 Runtime note:
 
-- entering capture with the mouse released leaves Phantom in menu-touch navigation mode
-- `F1` switches between gameplay aim routing and menu-touch navigation
+- entering capture puts Phantom into owned menu-touch mode by default
+- `F1` switches between gameplay aim and owned menu-touch
 - it no longer destroys toggle-look state
 - `while_held` mouse buttons are resynced when mouse routing is turned back on
-- status output now includes the active menu-touch backend
+- status output now includes:
+  - the active menu-touch backend
+  - the current runtime mouse mode
 
 ## Menu Touch Operations
 
-When capture is active and the mouse is released, Phantom routes:
+When capture is active and mouse mode is `menu_touch`, Phantom routes:
 
 - left click -> touch down / up
 - mouse drag -> touch move
+- a small owned cursor overlay shows where those touches will land
 
 Backend behavior:
 
-- Hyprland prefers compositor-native cursor/client mapping
-- X11 sessions prefer exact visible-cursor to touch mapping
-- if exact host cursor coordinates are unavailable, Phantom falls back to its virtual cursor path
+- Phantom keeps the physical mouse grabbed during capture
+- when Phantom enters menu-touch, it seeds its internal cursor from host cursor position when possible
+- Hyprland prefers compositor-native cursor/client geometry for that seed
+- X11/XWayland sessions fall back to exact visible-cursor helper mapping for that seed
+- if no exact host seed is available, Phantom reuses its existing internal cursor position
+- after the initial seed, menu-touch uses the Phantom-owned cursor directly and no longer depends on desktop window activation semantics
+- while menu-touch is active, Phantom shows a dedicated cursor overlay instead of moving the desktop cursor
+- on Wayland sessions, that cursor overlay is provided through a layer-shell surface with input passthrough
+- on touchpads, Phantom now synthesizes tap-to-click and double-tap-hold drag locally because those gestures are no longer provided by the desktop once Phantom owns the mouse
 
 ### `always_on`
 

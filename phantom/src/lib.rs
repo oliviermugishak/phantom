@@ -4,6 +4,7 @@ pub mod desktop_relay;
 pub mod engine;
 pub mod error;
 pub mod hyprland_cursor;
+pub mod hyprland_ipc;
 pub mod inject;
 pub mod input;
 pub mod ipc;

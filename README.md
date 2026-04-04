@@ -55,7 +55,7 @@ Important recent additions:
 
 - `joystick` now supports both `fixed` and `floating` modes
 - `drag` now supports swipe-style games such as Temple Run and Subway Surfers
-- capture-on mouse navigation now defaults to mouse-to-touch while gameplay aim routing is released
+- capture-on mouse navigation now defaults to owned menu-touch while gameplay aim is inactive
 - GUI profile discovery now reads the real user profile library from `~/.config/phantom/profiles/`
 
 ## Shipped Profile Library
@@ -202,16 +202,24 @@ Detail mode:
 
 ## Menu Touch And Aim
 
-When capture is active and gameplay mouse routing is released, Phantom now treats the host mouse as menu-touch navigation.
+When capture is active and gameplay aim is inactive, Phantom now treats the host mouse as owned menu-touch navigation.
 
 What that means:
 
 - left click becomes touch down / touch up
 - mouse motion while held becomes touch drag
 - this is the intended way to navigate menus in games that reject raw mouse input
-- `F1` switches between gameplay aim routing and menu-touch navigation
-- Phantom prefers exact X11 cursor-to-touch mapping when it can see the real host cursor position
-- if exact cursor mapping is unavailable, Phantom falls back to its virtual cursor path
+- Phantom shows a separate owned menu-touch cursor while this mode is active
+- on Wayland compositors such as Hyprland, that cursor is drawn through a dedicated layer-shell overlay with input passthrough
+- `F1` switches between gameplay aim and owned menu-touch
+- when Phantom enters menu-touch, it seeds the owned cursor from the current host cursor position when possible
+- after that seed, Phantom owns the mouse and drives menu-touch from its internal cursor instead of relying on host click delivery
+- the seed path prefers Hyprland compositor geometry, then X11/XWayland helper mapping, then finally Phantom's internal cursor state
+- when Phantom owns a touchpad in menu-touch, it also provides its own tap-to-click and double-tap-hold drag behavior
+- `phantom status` shows:
+  - `menu touch backend`
+  - `mouse mode`
+- because Phantom now owns the mouse during capture, menu-touch no longer depends on a first host click being consumed for window activation
 
 ## Aim
 
@@ -219,13 +227,12 @@ What that means:
 
 Important:
 
-- runtime mouse grab only routes host mouse input into Phantom's gameplay aim path
+- Phantom owns the physical mouse while capture is active and switches that owned mouse between `aim` and `menu_touch` modes
 - actual camera movement only happens if the loaded profile contains an `aim` node
-- when the mouse is released while capture stays on, Phantom falls back to mouse-to-touch UI navigation
+- when aim is inactive while capture stays on, Phantom stays in owned menu-touch UI navigation
 - touchpads are supported, but a real mouse will usually feel smoother for camera movement
 - `F1` now preserves toggle-look state and resyncs `while_held` mouse buttons when routing is restored
-- `phantom status` shows whether menu touch is active and which backend is in use
-  - on Hyprland, Phantom now prefers compositor-native cursor/client geometry first
+- `phantom status` shows whether menu touch is active, which backend seeded the owned cursor, and which runtime mouse mode is active
 
 Supported activation modes:
 

@@ -3,6 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 use crate::error::{PhantomError, Result};
 use crate::logging::trace_detail_enabled;
@@ -28,6 +29,9 @@ const EVDEV_CAP_MAX: usize = 0x20;
 const EVDEV_KEY_MAX: usize = 0x2ff;
 const EVDEV_KEY_BUF_SIZE: usize = (EVDEV_KEY_MAX + 1).div_ceil(8);
 const ABSOLUTE_POINTER_MAX_STEP: i32 = 8;
+const BTN_TOUCH: u16 = 0x14a;
+const TOUCHPAD_TAP_MAX: Duration = Duration::from_millis(180);
+const TOUCHPAD_DOUBLE_TAP_GAP: Duration = Duration::from_millis(220);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -581,6 +585,14 @@ pub struct DeviceInfo {
     abs_range_y: Option<(i32, i32)>,
     last_abs_position: Option<(i32, i32)>,
     abs_dirty: bool,
+    abs_contact_known: bool,
+    abs_touching: bool,
+    touch_contact_started_at: Option<Instant>,
+    touch_contact_moved: bool,
+    touchpad_drag_hold: bool,
+    touchpad_physical_button: bool,
+    last_touchpad_tap_release_at: Option<Instant>,
+    pending_touchpad_tap_deadline: Option<Instant>,
     pressed_keys: HashSet<Key>,
     desynced: bool,
 }
@@ -806,6 +818,14 @@ impl InputCapture {
             abs_range_y,
             last_abs_position: None,
             abs_dirty: false,
+            abs_contact_known: false,
+            abs_touching: false,
+            touch_contact_started_at: None,
+            touch_contact_moved: false,
+            touchpad_drag_hold: false,
+            touchpad_physical_button: false,
+            last_touchpad_tap_release_at: None,
+            pending_touchpad_tap_deadline: None,
             pressed_keys: HashSet::new(),
             desynced: false,
         }))
@@ -886,7 +906,7 @@ impl InputCapture {
     }
 
     pub fn process_events(&mut self, raw: &[(RawFd, RawInputEvent)]) -> Vec<InputEvent> {
-        let mut result = Vec::new();
+        let mut result = self.flush_pending_touchpad_taps();
 
         for (fd, event) in raw {
             if trace_detail_enabled() {
@@ -932,11 +952,48 @@ impl InputCapture {
             }
 
             if event.type_ == EV_KEY {
+                if matches!(device.pointer_kind, PointerKind::Absolute) && event.code == BTN_TOUCH {
+                    device.abs_contact_known = true;
+                    match event.value {
+                        0 => {
+                            result.extend(Self::finish_touchpad_contact(device));
+                            device.abs_touching = false;
+                            device.abs_dirty = false;
+                            device.last_abs_position = None;
+                        }
+                        1 => {
+                            device.abs_touching = true;
+                            // Seed the next touch contact from its first reported absolute
+                            // position so a fresh finger landing does not jump the owned cursor.
+                            device.last_abs_position = None;
+                            device.touch_contact_started_at = Some(Instant::now());
+                            device.touch_contact_moved = false;
+                            device.touchpad_physical_button = false;
+                            device.touchpad_drag_hold = false;
+                            if Self::touchpad_should_begin_drag_hold(device) {
+                                device.pending_touchpad_tap_deadline = None;
+                                device.touchpad_drag_hold = true;
+                                result.push(InputEvent::KeyPress(Key::MouseLeft));
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 // Filter repeat events (value == 2)
                 if event.value == 2 {
                     continue;
                 }
                 if let Some(key) = evdev_code_to_key(event.code) {
+                    if matches!(device.pointer_kind, PointerKind::Absolute) && key == Key::MouseLeft
+                    {
+                        if event.value == 1 {
+                            device.pending_touchpad_tap_deadline = None;
+                            device.last_touchpad_tap_release_at = None;
+                        }
+                        device.touchpad_physical_button =
+                            event.value == 1 || device.touchpad_physical_button;
+                    }
                     if event.value == 1 {
                         if device.pressed_keys.insert(key) {
                             if tracing::enabled!(tracing::Level::TRACE) {
@@ -1097,6 +1154,11 @@ impl InputCapture {
             _ => return Vec::new(),
         };
 
+        if device.abs_contact_known && !device.abs_touching {
+            device.last_abs_position = Some((next_x, next_y));
+            return Vec::new();
+        }
+
         let Some((prev_x, prev_y)) = device.last_abs_position.replace((next_x, next_y)) else {
             return Vec::new();
         };
@@ -1119,14 +1181,71 @@ impl InputCapture {
         if dx == 0 && dy == 0 {
             return Vec::new();
         }
-        if dx.abs() <= 1 && dy.abs() <= 1 {
-            return Vec::new();
+
+        let tap_slop = touchpad_tap_slop(device.abs_range_x, device.abs_range_y);
+        if dx.abs() > tap_slop || dy.abs() > tap_slop {
+            device.touch_contact_moved = true;
         }
 
         if trace_detail_enabled() {
             tracing::trace!(device = %device.path, dx = dx, dy = dy, "translated touchpad move");
         }
         split_absolute_pointer_motion(dx, dy)
+    }
+
+    pub fn flush_pending_touchpad_taps(&mut self) -> Vec<InputEvent> {
+        let now = Instant::now();
+        let mut events = Vec::new();
+        for device in &mut self.devices {
+            if !matches!(device.pointer_kind, PointerKind::Absolute) {
+                continue;
+            }
+            let Some(deadline) = device.pending_touchpad_tap_deadline else {
+                continue;
+            };
+            if now < deadline {
+                continue;
+            }
+            device.pending_touchpad_tap_deadline = None;
+            device.last_touchpad_tap_release_at = None;
+            events.push(InputEvent::KeyPress(Key::MouseLeft));
+            events.push(InputEvent::KeyRelease(Key::MouseLeft));
+        }
+        events
+    }
+
+    fn finish_touchpad_contact(device: &mut DeviceInfo) -> Vec<InputEvent> {
+        let mut events = Vec::new();
+
+        if device.touchpad_drag_hold {
+            events.push(InputEvent::KeyRelease(Key::MouseLeft));
+        } else if !device.touchpad_physical_button
+            && !device.touch_contact_moved
+            && device
+                .touch_contact_started_at
+                .map(|started| started.elapsed() <= TOUCHPAD_TAP_MAX)
+                .unwrap_or(false)
+        {
+            let now = Instant::now();
+            device.last_touchpad_tap_release_at = Some(now);
+            device.pending_touchpad_tap_deadline = Some(now + TOUCHPAD_DOUBLE_TAP_GAP);
+        } else {
+            device.last_touchpad_tap_release_at = None;
+            device.pending_touchpad_tap_deadline = None;
+        }
+
+        device.touch_contact_started_at = None;
+        device.touch_contact_moved = false;
+        device.touchpad_drag_hold = false;
+        device.touchpad_physical_button = false;
+        events
+    }
+
+    fn touchpad_should_begin_drag_hold(device: &DeviceInfo) -> bool {
+        device
+            .last_touchpad_tap_release_at
+            .map(|released| released.elapsed() <= TOUCHPAD_DOUBLE_TAP_GAP)
+            .unwrap_or(false)
     }
 
     pub fn device_count(&self) -> usize {
@@ -1333,6 +1452,17 @@ fn absolute_reanchor_jump(delta: i32, range: Option<(i32, i32)>) -> bool {
     delta.abs() >= threshold
 }
 
+fn touchpad_tap_slop(range_x: Option<(i32, i32)>, range_y: Option<(i32, i32)>) -> i32 {
+    let span_x = range_x
+        .map(|(min, max)| (max - min).unsigned_abs() as i32)
+        .unwrap_or_default();
+    let span_y = range_y
+        .map(|(min, max)| (max - min).unsigned_abs() as i32)
+        .unwrap_or_default();
+    let span = span_x.max(span_y);
+    (((span as f64) * 0.008).round() as i32).clamp(6, 48)
+}
+
 fn split_absolute_pointer_motion(dx: i32, dy: i32) -> Vec<InputEvent> {
     let max_component = dx.abs().max(dy.abs());
     let steps = (max_component.max(1) + ABSOLUTE_POINTER_MAX_STEP - 1) / ABSOLUTE_POINTER_MAX_STEP;
@@ -1470,6 +1600,14 @@ mod tests {
                 abs_range_y: Some((0, 1000)),
                 last_abs_position: None,
                 abs_dirty: false,
+                abs_contact_known: false,
+                abs_touching: false,
+                touch_contact_started_at: None,
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: None,
+                pending_touchpad_tap_deadline: None,
                 pressed_keys: HashSet::new(),
                 desynced: false,
             }],
@@ -1583,6 +1721,14 @@ mod tests {
                 abs_range_y: Some((0, 1000)),
                 last_abs_position: Some((100, 100)),
                 abs_dirty: true,
+                abs_contact_known: false,
+                abs_touching: false,
+                touch_contact_started_at: None,
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: None,
+                pending_touchpad_tap_deadline: None,
                 pressed_keys: HashSet::new(),
                 desynced: false,
             }],
@@ -1626,5 +1772,295 @@ mod tests {
         ]);
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn absolute_pointer_seeds_new_touch_contact_without_jump() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Touchpad".into(),
+                file,
+                is_keyboard: false,
+                is_mouse: true,
+                pointer_kind: PointerKind::Absolute,
+                abs_x: Some(100),
+                abs_y: Some(100),
+                abs_range_x: Some((0, 1000)),
+                abs_range_y: Some((0, 1000)),
+                last_abs_position: Some((100, 100)),
+                abs_dirty: false,
+                abs_contact_known: true,
+                abs_touching: false,
+                touch_contact_started_at: None,
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: None,
+                pending_touchpad_tap_deadline: None,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        let events = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_KEY,
+                    code: BTN_TOUCH,
+                    value: 1,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_X,
+                    value: 650,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_Y,
+                    value: 700,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+        ]);
+
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn absolute_pointer_keeps_single_step_motion_for_dragging() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Touchpad".into(),
+                file,
+                is_keyboard: false,
+                is_mouse: true,
+                pointer_kind: PointerKind::Absolute,
+                abs_x: Some(100),
+                abs_y: Some(100),
+                abs_range_x: Some((0, 1000)),
+                abs_range_y: Some((0, 1000)),
+                last_abs_position: Some((100, 100)),
+                abs_dirty: false,
+                abs_contact_known: true,
+                abs_touching: true,
+                touch_contact_started_at: Some(Instant::now()),
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: None,
+                pending_touchpad_tap_deadline: None,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        let events = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_X,
+                    value: 101,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_ABS,
+                    code: ABS_Y,
+                    value: 101,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+        ]);
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            InputEvent::MouseMove {
+                dx: 1,
+                dy: 1,
+                source: MouseMotionSource::Absolute
+            }
+        ));
+    }
+
+    #[test]
+    fn touchpad_single_tap_synthesizes_left_click() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Touchpad".into(),
+                file,
+                is_keyboard: false,
+                is_mouse: true,
+                pointer_kind: PointerKind::Absolute,
+                abs_x: Some(100),
+                abs_y: Some(100),
+                abs_range_x: Some((0, 1000)),
+                abs_range_y: Some((0, 1000)),
+                last_abs_position: Some((100, 100)),
+                abs_dirty: false,
+                abs_contact_known: true,
+                abs_touching: false,
+                touch_contact_started_at: None,
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: None,
+                pending_touchpad_tap_deadline: None,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        let events = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_KEY,
+                    code: BTN_TOUCH,
+                    value: 1,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 50_000,
+                    type_: EV_KEY,
+                    code: BTN_TOUCH,
+                    value: 0,
+                },
+            ),
+        ]);
+
+        assert!(events.is_empty());
+
+        capture.devices[0].pending_touchpad_tap_deadline = Some(Instant::now());
+        let flush = capture.flush_pending_touchpad_taps();
+        assert_eq!(flush.len(), 2);
+        assert!(matches!(flush[0], InputEvent::KeyPress(Key::MouseLeft)));
+        assert!(matches!(flush[1], InputEvent::KeyRelease(Key::MouseLeft)));
+    }
+
+    #[test]
+    fn touchpad_double_tap_hold_begins_drag_click() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Touchpad".into(),
+                file,
+                is_keyboard: false,
+                is_mouse: true,
+                pointer_kind: PointerKind::Absolute,
+                abs_x: Some(100),
+                abs_y: Some(100),
+                abs_range_x: Some((0, 1000)),
+                abs_range_y: Some((0, 1000)),
+                last_abs_position: Some((100, 100)),
+                abs_dirty: false,
+                abs_contact_known: true,
+                abs_touching: false,
+                touch_contact_started_at: None,
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: Some(Instant::now()),
+                pending_touchpad_tap_deadline: None,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        let press = capture.process_events(&[(
+            fd,
+            RawInputEvent {
+                tv_sec: 0,
+                tv_usec: 250_000,
+                type_: EV_KEY,
+                code: BTN_TOUCH,
+                value: 1,
+            },
+        )]);
+        assert_eq!(press.len(), 1);
+        assert!(matches!(press[0], InputEvent::KeyPress(Key::MouseLeft)));
+        assert!(capture.devices[0].pending_touchpad_tap_deadline.is_none());
+
+        let release = capture.process_events(&[(
+            fd,
+            RawInputEvent {
+                tv_sec: 0,
+                tv_usec: 320_000,
+                type_: EV_KEY,
+                code: BTN_TOUCH,
+                value: 0,
+            },
+        )]);
+        assert_eq!(release.len(), 1);
+        assert!(matches!(release[0], InputEvent::KeyRelease(Key::MouseLeft)));
     }
 }

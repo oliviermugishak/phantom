@@ -124,6 +124,28 @@ Fix:
 
 - align the profile and daemon screen contracts with the real fullscreen Android surface
 
+## Menu-Touch Cursor Does Not Appear
+
+Symptom:
+
+- capture is on
+- mouse mode is `menu_touch`
+- clicks may still work, but you do not see the owned cursor
+
+Checks:
+
+- inspect `~/.config/phantom/cursor-overlay.log`
+- confirm `phantom status` shows:
+  - `capture: true`
+  - `mouse mode: menu_touch`
+- verify the desktop session allows small always-on-top transparent windows
+- on Wayland/Hyprland, the cursor overlay now expects layer-shell support rather than a normal transparent toplevel
+
+Important:
+
+- this cursor overlay is separate from the `F10` debug preview
+- it exists only to visualize Phantom's owned menu-touch cursor while capture is active
+
 ## Aim Does Not Work
 
 Check:
@@ -143,7 +165,7 @@ Useful cases:
 Note:
 
 - touchpads now work, but they may still feel less smooth than a real mouse because Phantom must derive relative motion from absolute touchpad coordinates
-- Phantom now filters large touchpad re-anchor jumps and splits large touchpad motion into smaller immediate steps before aim sees it
+- Phantom now suppresses fresh-contact touchpad jumps before motion reaches aim and keeps tiny single-step movement available for held drags and careful cursor movement
 - a real mouse is still the best path for the highest-end fast aim-heavy play, but touchpad behavior should now be less jumpy without adding tick-latency to aim
 
 ## Aim Stops After `F1` Mouse Toggle
@@ -167,38 +189,63 @@ Some games accept taps and drags in menus but ignore plain desktop mouse input.
 Use this workflow:
 
 - enter capture
-- leave the mouse released instead of grabbing gameplay aim
+- stay in menu-touch mode instead of switching to gameplay aim
 - navigate with left click and drag
 
 Expected behavior:
 
 - left click becomes touch down / up
 - moving while held becomes drag
-- `F1` grabs the mouse back for gameplay aim when needed
+- touchpad single-tap now synthesizes a left click in owned menu-touch
+- touchpad double-tap-and-hold now begins a held left click so drag can continue from the pad
+- `F1` switches back to gameplay aim when needed
+- on touchpads, the first contact on the pad should seed cleanly instead of jerking the owned cursor
 
 ## Menu Touch Lands Away From The Visible Cursor
 
 Check:
 
-- `phantom status` while capture is active and the mouse is released
+- `phantom status` while capture is active and mouse mode is `menu_touch`
 - look for `menu touch backend`
 
 Expected:
 
-- `hyprland-client-absolute+x11-helper+virtual-fallback` is the accurate compositor-native path on Hyprland
-- `x11-helper+virtual-fallback` is the accurate host-cursor path
-- `virtual-cursor` is the fallback path and can still drift from the visible desktop cursor
+- `owned-hyprland-seeded+x11-seeded+virtual` means Phantom seeded the owned cursor from compositor-native Hyprland data
+- `owned-x11-seeded+virtual` means Phantom seeded the owned cursor from X11/XWayland helper data
+- `owned-virtual` means Phantom had no exact host seed and reused its internal cursor
 
 What it means:
 
-- on X11/XWayland, Phantom can query the real visible cursor and map touches exactly to the active host window
-- on sessions where exact cursor position is not available, Phantom falls back to its internal cursor path
+- Phantom only depends on the host cursor for the initial seed when menu-touch mode begins
+- after that seed, the owned Phantom cursor is moved from raw mouse motion while the mouse stays captured
 
 If you still see drift:
 
-- confirm the game window is actually the active X11/XWayland window
-- test from the same desktop session where `DISPLAY` is available
+- enter menu-touch while the visible host cursor is already over the area you want to start from
+- test from the same desktop session where Hyprland or `DISPLAY` helper data is available
 - use `phantom status` to verify the backend instead of assuming
+
+## Menu Touch Needs Two Clicks Before The Action Happens
+
+Check:
+
+- `phantom status` while capture is active and mouse mode is `menu_touch`
+- look for:
+  - `mouse mode`
+  - `menu touch backend`
+
+What it means:
+
+- `mouse mode: menu_touch`
+  - Phantom owns the mouse and should inject touch directly
+- `mouse mode: aim`
+  - clicks are being routed through gameplay aim semantics instead of menu touch
+
+Important:
+
+- this is separate from cursor accuracy
+- Phantom no longer relies on a first host click for activation in the main menu-touch path
+- if you still see a two-click pattern, the remaining issue is likely game-specific UI behavior rather than desktop focus preparation
 
 ## PUBG Sprint-Lock Drag Does Not Feel Right
 

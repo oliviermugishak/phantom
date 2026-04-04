@@ -11,6 +11,7 @@ const SMALL_MARKER_RADIUS: f32 = 9.0;
 const TEXT_SHADOW: Color32 = Color32::from_black_alpha(190);
 const GUIDE_LENGTH: f32 = 14.0;
 const HEADER_TEXT: &str = "Experimental debug preview — not gameplay-safe";
+
 pub fn run_overlay(profile_path: &Path) -> eframe::Result<()> {
     let profile = Profile::load(profile_path)
         .map_err(|e| eframe::Error::AppCreation(Box::new(std::io::Error::other(e.to_string()))))?;
