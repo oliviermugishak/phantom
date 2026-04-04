@@ -1,5 +1,5 @@
 use phantom::engine::{KeymapEngine, TouchCommand};
-use phantom::input::{InputEvent, Key};
+use phantom::input::{InputEvent, Key, MouseMotionSource};
 use phantom::profile::*;
 
 fn pubg_profile() -> Profile {
@@ -31,16 +31,13 @@ fn pubg_profile() -> Profile {
                 id: "camera".into(),
                 layer: String::new(),
                 slot: 1,
-                region: Region {
-                    x: 0.35,
-                    y: 0.0,
-                    w: 0.65,
-                    h: 1.0,
-                },
+                anchor: RelPos { x: 0.75, y: 0.5 },
+                reach: 0.18,
                 sensitivity: 1.2,
                 activation_mode: MouseCameraActivationMode::AlwaysOn,
                 activation_key: None,
                 invert_y: false,
+                legacy_region: None,
             },
             Node::HoldTap {
                 id: "fire".into(),
@@ -210,7 +207,11 @@ fn empty_profile_is_idle() {
     assert!(engine.process(&InputEvent::KeyPress(Key::F12)).is_empty());
     assert!(engine.process(&InputEvent::KeyRelease(Key::F12)).is_empty());
     assert!(engine
-        .process(&InputEvent::MouseMove { dx: 50, dy: 20 })
+        .process(&InputEvent::MouseMove {
+            dx: 50,
+            dy: 20,
+            source: MouseMotionSource::Relative,
+        })
         .is_empty());
     assert!(engine.tick().is_empty());
 }
@@ -220,7 +221,11 @@ fn mouse_camera_tracks_movement() {
     let mut engine = KeymapEngine::new(pubg_profile());
 
     // First mouse move — finger goes down at center
-    let cmds = engine.process(&InputEvent::MouseMove { dx: 10, dy: 5 });
+    let cmds = engine.process(&InputEvent::MouseMove {
+        dx: 10,
+        dy: 5,
+        source: MouseMotionSource::Relative,
+    });
     assert!(cmds.len() >= 2); // down + move
     assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
     match (&cmds[0], &cmds[1]) {
@@ -243,7 +248,11 @@ fn mouse_camera_tracks_movement() {
     }
 
     // Subsequent moves
-    let cmds = engine.process(&InputEvent::MouseMove { dx: 50, dy: 0 });
+    let cmds = engine.process(&InputEvent::MouseMove {
+        dx: 50,
+        dy: 0,
+        source: MouseMotionSource::Relative,
+    });
     assert!(!cmds.is_empty());
     if let TouchCommand::TouchMove { slot, x, .. } = &cmds[0] {
         assert_eq!(*slot, 1);
@@ -257,7 +266,11 @@ fn mouse_camera_tracks_movement() {
 fn mouse_camera_releases_after_idle() {
     let mut engine = KeymapEngine::new(pubg_profile());
 
-    let cmds = engine.process(&InputEvent::MouseMove { dx: 20, dy: 0 });
+    let cmds = engine.process(&InputEvent::MouseMove {
+        dx: 20,
+        dy: 0,
+        source: MouseMotionSource::Relative,
+    });
     assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
 
     std::thread::sleep(std::time::Duration::from_millis(520));
@@ -372,7 +385,7 @@ fn load_pubg_profile_from_file() {
     if path.exists() {
         let profile = Profile::load(&path).expect("failed to load pubg.json");
         assert_eq!(profile.name, "PUBG Mobile");
-        assert_eq!(profile.nodes.len(), 9);
+        assert_eq!(profile.nodes.len(), 21);
     }
 }
 
@@ -488,25 +501,39 @@ fn global_sensitivity_affects_camera() {
     let mut engine_low = KeymapEngine::new(pubg_profile()); // sensitivity 1.0
 
     // First mouse move on each — both place finger at center
-    engine_high.process(&InputEvent::MouseMove { dx: 0, dy: 0 });
-    engine_low.process(&InputEvent::MouseMove { dx: 0, dy: 0 });
+    engine_high.process(&InputEvent::MouseMove {
+        dx: 0,
+        dy: 0,
+        source: MouseMotionSource::Relative,
+    });
+    engine_low.process(&InputEvent::MouseMove {
+        dx: 0,
+        dy: 0,
+        source: MouseMotionSource::Relative,
+    });
 
     // Second mouse move — now the sensitivity difference matters
-    let cmds_high = engine_high.process(&InputEvent::MouseMove { dx: 100, dy: 0 });
-    let cmds_low = engine_low.process(&InputEvent::MouseMove { dx: 100, dy: 0 });
+    let cmds_high = engine_high.process(&InputEvent::MouseMove {
+        dx: 10,
+        dy: 0,
+        source: MouseMotionSource::Relative,
+    });
+    let cmds_low = engine_low.process(&InputEvent::MouseMove {
+        dx: 10,
+        dy: 0,
+        source: MouseMotionSource::Relative,
+    });
 
-    let move_high = cmds_high
-        .iter()
-        .find(|c| matches!(c, TouchCommand::TouchMove { .. }));
-    let move_low = cmds_low
-        .iter()
-        .find(|c| matches!(c, TouchCommand::TouchMove { .. }));
+    let move_high = cmds_high.iter().find_map(|cmd| match cmd {
+        TouchCommand::TouchMove { x, .. } => Some(*x),
+        _ => None,
+    });
+    let move_low = cmds_low.iter().find_map(|cmd| match cmd {
+        TouchCommand::TouchMove { x, .. } => Some(*x),
+        _ => None,
+    });
 
-    if let (
-        Some(TouchCommand::TouchMove { x: x_high, .. }),
-        Some(TouchCommand::TouchMove { x: x_low, .. }),
-    ) = (move_high, move_low)
-    {
+    if let (Some(x_high), Some(x_low)) = (move_high, move_low) {
         assert!(
             x_high > x_low,
             "higher sensitivity (x={}) should move more than lower (x={})",

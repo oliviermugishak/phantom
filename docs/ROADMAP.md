@@ -1,8 +1,11 @@
 # Roadmap
 
-This file tracks the highest-value next work after `0.6.1`.
+This file tracks the highest-value next work after `0.7.0`.
 
 It is intentionally short and product-oriented. It is not meant to be a complete issue tracker.
+
+For the detailed architecture backlog, implementation boundaries, and feature
+checklists, see [ROADMAD.md](ROADMAD.md).
 
 ## 1. Runtime Efficiency
 
@@ -56,7 +59,7 @@ Status:
 
 High-value items:
 
-- continue touchpad mouse-look tuning
+- continue touchpad aim tuning
 - distinguish touchpad feel from real mouse feel more clearly
 - keep improving resync behavior across capture and mouse-routing transitions
 - tune fast-turn behavior for shooter use cases

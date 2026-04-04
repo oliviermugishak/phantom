@@ -29,7 +29,7 @@ If you do this up front, the profile stays readable even when it gets large.
 A practical shooter profile usually starts with a base layer that includes:
 
 - one movement `joystick`
-- one `mouse_camera`
+- one `aim`
 - fire button
 - ADS button
 - jump
@@ -43,7 +43,7 @@ A practical shooter profile usually starts with a base layer that includes:
 For example:
 
 - `joystick` on `W/A/S/D`
-- `mouse_camera` on `MouseRight` in `while_held` or `toggle`
+- `aim` on `MouseRight` in `while_held` or `toggle`
 - `hold_tap` on `MouseLeft` for fire
 - `tap` on `Space` for jump
 - `tap` on `C` for crouch
@@ -139,7 +139,7 @@ Why `hold`:
 - the user enters the mode temporarily
 - the profile returns to normal automatically on release
 
-## 5. Mouse Look Patterns
+## 5. Aim Patterns
 
 ### `always_on`
 
@@ -174,7 +174,7 @@ This is the best default for shooter profiles.
 
 Use when:
 
-- the game benefits from explicit mouse-look on/off
+- the game benefits from explicit aim on/off
 - the player wants to switch between cursor-like interaction and camera look
 
 Good for:
@@ -238,7 +238,20 @@ Recommended layer order:
 
 Do not build all layers at once. That makes debugging much harder.
 
-## 9. JSON Example: Vehicle Layer
+## 9. Menu-Heavy Games And eFootball
+
+Some games accept real touch in menus but ignore plain desktop mouse input.
+
+Use this workflow:
+
+1. enter capture
+2. leave the mouse released
+3. navigate with left click and drag through Phantom's mouse-to-touch runtime path
+4. grab gameplay aim only when you need it
+
+This keeps menu navigation separate from combat/gameplay aim.
+
+## 10. JSON Example: Vehicle Layer
 
 ```json
 {
@@ -263,15 +276,16 @@ For example:
 - `hold_tap` for brake
 - `tap` for seat switch
 
-## 10. JSON Example: ADS + Mouse Look
+## 11. JSON Example: ADS + Aim
 
 ```json
 {
   "id": "camera",
-  "type": "mouse_camera",
+  "type": "aim",
   "slot": 2,
   "layer": "",
-  "region": { "x": 0.35, "y": 0.0, "w": 0.65, "h": 1.0 },
+  "anchor": { "x": 0.75, "y": 0.5 },
+  "reach": 0.18,
   "sensitivity": 1.15,
   "activation_mode": "while_held",
   "activation_key": "MouseRight",
@@ -279,9 +293,9 @@ For example:
 }
 ```
 
-This is the most useful default mouse-look pattern for shooters.
+This is the most useful default aim pattern for shooters.
 
-## 11. Testing Strategy For Large Profiles
+## 12. Testing Strategy For Large Profiles
 
 Do not test a large shooter profile as one giant unit.
 
@@ -296,7 +310,7 @@ Test this way:
 
 If something breaks, roll back to the last stable combination and isolate the failing control.
 
-## 12. Signs You Need A Layer
+## 13. Signs You Need A Layer
 
 Add a layer when:
 
@@ -316,7 +330,7 @@ Use a different control type instead of forcing one primitive to do everything:
 
 - use `drag` for one-shot swipes
 - use `joystick` for continuous movement
-- use `mouse_camera` for camera/look
+- use `aim` for camera/look
 - use `hold_tap` for true held buttons
 - use `toggle_tap` only when the game really wants a latched state
 

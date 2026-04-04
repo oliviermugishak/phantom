@@ -15,6 +15,7 @@ use crate::desktop_relay::DesktopKeyboardRelay;
 use crate::engine::{KeymapEngine, TouchCommand};
 use crate::error::{PhantomError, Result};
 use crate::input::{InputCapture, InputEvent};
+use crate::mouse_touch::MouseTouchEmulator;
 use crate::overlay::OverlayPreview;
 use crate::profile::Profile;
 use crate::touch::TouchDevice;
@@ -63,6 +64,10 @@ pub struct IpcResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keyboard_grabbed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse_touch_active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse_touch_backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sensitivity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_width: Option<u32>,
@@ -86,6 +91,7 @@ pub struct DaemonState {
     pub touch: Mutex<Box<dyn TouchDevice>>,
     pub desktop_keyboard: Mutex<DesktopKeyboardRelay>,
     pub capture: Mutex<InputCapture>,
+    pub mouse_touch: Mutex<MouseTouchEmulator>,
     pub overlay: Mutex<OverlayPreview>,
     pub screen_width: u32,
     pub screen_height: u32,
@@ -109,6 +115,7 @@ impl DaemonState {
             touch: Mutex::new(touch),
             desktop_keyboard: Mutex::new(desktop_keyboard),
             capture: Mutex::new(capture),
+            mouse_touch: Mutex::new(MouseTouchEmulator::new(width, height)),
             overlay: Mutex::new(OverlayPreview::new()),
             screen_width: width,
             screen_height: height,
@@ -233,13 +240,16 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 Err(e) => error_response(e.to_string()),
             }
         }
-        IpcRequest::LoadProfileData { profile } => match profile.validate() {
-            Ok(()) => match load_profile_into_state(state, profile, None).await {
-                Ok(response) => response,
+        IpcRequest::LoadProfileData { profile } => {
+            let profile = profile.normalized();
+            match profile.validate() {
+                Ok(()) => match load_profile_into_state(state, profile, None).await {
+                    Ok(response) => response,
+                    Err(e) => error_response(e.to_string()),
+                },
                 Err(e) => error_response(e.to_string()),
-            },
-            Err(e) => error_response(e.to_string()),
-        },
+            }
+        }
         IpcRequest::Reload => {
             let path = state.profile_path.read().await.clone();
             match path {
@@ -255,6 +265,14 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
             let engine = state.engine.read().await;
             let (mouse_grabbed, keyboard_grabbed) = match current_grab_state(state) {
                 Ok(state) => state,
+                Err(e) => return error_response(e.to_string()),
+            };
+            let mouse_touch_active = match mouse_touch_enabled(state) {
+                Ok(active) => active,
+                Err(e) => return error_response(e.to_string()),
+            };
+            let mouse_touch_backend = match lock_mouse_touch(state) {
+                Ok(mouse_touch) => mouse_touch.backend_name().to_string(),
                 Err(e) => return error_response(e.to_string()),
             };
             IpcResponse {
@@ -274,6 +292,8 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 capture_active: Some(state.capture_active.load(Ordering::Acquire)),
                 mouse_grabbed: Some(mouse_grabbed),
                 keyboard_grabbed: Some(keyboard_grabbed),
+                mouse_touch_active: Some(mouse_touch_active),
+                mouse_touch_backend: Some(mouse_touch_backend),
                 sensitivity: None,
                 screen_width: Some(state.screen_width),
                 screen_height: Some(state.screen_height),
@@ -318,6 +338,14 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                     }
                 }
             }
+            let mouse_touch_active = match mouse_touch_enabled(state) {
+                Ok(active) => active,
+                Err(e) => return error_response(e.to_string()),
+            };
+            let mouse_touch_backend = match lock_mouse_touch(state) {
+                Ok(mouse_touch) => mouse_touch.backend_name().to_string(),
+                Err(e) => return error_response(e.to_string()),
+            };
             IpcResponse {
                 ok: true,
                 error: None,
@@ -330,6 +358,8 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 capture_active: Some(state.capture_active.load(Ordering::Acquire)),
                 mouse_grabbed: None,
                 keyboard_grabbed: None,
+                mouse_touch_active: Some(mouse_touch_active),
+                mouse_touch_backend: Some(mouse_touch_backend),
                 sensitivity: None,
                 screen_width: None,
                 screen_height: None,
@@ -505,6 +535,8 @@ async fn load_profile_into_state(
         capture_active: Some(state.capture_active.load(Ordering::Acquire)),
         mouse_grabbed: Some(mouse_grabbed),
         keyboard_grabbed: Some(keyboard_grabbed),
+        mouse_touch_active: Some(mouse_touch_enabled(state)?),
+        mouse_touch_backend: Some(lock_mouse_touch(state)?.backend_name().to_string()),
         sensitivity: None,
         screen_width: Some(state.screen_width),
         screen_height: Some(state.screen_height),
@@ -526,12 +558,18 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
         apply_commands(state, &cmds)?;
     }
 
+    let mouse_touch_cmds = {
+        let mut mouse_touch = lock_mouse_touch(state)?;
+        mouse_touch.suspend()
+    };
+    apply_commands(state, &mouse_touch_cmds)?;
+
     {
         let mut capture = lock_capture(state)?;
         // The daemon keeps the keyboard grabbed for its lifetime so runtime
         // hotkeys stay reliable even when gameplay capture is not active.
         capture.set_grabbed_keyboard_only(true)?;
-        capture.set_grabbed_mouse_only(active)?;
+        capture.set_grabbed_mouse_only(false)?;
     }
     state.capture_active.store(active, Ordering::Release);
     if active {
@@ -540,15 +578,15 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
             capture.current_pressed_mouse_keys()
         };
         let cmds = {
-            let mut engine = state.engine.write().await;
-            engine.resync_mouse_buttons(&pressed_mouse)
+            let mut mouse_touch = lock_mouse_touch(state)?;
+            mouse_touch.resync_buttons(&pressed_mouse)
         };
         apply_commands(state, &cmds)?;
 
         let engine = state.engine.read().await;
         if !engine.has_mouse_camera() {
             tracing::info!(
-                "capture enabled without a mouse_camera node in the loaded profile; mouse movement will not steer the camera"
+                "capture enabled without an aim node in the loaded profile; grab the mouse only when the profile should steer the camera"
             );
         }
     }
@@ -575,20 +613,27 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
         apply_commands(state, &cmds)?;
     }
 
+    let mouse_touch_cmds = {
+        let mut mouse_touch = lock_mouse_touch(state)?;
+        mouse_touch.suspend()
+    };
+    apply_commands(state, &mouse_touch_cmds)?;
+
     let pressed_mouse = {
         let mut capture = lock_capture(state)?;
         capture.set_grabbed_mouse_only(routed)?;
-        if routed {
-            Some(capture.current_pressed_mouse_keys())
-        } else {
-            None
-        }
+        Some(capture.current_pressed_mouse_keys())
     };
 
     if let Some(pressed_mouse) = pressed_mouse {
         let cmds = {
-            let mut engine = state.engine.write().await;
-            engine.resync_mouse_buttons(&pressed_mouse)
+            if routed {
+                let mut engine = state.engine.write().await;
+                engine.resync_mouse_buttons(&pressed_mouse)
+            } else {
+                let mut mouse_touch = lock_mouse_touch(state)?;
+                mouse_touch.resync_buttons(&pressed_mouse)
+            }
         };
         apply_commands(state, &cmds)?;
     }
@@ -596,15 +641,13 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
     if routed {
         let engine = state.engine.read().await;
         if !engine.has_mouse_camera() {
-            tracing::info!(
-                "mouse routed to gameplay, but the loaded profile has no mouse_camera node"
-            );
+            tracing::info!("mouse routed to gameplay, but the loaded profile has no aim node");
         }
     }
     Ok(())
 }
 
-fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()> {
+pub fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()> {
     if cmds.is_empty() {
         return Ok(());
     }
@@ -616,6 +659,11 @@ fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()>
 fn current_grab_state(state: &Arc<DaemonState>) -> Result<(bool, bool)> {
     let capture = lock_capture(state)?;
     Ok((capture.mouse_grabbed(), capture.keyboard_grabbed()))
+}
+
+fn mouse_touch_enabled(state: &Arc<DaemonState>) -> Result<bool> {
+    let (mouse_grabbed, _) = current_grab_state(state)?;
+    Ok(state.capture_active.load(Ordering::Acquire) && !mouse_grabbed)
 }
 
 pub fn lock_touch_device(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, Box<dyn TouchDevice>>> {
@@ -645,6 +693,16 @@ pub fn lock_capture(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, InputCapt
         Ok(guard) => Ok(guard),
         Err(poisoned) => {
             tracing::warn!("input capture lock poisoned, recovering");
+            Ok(poisoned.into_inner())
+        }
+    }
+}
+
+pub fn lock_mouse_touch(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, MouseTouchEmulator>> {
+    match state.mouse_touch.lock() {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::warn!("mouse-touch lock poisoned, recovering");
             Ok(poisoned.into_inner())
         }
     }
@@ -682,6 +740,8 @@ fn error_response(error: String) -> IpcResponse {
         capture_active: None,
         mouse_grabbed: None,
         keyboard_grabbed: None,
+        mouse_touch_active: None,
+        mouse_touch_backend: None,
         sensitivity: None,
         screen_width: None,
         screen_height: None,
@@ -703,6 +763,8 @@ fn ok_response() -> IpcResponse {
         capture_active: None,
         mouse_grabbed: None,
         keyboard_grabbed: None,
+        mouse_touch_active: None,
+        mouse_touch_backend: None,
         sensitivity: None,
         screen_width: None,
         screen_height: None,

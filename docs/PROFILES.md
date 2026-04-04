@@ -48,7 +48,7 @@ Fields:
 - `screen`
   Required screen contract for the profile.
 - `global_sensitivity`
-  Multiplier applied to mouse-look sensitivity.
+  Multiplier applied to aim sensitivity.
 - `nodes`
   Control definitions.
 
@@ -245,14 +245,15 @@ Use cases:
 - sprint-lock drags
 - one-shot directional gestures
 
-### `mouse_camera`
+### `aim`
 
 ```json
 {
   "id": "camera",
-  "type": "mouse_camera",
+  "type": "aim",
   "slot": 1,
-  "region": { "x": 0.35, "y": 0.0, "w": 0.65, "h": 1.0 },
+  "anchor": { "x": 0.75, "y": 0.5 },
+  "reach": 0.18,
   "sensitivity": 1.2,
   "activation_mode": "while_held",
   "activation_key": "MouseRight",
@@ -262,8 +263,12 @@ Use cases:
 
 Fields:
 
-- `region`
-  Bounded normalized swipe region.
+- `anchor`
+  Normalized internal recenter point for the hidden look touch.
+- `reach`
+  Maximum normalized travel from the anchor before Phantom re-segments the gesture.
+  In practice, Phantom keeps aim tighter than this for stability, so larger
+  values have diminishing returns.
 - `sensitivity`
   Node-local multiplier.
 - `activation_mode`
@@ -278,11 +283,16 @@ Fields:
 
 Important:
 
-- `mouse_camera` is touch-drag camera emulation
+- `aim` is touch-drag camera emulation
 - it is not desktop pointer emulation
-- runtime mouse grab or `F1` alone does not enable camera movement; the loaded profile must contain a `mouse_camera` node
-- toggled mouse-look state survives `F1` mouse routing changes
+- menu-touch navigation is runtime behavior, not a profile node
+- runtime mouse grab or `F1` alone does not enable camera movement; the loaded profile must contain an `aim` node
+- aim motion is still emitted immediately from input movement
+- touchpad roughness is reduced in input translation by splitting large absolute
+  touchpad jumps into smaller motion steps before they reach the engine
+- toggled aim state survives `F1` mouse routing changes
 - `while_held` mouse activation keys are resynced when mouse routing is re-enabled
+- older profiles using `type = "mouse_camera"` and `region` still load; Phantom normalizes them to `aim` semantics internally
 
 For recommended shooter setups such as ADS-driven look, layered contexts, and sprint-lock drag patterns, see [GAME_PATTERNS.md](GAME_PATTERNS.md).
 
@@ -303,6 +313,8 @@ Behavior:
 
 - key press starts a repeating touch cycle
 - key release stops it and releases the slot
+- `interval_ms` must be greater than zero
+- practical repeat timing is bounded by the daemon tick cadence; Phantom now runs that at `4ms`, so values below that may collapse toward the same effective rate depending on scheduler timing
 
 ### `macro`
 
@@ -354,9 +366,9 @@ Important rules:
 - slot-bearing nodes use unique logical slots
 - coordinates and regions stay within `[0, 1]`
 - joystick radius is in `(0, 1]`
-- `mouse_camera.sensitivity > 0`
-- `mouse_camera.activation_key` required for `while_held` and `toggle`
-- `mouse_camera.activation_key` omitted for `always_on`
+- `aim.sensitivity > 0`
+- `aim.activation_key` required for `while_held` and `toggle`
+- `aim.activation_key` omitted for `always_on`
 - all key names must be known to Phantom
 
 ## 9. Common Key Names

@@ -209,7 +209,7 @@ Examples of state that should stay explicit:
 - keyboard routed
 - engine paused
 - active layers
-- mouse-look activation state
+- aim activation state
 
 ### Prefer Stable Contracts
 

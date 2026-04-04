@@ -6,7 +6,7 @@
 
 - evdev input capture with `EVIOCGRAB` exclusive grab
 - uinput virtual touchscreen via raw ioctls (MT Protocol B)
-- 6 node types: tap, hold_tap, joystick, mouse_camera, repeat_tap, macro
+- 6 node types: tap, hold_tap, joystick, mouse_camera (now `aim`), repeat_tap, macro
 - JSON profile loading with full validation (9 rules)
 - Unix socket IPC with 8 commands (load, reload, status, pause, resume, sensitivity, list, shutdown)
 - CLI client for all IPC commands

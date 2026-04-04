@@ -252,9 +252,9 @@ Two important recent consequences of that abstraction:
 
 The engine stays responsible for gesture meaning. The backend stays responsible for touch realization.
 
-## 6. `mouse_camera` Design
+## 6. `aim` Design
 
-`mouse_camera` is the camera/look primitive.
+`aim` is the camera/look primitive.
 
 It is not a general cursor.
 
@@ -266,9 +266,9 @@ Current modes:
 
 The engine stores:
 
-- whether mouse look is enabled
+- whether aim is enabled
 - whether a synthetic finger is currently down
-- current pointer position inside the region
+- current pointer position around the anchor
 - last motion time
 
 Why the enabled state exists:
@@ -276,6 +276,22 @@ Why the enabled state exists:
 - `always_on` should behave continuously
 - `while_held` should behave like a temporary camera mode
 - `toggle` should preserve mode state across movement pauses
+
+Runtime note:
+
+- aim still reacts immediately to mouse/touchpad movement
+- touchpad smoothing now happens in input translation, before the engine sees
+  motion at all
+- the engine also keeps aim travel tighter around its anchor than the raw
+  profile reach alone would suggest, so the hidden touch is less likely to roam
+  into nearby controls
+
+When capture is active and gameplay mouse routing is released, the daemon also runs a separate mouse-to-touch path for menu navigation. That path is runtime-only and is not expressed as a profile node. On Hyprland it prefers compositor-native cursor/client geometry, then falls back to X11/XWayland helper mapping, then finally to Phantom's internal virtual cursor.
+
+Current menu-touch backend order:
+
+- prefer exact X11 visible-cursor to window-relative touch mapping
+- fall back to Phantom's virtual cursor path when exact host cursor coordinates are unavailable
 
 ## 7. Why `android_socket` Is The Primary Backend
 

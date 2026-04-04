@@ -16,6 +16,7 @@ use phantom::touch;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const ENGINE_TICK_INTERVAL_MS: u64 = 4;
 
 fn print_help() {
     println!(
@@ -280,7 +281,9 @@ async fn run_daemon() -> Result<()> {
 
     let mut input_interval = tokio::time::interval(Duration::from_millis(1));
     input_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut tick_interval = tokio::time::interval(Duration::from_millis(16));
+    // 4 ms is a better compromise for repeat-tap, drag, and macro timing than
+    // the old frame-like 16 ms cadence, while still avoiding a 1 ms hot loop.
+    let mut tick_interval = tokio::time::interval(Duration::from_millis(ENGINE_TICK_INTERVAL_MS));
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -354,10 +357,21 @@ async fn run_daemon() -> Result<()> {
                                 // We may still be in gameplay capture while the user has
                                 // temporarily released only the mouse back to the desktop.
                                 if event.is_mouse_input() && !mouse_routed {
-                                    if trace_detail_enabled() {
+                                    let mouse_touch_cmds = match ipc::lock_mouse_touch(&state) {
+                                        Ok(mut mouse_touch) => mouse_touch.process(&event),
+                                        Err(e) => {
+                                            tracing::warn!("mouse-touch lock error: {}", e);
+                                            Vec::new()
+                                        }
+                                    };
+                                    if let Err(e) = ipc::apply_commands(&state, &mouse_touch_cmds) {
+                                        tracing::warn!("mouse-touch inject error: {}", e);
+                                    }
+                                    if trace_detail_enabled() && !mouse_touch_cmds.is_empty() {
                                         tracing::trace!(
                                             event = ?event,
-                                            "dropping gameplay event because mouse routing is disabled"
+                                            commands = ?mouse_touch_cmds,
+                                            "translated mouse input into menu touch"
                                         );
                                     }
                                     continue;
@@ -461,6 +475,17 @@ async fn run_daemon() -> Result<()> {
     }
 
     {
+        if let Ok(mut mouse_touch) = ipc::lock_mouse_touch(&state) {
+            let cmds = mouse_touch.suspend();
+            if !cmds.is_empty() {
+                if let Ok(mut dev) = ipc::lock_touch_device(&state) {
+                    let _ = dev.apply_commands(&cmds);
+                }
+            }
+        }
+    }
+
+    {
         let mut capture = ipc::lock_capture(&state)?;
         capture.force_release_all();
     }
@@ -546,9 +571,9 @@ async fn handle_runtime_shortcut(
             tracing::info!(
                 "{}",
                 if currently_grabbed {
-                    "mouse released to desktop"
+                    "mouse released to menu touch navigation"
                 } else {
-                    "mouse grabbed for gameplay"
+                    "mouse grabbed for gameplay aim"
                 }
             );
             Ok(true)
@@ -659,6 +684,12 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
         if let Some(mouse_grabbed) = response.mouse_grabbed {
             eprintln!("mouse grabbed: {}", mouse_grabbed);
         }
+        if let Some(mouse_touch_active) = response.mouse_touch_active {
+            eprintln!("menu touch: {}", mouse_touch_active);
+        }
+        if let Some(mouse_touch_backend) = &response.mouse_touch_backend {
+            eprintln!("menu touch backend: {}", mouse_touch_backend);
+        }
         if let Some(keyboard_grabbed) = response.keyboard_grabbed {
             eprintln!("keyboard grabbed: {}", keyboard_grabbed);
         }
@@ -694,6 +725,20 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
 #[tokio::main]
 async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|s| s.as_str()) == Some("__hyprland_cursor_helper") {
+        if let Err(e) = phantom::hyprland_cursor::run_helper_stdio() {
+            eprintln!("hyprland cursor helper error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(|s| s.as_str()) == Some("__x11_cursor_helper") {
+        if let Err(e) = phantom::x11_cursor::run_helper_stdio() {
+            eprintln!("x11 cursor helper error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
     let force_trace = args.iter().any(|a| a == "--trace");
     args.retain(|arg| arg != "--trace");
     init_logging(force_trace);

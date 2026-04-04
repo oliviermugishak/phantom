@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::error::{PhantomError, Result};
 use crate::input::Key;
+use crate::mouse_touch::RUNTIME_MOUSE_TOUCH_SLOT;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
@@ -96,12 +97,22 @@ pub enum Node {
         key: String,
         duration_ms: u64,
     },
+    #[serde(rename = "aim", alias = "mouse_camera")]
     MouseCamera {
         id: String,
         #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
         layer: String,
         slot: u8,
-        region: Region,
+        #[serde(
+            default = "default_aim_anchor",
+            skip_serializing_if = "is_default_aim_anchor"
+        )]
+        anchor: RelPos,
+        #[serde(
+            default = "default_aim_reach",
+            skip_serializing_if = "is_default_aim_reach"
+        )]
+        reach: f64,
         sensitivity: f64,
         #[serde(
             default,
@@ -112,6 +123,8 @@ pub enum Node {
         activation_key: Option<String>,
         #[serde(default)]
         invert_y: bool,
+        #[serde(default, alias = "region", skip_serializing)]
+        legacy_region: Option<Region>,
     },
     RepeatTap {
         id: String,
@@ -214,6 +227,14 @@ fn default_layer() -> String {
     String::new()
 }
 
+fn default_aim_anchor() -> RelPos {
+    RelPos { x: 0.75, y: 0.5 }
+}
+
+fn default_aim_reach() -> f64 {
+    0.18
+}
+
 fn is_default_layer(layer: &str) -> bool {
     layer.trim().is_empty()
 }
@@ -226,6 +247,15 @@ fn is_default_joystick_mode(mode: &JoystickMode) -> bool {
     matches!(mode, JoystickMode::Fixed)
 }
 
+fn is_default_aim_anchor(anchor: &RelPos) -> bool {
+    let default = default_aim_anchor();
+    (anchor.x - default.x).abs() < f64::EPSILON && (anchor.y - default.y).abs() < f64::EPSILON
+}
+
+fn is_default_aim_reach(reach: &f64) -> bool {
+    (*reach - default_aim_reach()).abs() < f64::EPSILON
+}
+
 impl Node {
     pub fn kind(&self) -> &'static str {
         match self {
@@ -234,7 +264,7 @@ impl Node {
             Node::ToggleTap { .. } => "toggle_tap",
             Node::Joystick { .. } => "joystick",
             Node::Drag { .. } => "drag",
-            Node::MouseCamera { .. } => "mouse_camera",
+            Node::MouseCamera { .. } => "aim",
             Node::RepeatTap { .. } => "repeat_tap",
             Node::Macro { .. } => "macro",
             Node::LayerShift { .. } => "layer_shift",
@@ -369,18 +399,18 @@ impl Node {
                 start.x, start.y, end.x, end.y, duration_ms
             )),
             Node::MouseCamera {
-                region,
+                anchor,
+                reach,
                 sensitivity,
                 activation_mode,
                 activation_key,
                 invert_y,
                 ..
             } => Some(format!(
-                "region=({:.3},{:.3},{:.3},{:.3}) sensitivity={:.3} mode={} key={} invert_y={}",
-                region.x,
-                region.y,
-                region.w,
-                region.h,
+                "anchor=({:.3},{:.3}) reach={:.3} sensitivity={:.3} mode={} key={} invert_y={}",
+                anchor.x,
+                anchor.y,
+                reach,
                 sensitivity,
                 match activation_mode {
                     MouseCameraActivationMode::AlwaysOn => "always_on",
@@ -411,8 +441,31 @@ impl Profile {
         let content = std::fs::read_to_string(path)
             .map_err(|e| PhantomError::Profile(format!("{}: {}", path.display(), e)))?;
         let profile: Profile = serde_json::from_str(&content)?;
+        let profile = profile.normalized();
         profile.validate()?;
         Ok(profile)
+    }
+
+    pub fn normalized(mut self) -> Self {
+        for node in &mut self.nodes {
+            if let Node::MouseCamera {
+                anchor,
+                reach,
+                legacy_region,
+                ..
+            } = node
+            {
+                if let Some(region) = legacy_region.take() {
+                    if is_default_aim_anchor(anchor) {
+                        *anchor = legacy_region_anchor(&region);
+                    }
+                    if is_default_aim_reach(reach) {
+                        *reach = legacy_region_reach(&region);
+                    }
+                }
+            }
+        }
+        self
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -472,6 +525,7 @@ impl Profile {
             }
 
             if let Some(slot) = node.slot() {
+                validate_slot_value(slot, &format!("nodes.{}.slot", node.id()))?;
                 if !slots.insert(slot) {
                     return Err(PhantomError::ProfileValidation {
                         field: format!("nodes.{}.slot", node.id()),
@@ -653,13 +707,24 @@ fn validate_node(node: &Node) -> Result<()> {
             }
         }
         Node::MouseCamera {
-            region,
+            anchor,
+            reach,
             sensitivity,
             activation_mode,
             activation_key,
+            legacy_region,
             ..
         } => {
-            validate_region(region, &format!("nodes.{id}.region"))?;
+            validate_pos(anchor, &format!("nodes.{id}.anchor"))?;
+            if *reach <= 0.0 || *reach > 0.45 {
+                return Err(PhantomError::ProfileValidation {
+                    field: format!("nodes.{id}.reach"),
+                    message: format!("reach {} must be in (0, 0.45]", reach),
+                });
+            }
+            if let Some(region) = legacy_region.as_ref() {
+                validate_region(region, &format!("nodes.{id}.region"))?;
+            }
             if *sensitivity <= 0.0 {
                 return Err(PhantomError::ProfileValidation {
                     field: format!("nodes.{id}.sensitivity"),
@@ -699,6 +764,7 @@ fn validate_node(node: &Node) -> Result<()> {
                 });
             }
             for (i, step) in sequence.iter().enumerate() {
+                validate_slot_value(step.slot, &format!("nodes.{id}.sequence[{i}].slot"))?;
                 if matches!(step.action, MacroAction::Down) && step.pos.is_none() {
                     return Err(PhantomError::ProfileValidation {
                         field: format!("nodes.{id}.sequence[{i}].pos"),
@@ -762,6 +828,19 @@ fn validate_layer_name(layer: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_slot_value(slot: u8, field: &str) -> Result<()> {
+    if slot == RUNTIME_MOUSE_TOUCH_SLOT {
+        return Err(PhantomError::ProfileValidation {
+            field: field.into(),
+            message: format!(
+                "slot {} is reserved for runtime mouse-touch navigation",
+                RUNTIME_MOUSE_TOUCH_SLOT
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn validate_key_name(key: &str, field: &str) -> Result<()> {
     if key.parse::<Key>().is_err() {
         return Err(PhantomError::ProfileValidation {
@@ -782,6 +861,21 @@ fn display_layer_name(layer: &str) -> String {
     } else {
         layer.to_string()
     }
+}
+
+fn legacy_region_anchor(region: &Region) -> RelPos {
+    RelPos {
+        x: round3(region.x + region.w / 2.0),
+        y: round3(region.y + region.h / 2.0),
+    }
+}
+
+fn legacy_region_reach(region: &Region) -> f64 {
+    round3((region.w.min(region.h) / 2.0).clamp(0.05, 0.45))
+}
+
+fn round3(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
 }
 
 #[cfg(test)]
@@ -881,6 +975,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_reserved_runtime_mouse_touch_slot() {
+        let mut p = valid_profile();
+        p.nodes = vec![Node::Tap {
+            id: "reserved".into(),
+            layer: default_layer(),
+            slot: u8::MAX,
+            pos: RelPos { x: 0.5, y: 0.5 },
+            key: "A".into(),
+        }];
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
     fn rejects_bad_coords() {
         let mut p = valid_profile();
         p.nodes = vec![Node::Tap {
@@ -941,16 +1048,13 @@ mod tests {
             id: "cam".into(),
             layer: default_layer(),
             slot: 0,
-            region: Region {
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 1.0,
-            },
+            anchor: default_aim_anchor(),
+            reach: 0.0,
             sensitivity: 1.0,
             activation_mode: MouseCameraActivationMode::AlwaysOn,
             activation_key: None,
             invert_y: false,
+            legacy_region: None,
         }];
         assert!(p.validate().is_err());
     }
@@ -962,16 +1066,13 @@ mod tests {
             id: "cam".into(),
             layer: default_layer(),
             slot: 0,
-            region: Region {
-                x: 0.0,
-                y: 0.0,
-                w: 0.5,
-                h: 1.0,
-            },
+            anchor: default_aim_anchor(),
+            reach: default_aim_reach(),
             sensitivity: 1.0,
             activation_mode: MouseCameraActivationMode::Toggle,
             activation_key: None,
             invert_y: false,
+            legacy_region: None,
         }];
         assert!(p.validate().is_err());
     }
@@ -983,18 +1084,59 @@ mod tests {
             id: "cam".into(),
             layer: default_layer(),
             slot: 0,
-            region: Region {
-                x: 0.0,
-                y: 0.0,
-                w: 0.5,
-                h: 1.0,
-            },
+            anchor: default_aim_anchor(),
+            reach: default_aim_reach(),
             sensitivity: 1.0,
             activation_mode: MouseCameraActivationMode::AlwaysOn,
             activation_key: Some("MouseRight".into()),
             invert_y: false,
+            legacy_region: None,
         }];
         assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn normalizes_legacy_mouse_camera_region_to_aim_fields() {
+        let raw = r#"
+        {
+          "name": "Legacy Camera",
+          "version": 1,
+          "screen": { "width": 1920, "height": 1080 },
+          "global_sensitivity": 1.0,
+          "nodes": [
+            {
+              "id": "camera",
+              "type": "mouse_camera",
+              "slot": 1,
+              "region": { "x": 0.35, "y": 0.0, "w": 0.65, "h": 1.0 },
+              "sensitivity": 1.2,
+              "activation_mode": "toggle",
+              "activation_key": "Tab",
+              "invert_y": false
+            }
+          ]
+        }
+        "#;
+
+        let profile: Profile = serde_json::from_str(raw).unwrap();
+        let profile = profile.normalized();
+        profile.validate().unwrap();
+
+        match &profile.nodes[0] {
+            Node::MouseCamera {
+                anchor,
+                reach,
+                legacy_region,
+                ..
+            } => {
+                assert!(legacy_region.is_none());
+                assert!((anchor.x - 0.675).abs() < 1e-6);
+                assert!((anchor.y - 0.5).abs() < 1e-6);
+                assert!((reach - 0.325).abs() < 1e-6);
+                assert_eq!(profile.nodes[0].kind(), "aim");
+            }
+            other => panic!("expected normalized aim node, got {:?}", other),
+        }
     }
 
     #[test]

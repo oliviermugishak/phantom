@@ -46,7 +46,7 @@ Profile primitives:
 - `toggle_tap`
 - `joystick`
 - `drag`
-- `mouse_camera`
+- `aim`
 - `repeat_tap`
 - `macro`
 - `layer_shift`
@@ -55,6 +55,7 @@ Important recent additions:
 
 - `joystick` now supports both `fixed` and `floating` modes
 - `drag` now supports swipe-style games such as Temple Run and Subway Surfers
+- capture-on mouse navigation now defaults to mouse-to-touch while gameplay aim routing is released
 - GUI profile discovery now reads the real user profile library from `~/.config/phantom/profiles/`
 
 ## Shipped Profile Library
@@ -172,7 +173,7 @@ What it shows:
 - button controls as soft circles with their bound key labels
 - joysticks as fixed centers or floating zones
 - drag gestures as subtle swipe arrows
-- mouse-look as a faint region outline
+- aim anchors as lightweight debug markers
 
 Important:
 
@@ -199,16 +200,32 @@ Detail mode:
 - that includes raw evdev events, touchpad re-anchor suppression, and dropped-event detail
 - only use it when debugging low-level input behavior
 
-## Mouse Look
+## Menu Touch And Aim
 
-`mouse_camera` is Phantom's camera/look primitive. It is touch-drag camera emulation, not desktop pointer emulation.
+When capture is active and gameplay mouse routing is released, Phantom now treats the host mouse as menu-touch navigation.
+
+What that means:
+
+- left click becomes touch down / touch up
+- mouse motion while held becomes touch drag
+- this is the intended way to navigate menus in games that reject raw mouse input
+- `F1` switches between gameplay aim routing and menu-touch navigation
+- Phantom prefers exact X11 cursor-to-touch mapping when it can see the real host cursor position
+- if exact cursor mapping is unavailable, Phantom falls back to its virtual cursor path
+
+## Aim
+
+`aim` is Phantom's camera/look primitive. Older profiles may still use the legacy `mouse_camera` type, which Phantom accepts and normalizes on load.
 
 Important:
 
-- runtime mouse grab only routes host mouse input into Phantom
-- actual camera movement only happens if the loaded profile contains a `mouse_camera` node
+- runtime mouse grab only routes host mouse input into Phantom's gameplay aim path
+- actual camera movement only happens if the loaded profile contains an `aim` node
+- when the mouse is released while capture stays on, Phantom falls back to mouse-to-touch UI navigation
 - touchpads are supported, but a real mouse will usually feel smoother for camera movement
 - `F1` now preserves toggle-look state and resyncs `while_held` mouse buttons when routing is restored
+- `phantom status` shows whether menu touch is active and which backend is in use
+  - on Hyprland, Phantom now prefers compositor-native cursor/client geometry first
 
 Supported activation modes:
 
