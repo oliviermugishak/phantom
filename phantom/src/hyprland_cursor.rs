@@ -1,14 +1,15 @@
 use std::env;
-use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde::Deserialize;
 
 use crate::config;
 use crate::error::{PhantomError, Result};
+use crate::hyprland_ipc;
+use crate::mouse_touch::{CursorSeed, HostFrame};
 
 const HELPER_SUBCOMMAND: &str = "__hyprland_cursor_helper";
 
@@ -69,7 +70,7 @@ impl HyprlandCursorClient {
             }
             command.env("XDG_RUNTIME_DIR", &runtime_dir);
         }
-        propagate_hyprland_env(&mut command, &runtime_dir);
+        hyprland_ipc::propagate_command_env(&mut command, &runtime_dir);
 
         let mut child = command.spawn().map_err(|e| {
             PhantomError::Internal(format!(
@@ -92,7 +93,7 @@ impl HyprlandCursorClient {
         })
     }
 
-    pub fn query_position(&mut self) -> Option<(f64, f64)> {
+    pub(crate) fn query_seed(&mut self) -> Option<CursorSeed> {
         if self.stdin.write_all(b"cursor\n").is_err() || self.stdin.flush().is_err() {
             return None;
         }
@@ -107,7 +108,20 @@ impl HyprlandCursorClient {
             "pos" => {
                 let x = parts.next()?.parse::<f64>().ok()?;
                 let y = parts.next()?.parse::<f64>().ok()?;
-                Some((x, y))
+                let left = parts.next()?.parse::<f64>().ok()?;
+                let top = parts.next()?.parse::<f64>().ok()?;
+                let width = parts.next()?.parse::<f64>().ok()?;
+                let height = parts.next()?.parse::<f64>().ok()?;
+                Some(CursorSeed {
+                    x,
+                    y,
+                    frame: HostFrame {
+                        left,
+                        top,
+                        width,
+                        height,
+                    },
+                })
             }
             _ => None,
         }
@@ -127,8 +141,16 @@ pub fn run_helper_stdio() -> Result<()> {
             continue;
         }
 
-        if let Some((x, y)) = query_normalized_position()? {
-            println!("pos {} {}", x, y);
+        if let Some(seed) = query_normalized_position()? {
+            println!(
+                "pos {} {} {} {} {} {}",
+                seed.x,
+                seed.y,
+                seed.frame.left,
+                seed.frame.top,
+                seed.frame.width,
+                seed.frame.height
+            );
         } else {
             println!("none");
         }
@@ -148,16 +170,15 @@ fn read_line() -> Result<Option<String>> {
     Ok(Some(line))
 }
 
-fn query_normalized_position() -> Result<Option<(f64, f64)>> {
-    ensure_hyprland_env();
-    let cursor = hyprctl_json::<HyprCursorPos>("cursorpos")?;
-    if let Ok(active) = hyprctl_json::<HyprClient>("activewindow") {
+fn query_normalized_position() -> Result<Option<CursorSeed>> {
+    let cursor = hyprland_ipc::json::<HyprCursorPos>("cursorpos")?;
+    if let Ok(active) = hyprland_ipc::json::<HyprClient>("activewindow") {
         if let Some(position) = normalize_within_client(&cursor, &active) {
             return Ok(Some(position));
         }
     }
 
-    let clients = hyprctl_json::<Vec<HyprClient>>("clients")?;
+    let clients = hyprland_ipc::json::<Vec<HyprClient>>("clients")?;
     let best = clients
         .iter()
         .filter(|client| client.mapped.unwrap_or(true))
@@ -173,7 +194,7 @@ fn query_normalized_position() -> Result<Option<(f64, f64)>> {
     Ok(best)
 }
 
-fn normalize_within_client(cursor: &HyprCursorPos, client: &HyprClient) -> Option<(f64, f64)> {
+fn normalize_within_client(cursor: &HyprCursorPos, client: &HyprClient) -> Option<CursorSeed> {
     let x = client.at[0] as f64;
     let y = client.at[1] as f64;
     let width = client.size[0] as f64;
@@ -186,93 +207,14 @@ fn normalize_within_client(cursor: &HyprCursorPos, client: &HyprClient) -> Optio
     if !(0.0..=width).contains(&local_x) || !(0.0..=height).contains(&local_y) {
         return None;
     }
-    Some((
-        (local_x / width).clamp(0.0, 1.0),
-        (local_y / height).clamp(0.0, 1.0),
-    ))
-}
-
-fn hyprctl_json<T: for<'de> Deserialize<'de>>(subject: &str) -> Result<T> {
-    let output = Command::new("hyprctl")
-        .arg("-j")
-        .arg(subject)
-        .output()
-        .map_err(|e| PhantomError::Internal(format!("failed to run hyprctl {}: {}", subject, e)))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Err(PhantomError::Internal(format!(
-            "hyprctl {} failed: {}{}{}",
-            subject,
-            output.status,
-            if stderr.is_empty() { "" } else { " stderr=" },
-            if stderr.is_empty() { stdout } else { stderr }
-        )));
-    }
-    Ok(serde_json::from_slice(&output.stdout)?)
-}
-
-fn propagate_hyprland_env(command: &mut Command, runtime_dir: &Path) {
-    copy_env_if_present(command, "HYPRLAND_INSTANCE_SIGNATURE");
-    copy_env_if_present(command, "XDG_RUNTIME_DIR");
-    copy_env_if_present(command, "DBUS_SESSION_BUS_ADDRESS");
-    copy_env_if_present(command, "WAYLAND_DISPLAY");
-    copy_env_if_present(command, "XDG_SESSION_TYPE");
-
-    if env::var_os("XDG_RUNTIME_DIR").is_none() && runtime_dir.is_dir() {
-        command.env("XDG_RUNTIME_DIR", runtime_dir);
-    }
-
-    if env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
-        if let Some(signature) = infer_hyprland_instance(runtime_dir) {
-            command.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
-        }
-    }
-}
-
-fn copy_env_if_present(command: &mut Command, key: &str) {
-    if let Some(value) = env::var_os(key) {
-        command.env(key, value);
-    }
-}
-
-fn ensure_hyprland_env() {
-    if env::var_os("XDG_RUNTIME_DIR").is_none() {
-        let runtime_dir = PathBuf::from(format!("/run/user/{}", config::invoking_uid()));
-        if runtime_dir.is_dir() {
-            unsafe { env::set_var("XDG_RUNTIME_DIR", runtime_dir) };
-        }
-    }
-
-    if env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
-        let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", config::invoking_uid())));
-        if let Some(signature) = infer_hyprland_instance(&runtime_dir) {
-            unsafe { env::set_var("HYPRLAND_INSTANCE_SIGNATURE", signature) };
-        }
-    }
-}
-
-fn infer_hyprland_instance(runtime_dir: &Path) -> Option<String> {
-    let hypr_dir = runtime_dir.join("hypr");
-    let mut newest: Option<(std::time::SystemTime, String)> = None;
-    for entry in fs::read_dir(hypr_dir).ok()? {
-        let entry = entry.ok()?;
-        let file_type = entry.file_type().ok()?;
-        if !file_type.is_dir() {
-            continue;
-        }
-        let modified = entry
-            .metadata()
-            .ok()
-            .and_then(|meta| meta.modified().ok())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let name = entry.file_name().to_string_lossy().to_string();
-        match &newest {
-            Some((best, _)) if &modified <= best => {}
-            _ => newest = Some((modified, name)),
-        }
-    }
-    newest.map(|(_, name)| name)
+    Some(CursorSeed {
+        x: (local_x / width).clamp(0.0, 1.0),
+        y: (local_y / height).clamp(0.0, 1.0),
+        frame: HostFrame {
+            left: x,
+            top: y,
+            width,
+            height,
+        },
+    })
 }

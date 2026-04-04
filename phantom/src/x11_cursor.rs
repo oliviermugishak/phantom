@@ -7,6 +7,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use crate::config;
 use crate::error::{PhantomError, Result};
+use crate::mouse_touch::{CursorSeed, HostFrame};
 
 type Display = libc::c_void;
 type Window = libc::c_ulong;
@@ -114,7 +115,7 @@ impl X11CursorClient {
         })
     }
 
-    pub fn query_position(&mut self) -> Option<(f64, f64)> {
+    pub(crate) fn query_seed(&mut self) -> Option<CursorSeed> {
         if self.stdin.write_all(b"cursor\n").is_err() || self.stdin.flush().is_err() {
             return None;
         }
@@ -129,7 +130,20 @@ impl X11CursorClient {
             "pos" => {
                 let x = parts.next()?.parse::<f64>().ok()?;
                 let y = parts.next()?.parse::<f64>().ok()?;
-                Some((x, y))
+                let left = parts.next()?.parse::<f64>().ok()?;
+                let top = parts.next()?.parse::<f64>().ok()?;
+                let width = parts.next()?.parse::<f64>().ok()?;
+                let height = parts.next()?.parse::<f64>().ok()?;
+                Some(CursorSeed {
+                    x,
+                    y,
+                    frame: HostFrame {
+                        left,
+                        top,
+                        width,
+                        height,
+                    },
+                })
             }
             _ => None,
         }
@@ -149,8 +163,16 @@ pub fn run_helper_stdio() -> Result<()> {
             continue;
         }
 
-        if let Some((x, y)) = query_normalized_position() {
-            println!("pos {} {}", x, y);
+        if let Some(seed) = query_normalized_position() {
+            println!(
+                "pos {} {} {} {} {} {}",
+                seed.x,
+                seed.y,
+                seed.frame.left,
+                seed.frame.top,
+                seed.frame.width,
+                seed.frame.height
+            );
         } else {
             println!("none");
         }
@@ -170,7 +192,7 @@ fn read_line() -> Result<Option<String>> {
     Ok(Some(line))
 }
 
-fn query_normalized_position() -> Option<(f64, f64)> {
+fn query_normalized_position() -> Option<CursorSeed> {
     ensure_x11_env();
     let display = unsafe { XOpenDisplay(std::ptr::null()) };
     if display.is_null() {
@@ -180,11 +202,10 @@ fn query_normalized_position() -> Option<(f64, f64)> {
     let root = unsafe { XRootWindow(display, XDefaultScreen(display)) };
     let result = unsafe {
         let (window, win_x, win_y) = top_level_window_under_pointer(display, root)?;
-
-        let (width, height) = window_size(display, window)?;
-        let x = (win_x as f64 / width as f64).clamp(0.0, 1.0);
-        let y = (win_y as f64 / height as f64).clamp(0.0, 1.0);
-        Some((x, y))
+        let frame = window_frame(display, window)?;
+        let x = (win_x as f64 / frame.width).clamp(0.0, 1.0);
+        let y = (win_y as f64 / frame.height).clamp(0.0, 1.0);
+        Some(CursorSeed { x, y, frame })
     };
 
     let _ = unsafe { XCloseDisplay(display) };
@@ -249,7 +270,7 @@ unsafe fn top_level_window_under_pointer(
     Some((window, window_x, window_y))
 }
 
-unsafe fn window_size(display: *mut Display, window: Window) -> Option<(u32, u32)> {
+unsafe fn window_frame(display: *mut Display, window: Window) -> Option<HostFrame> {
     let mut root_return = 0;
     let mut x = 0;
     let mut y = 0;
@@ -277,7 +298,12 @@ unsafe fn window_size(display: *mut Display, window: Window) -> Option<(u32, u32
         return None;
     }
 
-    Some((width, height))
+    Some(HostFrame {
+        left: x as f64,
+        top: y as f64,
+        width: width as f64,
+        height: height as f64,
+    })
 }
 
 fn propagate_display_env(command: &mut Command, runtime_dir: &Path) {

@@ -9,7 +9,7 @@ use phantom::desktop_relay::DesktopKeyboardRelay;
 use phantom::engine::KeymapEngine;
 use phantom::error::{PhantomError, Result};
 use phantom::input::{InputCapture, InputEvent};
-use phantom::ipc::{self, DaemonState, IpcRequest};
+use phantom::ipc::{self, DaemonState, IpcRequest, MouseMode};
 use phantom::logging::trace_detail_enabled;
 use phantom::profile::Profile;
 use phantom::touch;
@@ -36,9 +36,9 @@ USAGE:
     {app_name} enter-capture             Enable exclusive gameplay capture
     {app_name} exit-capture              Release exclusive gameplay capture
     {app_name} toggle-capture            Toggle gameplay capture
-    {app_name} grab-mouse                Route mouse input into the game
-    {app_name} release-mouse             Release mouse input back to desktop
-    {app_name} toggle-mouse              Toggle mouse routing while capture is active
+    {app_name} grab-mouse                Switch owned mouse to gameplay aim
+    {app_name} release-mouse             Switch owned mouse to menu touch
+    {app_name} toggle-mouse              Toggle owned mouse between aim and menu touch
     {app_name} sensitivity <value>       Set global sensitivity
     {app_name} list                      List available profiles
     {app_name} shutdown                  Graceful shutdown
@@ -324,9 +324,18 @@ async fn run_daemon() -> Result<()> {
                         }
 
                         let mut gameplay_events = Vec::new();
-                        let (mut mouse_routed, mut keyboard_routed) = match ipc::lock_capture(&state)
-                        {
-                            Ok(capture) => (capture.mouse_grabbed(), capture.keyboard_grabbed()),
+                        let (mut mouse_mode, mut keyboard_routed) = match ipc::lock_capture(&state) {
+                            Ok(capture) => {
+                                let keyboard_routed = capture.keyboard_grabbed();
+                                drop(capture);
+                                match ipc::current_mouse_mode(&state) {
+                                    Ok(mouse_mode) => (mouse_mode, keyboard_routed),
+                                    Err(e) => {
+                                        tracing::warn!("mouse mode error: {}", e);
+                                        continue;
+                                    }
+                                }
+                            }
                             Err(e) => {
                                 tracing::warn!("input capture lock error: {}", e);
                                 continue;
@@ -337,11 +346,18 @@ async fn run_daemon() -> Result<()> {
                                 Ok(true) => {
                                     match ipc::lock_capture(&state) {
                                         Ok(capture) => {
-                                            mouse_routed = capture.mouse_grabbed();
                                             keyboard_routed = capture.keyboard_grabbed();
                                         }
                                         Err(e) => {
                                             tracing::warn!("input capture lock error: {}", e);
+                                        }
+                                    }
+                                    match ipc::current_mouse_mode(&state) {
+                                        Ok(mode) => {
+                                            mouse_mode = mode;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("mouse mode error: {}", e);
                                         }
                                     }
                                     continue;
@@ -353,14 +369,11 @@ async fn run_daemon() -> Result<()> {
                                 }
                             }
                             if state.capture_active.load(Ordering::Acquire) {
-                                // Capture and routing are intentionally separate.
-                                // We may still be in gameplay capture while the user has
-                                // temporarily released only the mouse back to the desktop.
-                                if event.is_mouse_input() && !mouse_routed {
-                                    let mouse_touch_cmds = match ipc::lock_mouse_touch(&state) {
-                                        Ok(mut mouse_touch) => mouse_touch.process(&event),
+                                if event.is_mouse_input() && matches!(mouse_mode, MouseMode::MenuTouch) {
+                                    let mouse_touch_cmds = match ipc::process_menu_touch_event(&state, &event) {
+                                        Ok(cmds) => cmds,
                                         Err(e) => {
-                                            tracing::warn!("mouse-touch lock error: {}", e);
+                                            tracing::warn!("mouse-touch processing error: {}", e);
                                             Vec::new()
                                         }
                                     };
@@ -475,6 +488,10 @@ async fn run_daemon() -> Result<()> {
     }
 
     {
+        let _ = ipc::stop_cursor_overlay(&state);
+    }
+
+    {
         if let Ok(mut mouse_touch) = ipc::lock_mouse_touch(&state) {
             let cmds = mouse_touch.suspend();
             if !cmds.is_empty() {
@@ -563,17 +580,15 @@ async fn handle_runtime_shortcut(
                 tracing::info!("mouse toggle ignored (not in capture mode)");
                 return Ok(true);
             }
-            let currently_grabbed = {
-                let capture = ipc::lock_capture(state)?;
-                capture.mouse_grabbed()
-            };
-            ipc::set_mouse_routed(state, !currently_grabbed).await?;
+            let current_mode = ipc::current_mouse_mode(state)?;
+            let next_is_aim = matches!(current_mode, MouseMode::MenuTouch);
+            ipc::set_mouse_routed(state, next_is_aim).await?;
             tracing::info!(
                 "{}",
-                if currently_grabbed {
-                    "mouse released to menu touch navigation"
+                if next_is_aim {
+                    "mouse switched to gameplay aim"
                 } else {
-                    "mouse grabbed for gameplay aim"
+                    "mouse switched to owned menu-touch navigation"
                 }
             );
             Ok(true)
@@ -683,6 +698,9 @@ async fn run_cli_command(args: &[String]) -> Result<()> {
         }
         if let Some(mouse_grabbed) = response.mouse_grabbed {
             eprintln!("mouse grabbed: {}", mouse_grabbed);
+        }
+        if let Some(mouse_mode) = &response.mouse_mode {
+            eprintln!("mouse mode: {}", mouse_mode);
         }
         if let Some(mouse_touch_active) = response.mouse_touch_active {
             eprintln!("menu touch: {}", mouse_touch_active);

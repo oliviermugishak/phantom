@@ -215,6 +215,7 @@ struct RuntimeState {
     paused: bool,
     capture_active: bool,
     mouse_grabbed: bool,
+    mouse_mode: Option<String>,
     mouse_touch_active: bool,
     mouse_touch_backend: Option<String>,
     keyboard_grabbed: bool,
@@ -668,7 +669,7 @@ impl PhantomGui {
         );
         ui.label(
             RichText::new(
-                "When capture is on, releasing the mouse leaves Phantom in menu-touch mode. Grab the mouse to switch back into gameplay aim.",
+                "When capture is on, Phantom owns the mouse. Use F1 or the runtime button to switch between owned menu-touch and gameplay aim.",
             )
             .small()
             .color(Color32::from_gray(170)),
@@ -826,12 +827,8 @@ impl PhantomGui {
                 }
             ));
             ui.label(format!(
-                "Mouse routing: {}",
-                if self.runtime.mouse_grabbed {
-                    "gameplay aim"
-                } else {
-                    "released"
-                }
+                "Mouse mode: {}",
+                self.runtime.mouse_mode.as_deref().unwrap_or("menu_touch")
             ));
             ui.label(format!(
                 "Menu touch: {}",
@@ -932,10 +929,10 @@ impl PhantomGui {
                 if ui.button("Toggle Capture").clicked() {
                     self.send_runtime_request(IpcRequest::ToggleCapture, "capture toggled");
                 }
-                let mouse_label = if self.runtime.mouse_grabbed {
-                    "Release To Menu"
+                let mouse_label = if matches!(self.runtime.mouse_mode.as_deref(), Some("aim")) {
+                    "Switch To Menu"
                 } else {
-                    "Grab For Aim"
+                    "Switch To Aim"
                 };
                 if ui
                     .add_enabled(self.runtime.capture_active, egui::Button::new(mouse_label))
@@ -1270,20 +1267,51 @@ impl PhantomGui {
     }
 
     fn apply_status(&mut self, response: &IpcResponse) {
-        self.runtime.profile = response.profile.clone();
-        self.runtime.paused = response.paused.unwrap_or(false);
-        self.runtime.capture_active = response.capture_active.unwrap_or(false);
-        self.runtime.mouse_grabbed = response.mouse_grabbed.unwrap_or(false);
-        self.runtime.mouse_touch_active = response
-            .mouse_touch_active
-            .unwrap_or(self.runtime.capture_active && !self.runtime.mouse_grabbed);
-        self.runtime.mouse_touch_backend = response.mouse_touch_backend.clone();
-        self.runtime.keyboard_grabbed = response.keyboard_grabbed.unwrap_or(false);
-        self.runtime.active_layers = response.active_layers.clone().unwrap_or_default();
-        self.runtime.screen = match (response.screen_width, response.screen_height) {
-            (Some(w), Some(h)) => Some((w, h)),
-            _ => None,
+        if let Some(profile) = &response.profile {
+            self.runtime.profile = Some(profile.clone());
+        }
+        if let Some(paused) = response.paused {
+            self.runtime.paused = paused;
+        }
+        let capture_changed = if let Some(capture_active) = response.capture_active {
+            self.runtime.capture_active = capture_active;
+            true
+        } else {
+            false
         };
+        let mouse_changed = if let Some(mouse_grabbed) = response.mouse_grabbed {
+            self.runtime.mouse_grabbed = mouse_grabbed;
+            true
+        } else {
+            false
+        };
+        if let Some(mouse_mode) = &response.mouse_mode {
+            self.runtime.mouse_mode = Some(mouse_mode.clone());
+        } else if response.capture_active == Some(false) {
+            self.runtime.mouse_mode = None;
+        }
+        if let Some(mouse_touch_active) = response.mouse_touch_active {
+            self.runtime.mouse_touch_active = mouse_touch_active;
+        } else if capture_changed || mouse_changed {
+            self.runtime.mouse_touch_active = self.runtime.capture_active
+                && !matches!(self.runtime.mouse_mode.as_deref(), Some("aim"));
+        }
+        if let Some(mouse_touch_backend) = &response.mouse_touch_backend {
+            self.runtime.mouse_touch_backend = Some(mouse_touch_backend.clone());
+        } else if response.mouse_touch_active == Some(false)
+            || response.capture_active == Some(false)
+        {
+            self.runtime.mouse_touch_backend = None;
+        }
+        if let Some(keyboard_grabbed) = response.keyboard_grabbed {
+            self.runtime.keyboard_grabbed = keyboard_grabbed;
+        }
+        if let Some(active_layers) = &response.active_layers {
+            self.runtime.active_layers = active_layers.clone();
+        }
+        if let (Some(w), Some(h)) = (response.screen_width, response.screen_height) {
+            self.runtime.screen = Some((w, h));
+        }
     }
 
     fn push_profile_live(&mut self) {
@@ -2162,10 +2190,10 @@ impl PhantomGui {
                     if ui.button("Toggle Capture").clicked() {
                         self.send_runtime_request(IpcRequest::ToggleCapture, "capture toggled");
                     }
-                    let mouse_label = if self.runtime.mouse_grabbed {
-                        "Release To Menu"
+                    let mouse_label = if matches!(self.runtime.mouse_mode.as_deref(), Some("aim")) {
+                        "Switch To Menu"
                     } else {
-                        "Grab For Aim"
+                        "Switch To Aim"
                     };
                     if ui
                         .add_enabled(self.runtime.capture_active, egui::Button::new(mouse_label))
@@ -2214,7 +2242,11 @@ impl PhantomGui {
                                 .color(Color32::from_rgb(255, 218, 121)),
                             );
                         }
-                        runtime_chip(ui, self.runtime.mouse_grabbed, "Mouse");
+                        runtime_chip(
+                            ui,
+                            matches!(self.runtime.mouse_mode.as_deref(), Some("aim")),
+                            "Aim",
+                        );
                         runtime_chip(ui, self.runtime.mouse_touch_active, "MenuTouch");
                         runtime_chip(ui, self.runtime.keyboard_grabbed, "Keyboard");
                         runtime_chip(ui, self.runtime.capture_active, "Capture");
@@ -2416,6 +2448,13 @@ impl PhantomGui {
                     } else {
                         "off"
                     }
+                ));
+                ui.label(format!(
+                    "Mouse mode: {}",
+                    self.runtime
+                        .mouse_mode
+                        .as_deref()
+                        .unwrap_or("menu_touch")
                 ));
                 ui.label(format!(
                     "Menu touch: {}",
@@ -5183,6 +5222,9 @@ fn egui_key_to_binding(key: egui::Key) -> Option<&'static str> {
 }
 
 fn main() -> eframe::Result<()> {
+    if let Some(state_path) = cursor_overlay_state_arg() {
+        return overlay::run_cursor_overlay(&state_path);
+    }
     if let Some(profile_path) = overlay_profile_arg() {
         return overlay::run_overlay(&profile_path);
     }
@@ -5247,6 +5289,7 @@ Fullscreen mapping GUI and runtime control surface for Phantom.
 
 USAGE:
     {binary}
+    {binary} --cursor-overlay <state.json>
     {binary} --overlay <profile.json>
     {binary} version
 
@@ -5255,6 +5298,7 @@ FLAGS:
     -V, --version    Show version
 
 INTERNAL:
+    --cursor-overlay <state.json>    Launch the owned menu-touch cursor overlay
     --overlay <profile.json>    Launch the experimental debug overlay preview"#,
         binary = binary,
         version = env!("CARGO_PKG_VERSION"),
@@ -5284,6 +5328,16 @@ fn overlay_profile_arg() -> Option<PathBuf> {
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--overlay" {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+fn cursor_overlay_state_arg() -> Option<PathBuf> {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--cursor-overlay" {
             return args.next().map(PathBuf::from);
         }
     }

@@ -245,9 +245,9 @@ Some games accept real touch in menus but ignore plain desktop mouse input.
 Use this workflow:
 
 1. enter capture
-2. leave the mouse released
-3. navigate with left click and drag through Phantom's mouse-to-touch runtime path
-4. grab gameplay aim only when you need it
+2. stay in `menu_touch` mode
+3. navigate with left click and drag through Phantom's owned menu-touch runtime path
+4. switch to gameplay aim only when you need it
 
 This keeps menu navigation separate from combat/gameplay aim.
 

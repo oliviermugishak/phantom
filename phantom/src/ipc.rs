@@ -16,7 +16,7 @@ use crate::engine::{KeymapEngine, TouchCommand};
 use crate::error::{PhantomError, Result};
 use crate::input::{InputCapture, InputEvent};
 use crate::mouse_touch::MouseTouchEmulator;
-use crate::overlay::OverlayPreview;
+use crate::overlay::{CursorOverlay, OverlayPreview};
 use crate::profile::Profile;
 use crate::touch::TouchDevice;
 
@@ -68,6 +68,8 @@ pub struct IpcResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mouse_touch_backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sensitivity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_width: Option<u32>,
@@ -85,6 +87,27 @@ pub struct ProfileEntry {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseMode {
+    MenuTouch,
+    Aim,
+}
+
+impl MouseMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MouseMode::MenuTouch => "menu_touch",
+            MouseMode::Aim => "aim",
+        }
+    }
+}
+
+struct MenuTouchStatusPayload {
+    active: bool,
+    backend: String,
+    mouse_mode: MouseMode,
+}
+
 pub struct DaemonState {
     pub engine: RwLock<KeymapEngine>,
     pub profile_path: RwLock<Option<PathBuf>>,
@@ -92,7 +115,9 @@ pub struct DaemonState {
     pub desktop_keyboard: Mutex<DesktopKeyboardRelay>,
     pub capture: Mutex<InputCapture>,
     pub mouse_touch: Mutex<MouseTouchEmulator>,
+    pub mouse_mode: Mutex<MouseMode>,
     pub overlay: Mutex<OverlayPreview>,
+    pub cursor_overlay: Mutex<CursorOverlay>,
     pub screen_width: u32,
     pub screen_height: u32,
     pub capture_active: AtomicBool,
@@ -116,7 +141,9 @@ impl DaemonState {
             desktop_keyboard: Mutex::new(desktop_keyboard),
             capture: Mutex::new(capture),
             mouse_touch: Mutex::new(MouseTouchEmulator::new(width, height)),
+            mouse_mode: Mutex::new(MouseMode::MenuTouch),
             overlay: Mutex::new(OverlayPreview::new()),
+            cursor_overlay: Mutex::new(CursorOverlay::new()),
             screen_width: width,
             screen_height: height,
             capture_active: AtomicBool::new(false),
@@ -267,12 +294,8 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 Ok(state) => state,
                 Err(e) => return error_response(e.to_string()),
             };
-            let mouse_touch_active = match mouse_touch_enabled(state) {
-                Ok(active) => active,
-                Err(e) => return error_response(e.to_string()),
-            };
-            let mouse_touch_backend = match lock_mouse_touch(state) {
-                Ok(mouse_touch) => mouse_touch.backend_name().to_string(),
+            let menu_touch_status = match menu_touch_status_payload(state) {
+                Ok(status) => status,
                 Err(e) => return error_response(e.to_string()),
             };
             IpcResponse {
@@ -292,8 +315,9 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 capture_active: Some(state.capture_active.load(Ordering::Acquire)),
                 mouse_grabbed: Some(mouse_grabbed),
                 keyboard_grabbed: Some(keyboard_grabbed),
-                mouse_touch_active: Some(mouse_touch_active),
-                mouse_touch_backend: Some(mouse_touch_backend),
+                mouse_touch_active: Some(menu_touch_status.active),
+                mouse_touch_backend: Some(menu_touch_status.backend),
+                mouse_mode: Some(menu_touch_status.mouse_mode.as_str().to_string()),
                 sensitivity: None,
                 screen_width: Some(state.screen_width),
                 screen_height: Some(state.screen_height),
@@ -310,10 +334,15 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 Ok(state) => state,
                 Err(e) => return error_response(e.to_string()),
             };
+            let menu_touch_status = match menu_touch_status_payload(state) {
+                Ok(status) => status,
+                Err(e) => return error_response(e.to_string()),
+            };
             ok_response()
                 .with_sensitivity(value)
                 .with_capture_active(state.capture_active.load(Ordering::Acquire))
                 .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                .with_menu_touch_status(menu_touch_status)
         }
         IpcRequest::ListProfiles => {
             let dir = config::profiles_dir();
@@ -338,12 +367,8 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                     }
                 }
             }
-            let mouse_touch_active = match mouse_touch_enabled(state) {
-                Ok(active) => active,
-                Err(e) => return error_response(e.to_string()),
-            };
-            let mouse_touch_backend = match lock_mouse_touch(state) {
-                Ok(mouse_touch) => mouse_touch.backend_name().to_string(),
+            let menu_touch_status = match menu_touch_status_payload(state) {
+                Ok(status) => status,
                 Err(e) => return error_response(e.to_string()),
             };
             IpcResponse {
@@ -358,8 +383,9 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 capture_active: Some(state.capture_active.load(Ordering::Acquire)),
                 mouse_grabbed: None,
                 keyboard_grabbed: None,
-                mouse_touch_active: Some(mouse_touch_active),
-                mouse_touch_backend: Some(mouse_touch_backend),
+                mouse_touch_active: Some(menu_touch_status.active),
+                mouse_touch_backend: Some(menu_touch_status.backend),
+                mouse_mode: Some(menu_touch_status.mouse_mode.as_str().to_string()),
                 sensitivity: None,
                 screen_width: None,
                 screen_height: None,
@@ -379,11 +405,16 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 Ok(state) => state,
                 Err(e) => return error_response(e.to_string()),
             };
+            let menu_touch_status = match menu_touch_status_payload(state) {
+                Ok(status) => status,
+                Err(e) => return error_response(e.to_string()),
+            };
             ok_response()
                 .with_message("paused")
                 .with_paused(true)
                 .with_capture_active(state.capture_active.load(Ordering::Acquire))
                 .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                .with_menu_touch_status(menu_touch_status)
         }
         IpcRequest::Resume => {
             state.engine.write().await.resume();
@@ -391,28 +422,47 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
                 Ok(state) => state,
                 Err(e) => return error_response(e.to_string()),
             };
+            let menu_touch_status = match menu_touch_status_payload(state) {
+                Ok(status) => status,
+                Err(e) => return error_response(e.to_string()),
+            };
             ok_response()
                 .with_message("resumed")
                 .with_paused(false)
                 .with_capture_active(state.capture_active.load(Ordering::Acquire))
                 .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                .with_menu_touch_status(menu_touch_status)
         }
         IpcRequest::EnterCapture => match set_capture_active(state, true).await {
             Ok(()) => match current_grab_state(state) {
-                Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
-                    .with_message("capture enabled")
-                    .with_capture_active(true)
-                    .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                Ok((mouse_grabbed, keyboard_grabbed)) => {
+                    let menu_touch_status = match menu_touch_status_payload(state) {
+                        Ok(status) => status,
+                        Err(e) => return error_response(e.to_string()),
+                    };
+                    ok_response()
+                        .with_message("capture enabled")
+                        .with_capture_active(true)
+                        .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                        .with_menu_touch_status(menu_touch_status)
+                }
                 Err(e) => error_response(e.to_string()),
             },
             Err(e) => error_response(e.to_string()),
         },
         IpcRequest::ExitCapture => match set_capture_active(state, false).await {
             Ok(()) => match current_grab_state(state) {
-                Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
-                    .with_message("capture disabled")
-                    .with_capture_active(false)
-                    .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                Ok((mouse_grabbed, keyboard_grabbed)) => {
+                    let menu_touch_status = match menu_touch_status_payload(state) {
+                        Ok(status) => status,
+                        Err(e) => return error_response(e.to_string()),
+                    };
+                    ok_response()
+                        .with_message("capture disabled")
+                        .with_capture_active(false)
+                        .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                        .with_menu_touch_status(menu_touch_status)
+                }
                 Err(e) => error_response(e.to_string()),
             },
             Err(e) => error_response(e.to_string()),
@@ -421,14 +471,21 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
             let next = !state.capture_active.load(Ordering::Acquire);
             match set_capture_active(state, next).await {
                 Ok(()) => match current_grab_state(state) {
-                    Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
-                        .with_message(if next {
-                            "capture enabled"
-                        } else {
-                            "capture disabled"
-                        })
-                        .with_capture_active(next)
-                        .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                    Ok((mouse_grabbed, keyboard_grabbed)) => {
+                        let menu_touch_status = match menu_touch_status_payload(state) {
+                            Ok(status) => status,
+                            Err(e) => return error_response(e.to_string()),
+                        };
+                        ok_response()
+                            .with_message(if next {
+                                "capture enabled"
+                            } else {
+                                "capture disabled"
+                            })
+                            .with_capture_active(next)
+                            .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                            .with_menu_touch_status(menu_touch_status)
+                    }
                     Err(e) => error_response(e.to_string()),
                 },
                 Err(e) => error_response(e.to_string()),
@@ -436,39 +493,61 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
         }
         IpcRequest::GrabMouse => match set_mouse_routed(state, true).await {
             Ok(()) => match current_grab_state(state) {
-                Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
-                    .with_message("mouse routed to game")
-                    .with_capture_active(state.capture_active.load(Ordering::Acquire))
-                    .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                Ok((mouse_grabbed, keyboard_grabbed)) => {
+                    let menu_touch_status = match menu_touch_status_payload(state) {
+                        Ok(status) => status,
+                        Err(e) => return error_response(e.to_string()),
+                    };
+                    ok_response()
+                        .with_message("mouse switched to gameplay aim")
+                        .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                        .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                        .with_menu_touch_status(menu_touch_status)
+                }
                 Err(e) => error_response(e.to_string()),
             },
             Err(e) => error_response(e.to_string()),
         },
         IpcRequest::ReleaseMouse => match set_mouse_routed(state, false).await {
             Ok(()) => match current_grab_state(state) {
-                Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
-                    .with_message("mouse released to desktop")
-                    .with_capture_active(state.capture_active.load(Ordering::Acquire))
-                    .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                Ok((mouse_grabbed, keyboard_grabbed)) => {
+                    let menu_touch_status = match menu_touch_status_payload(state) {
+                        Ok(status) => status,
+                        Err(e) => return error_response(e.to_string()),
+                    };
+                    ok_response()
+                        .with_message("mouse switched to owned menu touch")
+                        .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                        .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                        .with_menu_touch_status(menu_touch_status)
+                }
                 Err(e) => error_response(e.to_string()),
             },
             Err(e) => error_response(e.to_string()),
         },
         IpcRequest::ToggleMouse => {
-            let currently_grabbed = match current_grab_state(state) {
-                Ok((mouse_grabbed, _)) => mouse_grabbed,
+            let current_mode = match current_mouse_mode(state) {
+                Ok(mode) => mode,
                 Err(e) => return error_response(e.to_string()),
             };
-            match set_mouse_routed(state, !currently_grabbed).await {
+            let next_is_aim = matches!(current_mode, MouseMode::MenuTouch);
+            match set_mouse_routed(state, next_is_aim).await {
                 Ok(()) => match current_grab_state(state) {
-                    Ok((mouse_grabbed, keyboard_grabbed)) => ok_response()
-                        .with_message(if mouse_grabbed {
-                            "mouse routed to game"
-                        } else {
-                            "mouse released to desktop"
-                        })
-                        .with_capture_active(state.capture_active.load(Ordering::Acquire))
-                        .with_grab_state(mouse_grabbed, keyboard_grabbed),
+                    Ok((mouse_grabbed, keyboard_grabbed)) => {
+                        let menu_touch_status = match menu_touch_status_payload(state) {
+                            Ok(status) => status,
+                            Err(e) => return error_response(e.to_string()),
+                        };
+                        ok_response()
+                            .with_message(if next_is_aim {
+                                "mouse switched to gameplay aim"
+                            } else {
+                                "mouse switched to owned menu touch"
+                            })
+                            .with_capture_active(state.capture_active.load(Ordering::Acquire))
+                            .with_grab_state(mouse_grabbed, keyboard_grabbed)
+                            .with_menu_touch_status(menu_touch_status)
+                    }
                     Err(e) => error_response(e.to_string()),
                 },
                 Err(e) => error_response(e.to_string()),
@@ -522,6 +601,7 @@ async fn load_profile_into_state(
         *state.profile_path.write().await = Some(std::path::PathBuf::from(path));
     }
     let (mouse_grabbed, keyboard_grabbed) = current_grab_state(state)?;
+    let menu_touch_status = menu_touch_status_payload(state)?;
 
     Ok(IpcResponse {
         ok: true,
@@ -535,8 +615,9 @@ async fn load_profile_into_state(
         capture_active: Some(state.capture_active.load(Ordering::Acquire)),
         mouse_grabbed: Some(mouse_grabbed),
         keyboard_grabbed: Some(keyboard_grabbed),
-        mouse_touch_active: Some(mouse_touch_enabled(state)?),
-        mouse_touch_backend: Some(lock_mouse_touch(state)?.backend_name().to_string()),
+        mouse_touch_active: Some(menu_touch_status.active),
+        mouse_touch_backend: Some(menu_touch_status.backend),
+        mouse_mode: Some(menu_touch_status.mouse_mode.as_str().to_string()),
         sensitivity: None,
         screen_width: Some(state.screen_width),
         screen_height: Some(state.screen_height),
@@ -569,10 +650,18 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
         // The daemon keeps the keyboard grabbed for its lifetime so runtime
         // hotkeys stay reliable even when gameplay capture is not active.
         capture.set_grabbed_keyboard_only(true)?;
-        capture.set_grabbed_mouse_only(false)?;
+        capture.set_grabbed_mouse_only(active)?;
     }
     state.capture_active.store(active, Ordering::Release);
     if active {
+        {
+            let mut mouse_mode = lock_mouse_mode(state)?;
+            *mouse_mode = MouseMode::MenuTouch;
+        }
+        {
+            let mut mouse_touch = lock_mouse_touch(state)?;
+            mouse_touch.seed_from_host_cursor();
+        }
         let pressed_mouse = {
             let capture = lock_capture(state)?;
             capture.current_pressed_mouse_keys()
@@ -582,6 +671,7 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
             mouse_touch.resync_buttons(&pressed_mouse)
         };
         apply_commands(state, &cmds)?;
+        sync_cursor_overlay(state, true)?;
 
         let engine = state.engine.read().await;
         if !engine.has_mouse_camera() {
@@ -589,6 +679,8 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
                 "capture enabled without an aim node in the loaded profile; grab the mouse only when the profile should steer the camera"
             );
         }
+    } else {
+        stop_cursor_overlay(state)?;
     }
     Ok(())
 }
@@ -600,8 +692,13 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
         ));
     }
 
-    let (current_mouse, _) = current_grab_state(state)?;
-    if current_mouse == routed {
+    let current_mode = current_mouse_mode(state)?;
+    let target_mode = if routed {
+        MouseMode::Aim
+    } else {
+        MouseMode::MenuTouch
+    };
+    if current_mode == target_mode {
         return Ok(());
     }
 
@@ -621,21 +718,28 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
 
     let pressed_mouse = {
         let mut capture = lock_capture(state)?;
-        capture.set_grabbed_mouse_only(routed)?;
-        Some(capture.current_pressed_mouse_keys())
+        capture.set_grabbed_mouse_only(true)?;
+        capture.current_pressed_mouse_keys()
     };
 
-    if let Some(pressed_mouse) = pressed_mouse {
-        let cmds = {
-            if routed {
-                let mut engine = state.engine.write().await;
-                engine.resync_mouse_buttons(&pressed_mouse)
-            } else {
-                let mut mouse_touch = lock_mouse_touch(state)?;
-                mouse_touch.resync_buttons(&pressed_mouse)
-            }
-        };
-        apply_commands(state, &cmds)?;
+    {
+        let mut mouse_mode = lock_mouse_mode(state)?;
+        *mouse_mode = target_mode;
+    }
+
+    let cmds = if routed {
+        let mut engine = state.engine.write().await;
+        engine.resync_mouse_buttons(&pressed_mouse)
+    } else {
+        let mut mouse_touch = lock_mouse_touch(state)?;
+        mouse_touch.resync_buttons(&pressed_mouse)
+    };
+    apply_commands(state, &cmds)?;
+
+    if routed {
+        sync_cursor_overlay(state, false)?;
+    } else {
+        sync_cursor_overlay(state, true)?;
     }
 
     if routed {
@@ -662,8 +766,36 @@ fn current_grab_state(state: &Arc<DaemonState>) -> Result<(bool, bool)> {
 }
 
 fn mouse_touch_enabled(state: &Arc<DaemonState>) -> Result<bool> {
-    let (mouse_grabbed, _) = current_grab_state(state)?;
-    Ok(state.capture_active.load(Ordering::Acquire) && !mouse_grabbed)
+    Ok(state.capture_active.load(Ordering::Acquire)
+        && current_mouse_mode(state)? == MouseMode::MenuTouch)
+}
+
+fn menu_touch_status_payload(state: &Arc<DaemonState>) -> Result<MenuTouchStatusPayload> {
+    let active = mouse_touch_enabled(state)?;
+    let backend = {
+        let mouse_touch = lock_mouse_touch(state)?;
+        mouse_touch.backend_name().to_string()
+    };
+    Ok(MenuTouchStatusPayload {
+        active,
+        backend,
+        mouse_mode: current_mouse_mode(state)?,
+    })
+}
+
+pub fn process_menu_touch_event(
+    state: &Arc<DaemonState>,
+    event: &InputEvent,
+) -> Result<Vec<TouchCommand>> {
+    let (cmds, overlay_state) = {
+        let mut mouse_touch = lock_mouse_touch(state)?;
+        let cmds = mouse_touch.process(event);
+        let overlay_state = mouse_touch.cursor_overlay_state(true);
+        (cmds, overlay_state)
+    };
+    let mut overlay = lock_cursor_overlay(state)?;
+    overlay.update(overlay_state)?;
+    Ok(cmds)
 }
 
 pub fn lock_touch_device(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, Box<dyn TouchDevice>>> {
@@ -708,11 +840,35 @@ pub fn lock_mouse_touch(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, Mouse
     }
 }
 
+pub fn lock_mouse_mode(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, MouseMode>> {
+    match state.mouse_mode.lock() {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::warn!("mouse mode lock poisoned, recovering");
+            Ok(poisoned.into_inner())
+        }
+    }
+}
+
+pub fn current_mouse_mode(state: &Arc<DaemonState>) -> Result<MouseMode> {
+    Ok(*lock_mouse_mode(state)?)
+}
+
 pub fn lock_overlay(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, OverlayPreview>> {
     match state.overlay.lock() {
         Ok(guard) => Ok(guard),
         Err(poisoned) => {
             tracing::warn!("overlay preview lock poisoned, recovering");
+            Ok(poisoned.into_inner())
+        }
+    }
+}
+
+pub fn lock_cursor_overlay(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, CursorOverlay>> {
+    match state.cursor_overlay.lock() {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::warn!("cursor overlay lock poisoned, recovering");
             Ok(poisoned.into_inner())
         }
     }
@@ -725,6 +881,20 @@ pub fn relay_keyboard_event_to_desktop(state: &Arc<DaemonState>, event: &InputEv
         InputEvent::KeyRelease(key) if !key.is_mouse() => relay.relay_key_event(*key, false),
         _ => Ok(()),
     }
+}
+
+pub fn sync_cursor_overlay(state: &Arc<DaemonState>, visible: bool) -> Result<()> {
+    let cursor_state = {
+        let mouse_touch = lock_mouse_touch(state)?;
+        mouse_touch.cursor_overlay_state(visible)
+    };
+    let mut overlay = lock_cursor_overlay(state)?;
+    overlay.update(cursor_state)
+}
+
+pub fn stop_cursor_overlay(state: &Arc<DaemonState>) -> Result<()> {
+    let mut overlay = lock_cursor_overlay(state)?;
+    overlay.stop()
 }
 
 fn error_response(error: String) -> IpcResponse {
@@ -742,6 +912,7 @@ fn error_response(error: String) -> IpcResponse {
         keyboard_grabbed: None,
         mouse_touch_active: None,
         mouse_touch_backend: None,
+        mouse_mode: None,
         sensitivity: None,
         screen_width: None,
         screen_height: None,
@@ -765,6 +936,7 @@ fn ok_response() -> IpcResponse {
         keyboard_grabbed: None,
         mouse_touch_active: None,
         mouse_touch_backend: None,
+        mouse_mode: None,
         sensitivity: None,
         screen_width: None,
         screen_height: None,
@@ -797,6 +969,13 @@ impl IpcResponse {
 
     fn with_sensitivity(mut self, sensitivity: f64) -> Self {
         self.sensitivity = Some(sensitivity);
+        self
+    }
+
+    fn with_menu_touch_status(mut self, status: MenuTouchStatusPayload) -> Self {
+        self.mouse_touch_active = Some(status.active);
+        self.mouse_touch_backend = Some(status.backend);
+        self.mouse_mode = Some(status.mouse_mode.as_str().to_string());
         self
     }
 }

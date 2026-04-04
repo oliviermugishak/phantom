@@ -32,72 +32,84 @@ These are not acceptable solutions:
 - pretending touchpad aim can fully match a real mouse for high-paced shooters
 - exposing user-facing "magic" behavior without status fields, logs, or docs
 
-## 1. Menu-Touch Focus Broker
+## 1. Owned Menu-Touch Mode
 
 ### Problem
 
-Menu-touch coordinate mapping is now accurate, but some sessions still require a
-double click because the first click is consumed by host window
-activation/focus before Android receives the touch.
+Passive released-mouse menu-touch was architecturally wrong for high-reliability
+game navigation:
 
-This is not a coordinate problem anymore.
+- the desktop still received the real physical click
+- the host could consume that click for activation/focus
+- cursor mapping quality did not solve first-click loss
+
+This is a click-ownership problem, not just a coordinate problem.
 
 ### Decision
 
-Solve focus/activation separately from cursor mapping.
+Replace passive released-mouse menu-touch with owned menu-touch.
+
+Phantom should keep the mouse captured during gameplay capture and switch that
+owned mouse between:
+
+- `menu_touch`
+- `aim`
+
+The owned menu-touch cursor should be seeded from host cursor position when the
+mode is entered, then continue from Phantom-owned cursor state.
+
+Because the desktop cursor no longer moves in that mode, Phantom also needs a
+dedicated lightweight cursor overlay to visualize where the owned menu-touch
+cursor will land.
 
 ### Runtime Architecture
 
-Add:
+Primary files:
 
-- `phantom/src/menu_focus.rs`
-
-Responsibilities:
-
-- identify the current menu-touch target client
-- request focus once when menu-touch mode is entered
-- verify whether focus succeeded
-- return an explicit status value
-
-Non-responsibilities:
-
-- no cursor-coordinate math
-- no touch injection
-- no long-lived helper protocol reuse from the cursor path
+- `phantom/src/input.rs`
+- `phantom/src/ipc.rs`
+- `phantom/src/mouse_touch.rs`
+- `phantom/src/main.rs`
+- `phantom-gui/src/main.rs`
 
 ### Integration Points
 
 Runtime:
 
-- orchestrate from `phantom/src/ipc.rs`
-- call once when capture becomes active and gameplay mouse routing is released
-- keep `phantom/src/mouse_touch.rs` focused only on touch translation
+- keep the physical mouse grabbed while capture is active
+- represent runtime mouse state explicitly as:
+  - `menu_touch`
+  - `aim`
+- seed the owned menu-touch cursor once from host cursor position when entering
+  `menu_touch`
+- keep `phantom/src/mouse_touch.rs` focused on translating owned cursor motion
+  into touch
+- launch a dedicated cursor overlay while `mouse_mode == menu_touch`
 
 Status/reporting:
 
 - expose:
   - `menu_touch_backend`
-  - `menu_touch_target`
-  - `menu_touch_focus_ready`
+  - `mouse_mode`
 - surface these through `phantom status`
 - mirror them in GUI runtime status
 
 ### Implementation Checklist
 
-- [ ] add `menu_focus.rs` with explicit `FocusStatus`
-- [ ] wire focus preparation into the menu-touch mode transition in `ipc.rs`
-- [ ] extend IPC status model with focus-ready and target fields
-- [ ] add CLI status rendering for new menu-touch fields
-- [ ] add GUI runtime panel support for the same fields
-- [ ] add logs for success, failure, and degraded first-click behavior
-- [ ] document exactly what happens when focus prep fails
+- [ ] keep physical mouse grab active through capture
+- [ ] add explicit runtime mouse mode state
+- [ ] seed owned menu-touch cursor from host position on menu-touch entry
+- [ ] route menu-touch entirely through Phantom-owned cursor state after that seed
+- [ ] visualize the owned menu-touch cursor through a dedicated runtime overlay
+- [ ] extend CLI/GUI status with `mouse_mode`
+- [ ] document owned menu-touch behavior and limitations
 
 ### Acceptance Criteria
 
-- first click acts directly when compositor focus preparation succeeds
-- accurate menu-touch mapping remains intact regardless of focus-prep outcome
-- failure never degrades the cursor backend
-- status output makes degraded behavior obvious
+- menu-touch no longer depends on host window activation semantics
+- the first click acts directly in the owned menu-touch path
+- cursor seeding remains as accurate as the available compositor/helper backend
+- status output makes the active mouse mode obvious
 
 ## 2. Aim V2
 
@@ -456,7 +468,7 @@ Primary files:
 
 Recommended order:
 
-1. Menu-touch focus broker
+1. Owned menu-touch mode
 2. Aim V2 cleanup
 3. Burst / turbo control
 4. Tap-hold primitive
@@ -469,7 +481,7 @@ Recommended order:
 
 This roadmap is successful when:
 
-- menu-touch no longer relies on double-click activation in supported compositor cases
+- menu-touch no longer relies on desktop click ownership during capture
 - aim behaves like a camera primitive, not a roaming wrapper
 - Phantom has at least one dedicated shooter-grade rapid-fire primitive
 - large layered shooter profiles become practical to author

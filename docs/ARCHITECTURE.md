@@ -135,6 +135,14 @@ Responsibilities:
 - JSON-over-Unix-socket daemon control
 - status responses for CLI and GUI
 - runtime operations like load, capture, pause, and mouse routing
+- explicit runtime mouse-mode status
+
+Important runtime boundary:
+
+- menu-touch is a runtime-owned mouse mode, not a profile node
+- the owned menu-touch cursor is seeded from host cursor position when capture enters menu-touch
+- after that seed, menu-touch uses Phantom-owned cursor state and does not depend on desktop click delivery
+- a separate lightweight cursor overlay visualizes the owned menu-touch cursor while that mode is active
 
 This is what makes the GUI and CLI first-class runtime controls instead of file-only tools.
 
@@ -286,12 +294,13 @@ Runtime note:
   profile reach alone would suggest, so the hidden touch is less likely to roam
   into nearby controls
 
-When capture is active and gameplay mouse routing is released, the daemon also runs a separate mouse-to-touch path for menu navigation. That path is runtime-only and is not expressed as a profile node. On Hyprland it prefers compositor-native cursor/client geometry, then falls back to X11/XWayland helper mapping, then finally to Phantom's internal virtual cursor.
+When capture is active and gameplay aim is inactive, the daemon runs a separate owned menu-touch path for menu navigation. That path is runtime-only and is not expressed as a profile node. When Phantom enters that mode it seeds its internal cursor from host cursor position if possible, then continues from Phantom-owned cursor state while the mouse remains captured. A tiny always-on-top cursor overlay is launched for that mode so the operator can see where the owned cursor is even though the desktop cursor itself is no longer moving.
 
 Current menu-touch backend order:
 
-- prefer exact X11 visible-cursor to window-relative touch mapping
-- fall back to Phantom's virtual cursor path when exact host cursor coordinates are unavailable
+- prefer Hyprland compositor-native cursor/client geometry for the initial seed
+- then fall back to X11/XWayland helper mapping for the initial seed
+- then fall back to Phantom's existing internal cursor position if no host seed is available
 
 ## 7. Why `android_socket` Is The Primary Backend
 
