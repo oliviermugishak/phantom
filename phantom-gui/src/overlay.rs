@@ -1,10 +1,8 @@
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::Path;
 
 use eframe::egui;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
-use phantom::overlay::CursorOverlayState;
 use phantom::profile::{JoystickMode, MouseCameraActivationMode, Node, Profile, Region, RelPos};
 
 const OVERLAY_BG: Color32 = Color32::from_rgb(11, 13, 18);
@@ -13,9 +11,6 @@ const SMALL_MARKER_RADIUS: f32 = 9.0;
 const TEXT_SHADOW: Color32 = Color32::from_black_alpha(190);
 const GUIDE_LENGTH: f32 = 14.0;
 const HEADER_TEXT: &str = "Experimental debug preview — not gameplay-safe";
-const CURSOR_WINDOW_SIZE: f32 = 34.0;
-const CURSOR_OUTER_RADIUS: f32 = 11.0;
-const CURSOR_INNER_RADIUS: f32 = 3.5;
 
 pub fn run_overlay(profile_path: &Path) -> eframe::Result<()> {
     let profile = Profile::load(profile_path)
@@ -41,69 +36,14 @@ pub fn run_overlay(profile_path: &Path) -> eframe::Result<()> {
     )
 }
 
-pub fn run_cursor_overlay(state_path: &Path) -> eframe::Result<()> {
-    let state_path = state_path.to_path_buf();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Phantom Menu Cursor")
-            .with_app_id("phantom-cursor-overlay")
-            .with_inner_size([CURSOR_WINDOW_SIZE, CURSOR_WINDOW_SIZE])
-            .with_visible(false)
-            .with_always_on_top()
-            .with_transparent(true)
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_mouse_passthrough(true),
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "phantom-cursor-overlay",
-        options,
-        Box::new(|cc| Ok(Box::new(CursorOverlayApp::new(cc, state_path)))),
-    )
-}
-
 struct OverlayApp {
     profile: Profile,
-}
-
-struct CursorOverlayApp {
-    state_path: PathBuf,
-    last_state: CursorOverlayState,
 }
 
 impl OverlayApp {
     fn new(cc: &eframe::CreationContext<'_>, profile: Profile) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         Self { profile }
-    }
-}
-
-impl CursorOverlayApp {
-    fn new(cc: &eframe::CreationContext<'_>, state_path: PathBuf) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        Self {
-            state_path,
-            last_state: CursorOverlayState {
-                visible: false,
-                pressed: false,
-                screen_x: 0.0,
-                screen_y: 0.0,
-            },
-        }
-    }
-
-    fn refresh_state(&mut self, ctx: &egui::Context) {
-        let state = read_cursor_overlay_state(&self.state_path).unwrap_or(self.last_state);
-        self.last_state = state;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(state.visible));
-        if state.visible {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
-                state.screen_x - CURSOR_WINDOW_SIZE * 0.5,
-                state.screen_y - CURSOR_WINDOW_SIZE * 0.5,
-            )));
-        }
     }
 }
 
@@ -116,24 +56,6 @@ impl eframe::App for OverlayApp {
                 let painter = ui.painter_at(rect);
                 draw_profile_overlay(&painter, rect, &self.profile);
                 draw_overlay_header(&painter, rect);
-            });
-    }
-}
-
-impl eframe::App for CursorOverlayApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.refresh_state(ctx);
-        ctx.request_repaint_after(Duration::from_millis(16));
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(Color32::TRANSPARENT))
-            .show(ctx, |ui| {
-                let rect = ui.max_rect();
-                if !self.last_state.visible {
-                    return;
-                }
-                let painter = ui.painter_at(rect);
-                draw_menu_cursor(&painter, rect.center(), self.last_state.pressed);
             });
     }
 }
@@ -170,38 +92,6 @@ fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) 
             } => {}
         }
     }
-}
-
-fn draw_menu_cursor(painter: &egui::Painter, center: Pos2, pressed: bool) {
-    let stroke_color = if pressed {
-        Color32::from_rgb(255, 123, 88)
-    } else {
-        Color32::from_rgb(120, 210, 255)
-    };
-    let fill = if pressed {
-        Color32::from_rgba_premultiplied(255, 123, 88, 90)
-    } else {
-        Color32::from_rgba_premultiplied(120, 210, 255, 60)
-    };
-    let stroke = Stroke::new(2.0, stroke_color);
-
-    painter.circle_filled(center, CURSOR_OUTER_RADIUS, fill);
-    painter.circle_stroke(center, CURSOR_OUTER_RADIUS, stroke);
-    painter.circle_filled(center, CURSOR_INNER_RADIUS, stroke_color);
-    painter.line_segment(
-        [
-            center + Vec2::new(-CURSOR_OUTER_RADIUS - 6.0, 0.0),
-            center + Vec2::new(CURSOR_OUTER_RADIUS + 6.0, 0.0),
-        ],
-        Stroke::new(1.5, stroke_color.gamma_multiply(0.8)),
-    );
-    painter.line_segment(
-        [
-            center + Vec2::new(0.0, -CURSOR_OUTER_RADIUS - 6.0),
-            center + Vec2::new(0.0, CURSOR_OUTER_RADIUS + 6.0),
-        ],
-        Stroke::new(1.5, stroke_color.gamma_multiply(0.8)),
-    );
 }
 
 fn draw_button_marker(painter: &egui::Painter, rect: Rect, node: &Node, pos: &RelPos) {
@@ -345,11 +235,6 @@ fn draw_overlay_header(painter: &egui::Painter, rect: Rect) {
         FontId::proportional(13.0),
         Color32::from_rgb(255, 226, 150),
     );
-}
-
-fn read_cursor_overlay_state(path: &Path) -> Option<CursorOverlayState> {
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
 }
 
 fn draw_centered_text(painter: &egui::Painter, center: Pos2, text: &str, color: Color32) {

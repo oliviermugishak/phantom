@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::engine::TouchCommand;
 use crate::hyprland_cursor::HyprlandCursorClient;
-use crate::input::{InputEvent, Key};
+use crate::input::{InputEvent, Key, MouseMotionSource};
 use crate::logging::trace_detail_enabled;
 use crate::overlay::CursorOverlayState;
 use crate::x11_cursor::X11CursorClient;
@@ -152,15 +152,15 @@ impl MouseTouchEmulator {
 
     pub fn process(&mut self, event: &InputEvent) -> Vec<TouchCommand> {
         match event {
-            InputEvent::MouseMove { dx, dy, .. } => self.handle_move(*dx, *dy),
+            InputEvent::MouseMove { dx, dy, source } => self.handle_move(*dx, *dy, *source),
             InputEvent::KeyPress(Key::MouseLeft) => self.handle_press(),
             InputEvent::KeyRelease(Key::MouseLeft) => self.handle_release(),
             _ => Vec::new(),
         }
     }
 
-    fn handle_move(&mut self, dx: i32, dy: i32) -> Vec<TouchCommand> {
-        self.update_virtual_cursor(dx, dy);
+    fn handle_move(&mut self, dx: i32, dy: i32, source: MouseMotionSource) -> Vec<TouchCommand> {
+        self.update_virtual_cursor(dx, dy, source);
 
         if self.finger_down {
             vec![TouchCommand::TouchMove {
@@ -195,11 +195,22 @@ impl MouseTouchEmulator {
         }]
     }
 
-    fn update_virtual_cursor(&mut self, dx: i32, dy: i32) {
-        let width = self.screen_width.max(1) as f64;
-        let height = self.screen_height.max(1) as f64;
-        self.cursor_x = (self.cursor_x + dx as f64 / width).clamp(0.0, 1.0);
-        self.cursor_y = (self.cursor_y + dy as f64 / height).clamp(0.0, 1.0);
+    fn update_virtual_cursor(&mut self, dx: i32, dy: i32, source: MouseMotionSource) {
+        let (width, height) = self
+            .host_frame
+            .map(|frame| (frame.width.max(1.0), frame.height.max(1.0)))
+            .unwrap_or_else(|| {
+                (
+                    self.screen_width.max(1) as f64,
+                    self.screen_height.max(1) as f64,
+                )
+            });
+        let gain = match source {
+            MouseMotionSource::Relative => 1.0,
+            MouseMotionSource::Absolute => 1.35,
+        };
+        self.cursor_x = (self.cursor_x + (dx as f64 * gain) / width).clamp(0.0, 1.0);
+        self.cursor_y = (self.cursor_y + (dy as f64 * gain) / height).clamp(0.0, 1.0);
     }
 
     fn seed_position(&mut self) -> Option<(CursorSeed, &'static str)> {

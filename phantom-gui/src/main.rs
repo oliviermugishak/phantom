@@ -1,3 +1,4 @@
+mod cursor_overlay;
 mod overlay;
 
 use std::collections::BTreeMap;
@@ -5223,7 +5224,9 @@ fn egui_key_to_binding(key: egui::Key) -> Option<&'static str> {
 
 fn main() -> eframe::Result<()> {
     if let Some(state_path) = cursor_overlay_state_arg() {
-        return overlay::run_cursor_overlay(&state_path);
+        return cursor_overlay::run_cursor_overlay(&state_path).map_err(|e| {
+            eframe::Error::AppCreation(Box::new(std::io::Error::other(e.to_string())))
+        });
     }
     if let Some(profile_path) = overlay_profile_arg() {
         return overlay::run_overlay(&profile_path);

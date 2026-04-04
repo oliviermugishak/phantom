@@ -210,10 +210,12 @@ What that means:
 - mouse motion while held becomes touch drag
 - this is the intended way to navigate menus in games that reject raw mouse input
 - Phantom shows a separate owned menu-touch cursor while this mode is active
+- on Wayland compositors such as Hyprland, that cursor is drawn through a dedicated layer-shell overlay with input passthrough
 - `F1` switches between gameplay aim and owned menu-touch
 - when Phantom enters menu-touch, it seeds the owned cursor from the current host cursor position when possible
 - after that seed, Phantom owns the mouse and drives menu-touch from its internal cursor instead of relying on host click delivery
 - the seed path prefers Hyprland compositor geometry, then X11/XWayland helper mapping, then finally Phantom's internal cursor state
+- when Phantom owns a touchpad in menu-touch, it also provides its own tap-to-click and double-tap-hold drag behavior
 - `phantom status` shows:
   - `menu touch backend`
   - `mouse mode`

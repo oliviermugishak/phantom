@@ -139,6 +139,7 @@ Checks:
   - `capture: true`
   - `mouse mode: menu_touch`
 - verify the desktop session allows small always-on-top transparent windows
+- on Wayland/Hyprland, the cursor overlay now expects layer-shell support rather than a normal transparent toplevel
 
 Important:
 
@@ -164,7 +165,7 @@ Useful cases:
 Note:
 
 - touchpads now work, but they may still feel less smooth than a real mouse because Phantom must derive relative motion from absolute touchpad coordinates
-- Phantom now filters large touchpad re-anchor jumps and splits large touchpad motion into smaller immediate steps before aim sees it
+- Phantom now suppresses fresh-contact touchpad jumps before motion reaches aim and keeps tiny single-step movement available for held drags and careful cursor movement
 - a real mouse is still the best path for the highest-end fast aim-heavy play, but touchpad behavior should now be less jumpy without adding tick-latency to aim
 
 ## Aim Stops After `F1` Mouse Toggle
@@ -195,7 +196,10 @@ Expected behavior:
 
 - left click becomes touch down / up
 - moving while held becomes drag
+- touchpad single-tap now synthesizes a left click in owned menu-touch
+- touchpad double-tap-and-hold now begins a held left click so drag can continue from the pad
 - `F1` switches back to gameplay aim when needed
+- on touchpads, the first contact on the pad should seed cleanly instead of jerking the owned cursor
 
 ## Menu Touch Lands Away From The Visible Cursor
 

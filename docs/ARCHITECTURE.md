@@ -143,6 +143,8 @@ Important runtime boundary:
 - the owned menu-touch cursor is seeded from host cursor position when capture enters menu-touch
 - after that seed, menu-touch uses Phantom-owned cursor state and does not depend on desktop click delivery
 - a separate lightweight cursor overlay visualizes the owned menu-touch cursor while that mode is active
+- on Wayland compositors, that cursor overlay uses a layer-shell surface with an empty input region so Phantom does not steal mouse input back from Waydroid
+- touchpad tap gestures are synthesized inside Phantom while menu-touch owns the mouse, because the desktop is no longer responsible for translating them
 
 This is what makes the GUI and CLI first-class runtime controls instead of file-only tools.
 
@@ -288,8 +290,9 @@ Why the enabled state exists:
 Runtime note:
 
 - aim still reacts immediately to mouse/touchpad movement
-- touchpad smoothing now happens in input translation, before the engine sees
-  motion at all
+- absolute-touchpad translation now suppresses fresh-contact reseed jumps before
+  the engine sees motion, and keeps tiny single-step motion available for held
+  drags and careful cursor work
 - the engine also keeps aim travel tighter around its anchor than the raw
   profile reach alone would suggest, so the hidden touch is less likely to roam
   into nearby controls

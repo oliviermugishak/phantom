@@ -188,6 +188,8 @@ Backend behavior:
 - if no exact host seed is available, Phantom reuses its existing internal cursor position
 - after the initial seed, menu-touch uses the Phantom-owned cursor directly and no longer depends on desktop window activation semantics
 - while menu-touch is active, Phantom shows a dedicated cursor overlay instead of moving the desktop cursor
+- on Wayland sessions, that cursor overlay is provided through a layer-shell surface with input passthrough
+- on touchpads, Phantom now synthesizes tap-to-click and double-tap-hold drag locally because those gestures are no longer provided by the desktop once Phantom owns the mouse
 
 ### `always_on`
 

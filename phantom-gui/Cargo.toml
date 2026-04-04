@@ -18,3 +18,5 @@ eframe = "0.31"
 egui = "0.31"
 image = "0.25"
 rfd = "0.15"
+smithay-client-toolkit = { version = "0.19.2", default-features = false }
+wayland-client = "0.31.14"
