@@ -66,6 +66,12 @@ pub enum InputEvent {
         dy: i32,
         source: MouseMotionSource,
     },
+    PointerContactStart {
+        source: MouseMotionSource,
+    },
+    PointerContactEnd {
+        source: MouseMotionSource,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,14 +438,18 @@ impl Key {
 impl InputEvent {
     pub fn is_mouse_input(&self) -> bool {
         match self {
-            InputEvent::MouseMove { .. } => true,
+            InputEvent::MouseMove { .. }
+            | InputEvent::PointerContactStart { .. }
+            | InputEvent::PointerContactEnd { .. } => true,
             InputEvent::KeyPress(key) | InputEvent::KeyRelease(key) => key.is_mouse(),
         }
     }
 
     pub fn is_keyboard_input(&self) -> bool {
         match self {
-            InputEvent::MouseMove { .. } => false,
+            InputEvent::MouseMove { .. }
+            | InputEvent::PointerContactStart { .. }
+            | InputEvent::PointerContactEnd { .. } => false,
             InputEvent::KeyPress(key) | InputEvent::KeyRelease(key) => !key.is_mouse(),
         }
     }
@@ -956,6 +966,9 @@ impl InputCapture {
                     device.abs_contact_known = true;
                     match event.value {
                         0 => {
+                            result.push(InputEvent::PointerContactEnd {
+                                source: MouseMotionSource::Absolute,
+                            });
                             result.extend(Self::finish_touchpad_contact(device));
                             device.abs_touching = false;
                             device.abs_dirty = false;
@@ -970,6 +983,9 @@ impl InputCapture {
                             device.touch_contact_moved = false;
                             device.touchpad_physical_button = false;
                             device.touchpad_drag_hold = false;
+                            result.push(InputEvent::PointerContactStart {
+                                source: MouseMotionSource::Absolute,
+                            });
                             if Self::touchpad_should_begin_drag_hold(device) {
                                 device.pending_touchpad_tap_deadline = None;
                                 device.touchpad_drag_hold = true;
@@ -1577,6 +1593,10 @@ mod tests {
             source: MouseMotionSource::Relative
         }
         .is_mouse_input());
+        assert!(InputEvent::PointerContactStart {
+            source: MouseMotionSource::Absolute
+        }
+        .is_mouse_input());
         assert!(InputEvent::KeyPress(Key::MouseRight).is_mouse_input());
         assert!(InputEvent::KeyPress(Key::A).is_keyboard_input());
         assert!(!InputEvent::KeyRelease(Key::MouseLeft).is_keyboard_input());
@@ -1852,7 +1872,13 @@ mod tests {
             ),
         ]);
 
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            InputEvent::PointerContactStart {
+                source: MouseMotionSource::Absolute
+            }
+        ));
     }
 
     #[test]
@@ -1992,7 +2018,19 @@ mod tests {
             ),
         ]);
 
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0],
+            InputEvent::PointerContactStart {
+                source: MouseMotionSource::Absolute
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            InputEvent::PointerContactEnd {
+                source: MouseMotionSource::Absolute
+            }
+        ));
 
         capture.devices[0].pending_touchpad_tap_deadline = Some(Instant::now());
         let flush = capture.flush_pending_touchpad_taps();
@@ -2046,8 +2084,14 @@ mod tests {
                 value: 1,
             },
         )]);
-        assert_eq!(press.len(), 1);
-        assert!(matches!(press[0], InputEvent::KeyPress(Key::MouseLeft)));
+        assert_eq!(press.len(), 2);
+        assert!(matches!(
+            press[0],
+            InputEvent::PointerContactStart {
+                source: MouseMotionSource::Absolute
+            }
+        ));
+        assert!(matches!(press[1], InputEvent::KeyPress(Key::MouseLeft)));
         assert!(capture.devices[0].pending_touchpad_tap_deadline.is_none());
 
         let release = capture.process_events(&[(
@@ -2060,7 +2104,13 @@ mod tests {
                 value: 0,
             },
         )]);
-        assert_eq!(release.len(), 1);
-        assert!(matches!(release[0], InputEvent::KeyRelease(Key::MouseLeft)));
+        assert_eq!(release.len(), 2);
+        assert!(matches!(
+            release[0],
+            InputEvent::PointerContactEnd {
+                source: MouseMotionSource::Absolute
+            }
+        ));
+        assert!(matches!(release[1], InputEvent::KeyRelease(Key::MouseLeft)));
     }
 }

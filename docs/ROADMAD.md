@@ -118,6 +118,10 @@ Status/reporting:
 
 ## 2. Aim V2
 
+Status:
+
+- implemented in `0.8.x`
+
 ### Problem
 
 Current `aim` is functionally better than the old `mouse_camera`, but it still
@@ -164,11 +168,12 @@ Goals:
 
 ### Implementation Checklist
 
-- [ ] reduce `reach` prominence in the GUI
-- [ ] show `aim` as a camera tool, not a large editable wrapper
-- [ ] add validation warnings for extreme `reach` values
-- [ ] document that operational aim travel is intentionally tighter than raw configured reach
-- [ ] keep old `mouse_camera` profiles loading cleanly
+- [x] reduce `reach` prominence in the GUI
+- [x] show `aim` as a camera tool, not a large editable wrapper
+- [x] keep reach as validation-only tuning rather than a warning-heavy UX surface
+- [x] document that operational aim travel is intentionally tighter than raw configured reach
+- [x] keep old `mouse_camera` profiles loading cleanly
+- [x] treat touchpad contact start/end as explicit aim re-arm boundaries so repeated swipes do not inherit stale hidden-touch edge state
 
 ### Acceptance Criteria
 
@@ -176,135 +181,11 @@ Goals:
 - nearby controls are less likely to collide with aim during normal play
 - existing profiles stay valid
 
-## 3. Burst / Turbo Control
+## 3. Dedicated Wheel Controls
 
-### Problem
+Status:
 
-`repeat_tap` is useful, but it only models a simple interval. That is too weak
-for premium shooter workflows such as controlled rapid fire and pulse-shaped tap
-behavior.
-
-### Decision
-
-Add a dedicated high-rate pulse control instead of overloading `repeat_tap`.
-
-### Proposed Control
-
-Suggested node name:
-
-- `burst_tap`
-
-Suggested fields:
-
-- `slot`
-- `pos`
-- `key`
-- `initial_delay_ms`
-- `press_ms`
-- `release_ms`
-- `burst_count` optional
-
-### Runtime Architecture
-
-Primary files:
-
-- `phantom/src/profile.rs`
-- `phantom/src/engine.rs`
-
-Behavior:
-
-- explicit press waveform, not only interval timing
-- clean release behavior when the key is released
-- deterministic tick-driven pulse state
-
-### GUI Architecture
-
-Primary file:
-
-- `phantom-gui/src/main.rs`
-
-Needs:
-
-- editor support for the new waveform fields
-- clear distinction from `repeat_tap`
-
-### Implementation Checklist
-
-- [ ] add `burst_tap` schema and validation
-- [ ] implement engine state machine for pulse timing
-- [ ] add GUI editor support
-- [ ] add audit output support
-- [ ] document when to prefer `burst_tap` vs `repeat_tap`
-- [ ] add tests for high-rate pulse timing and release correctness
-
-### Acceptance Criteria
-
-- ultra-rapid fire can be shaped explicitly
-- behavior is deterministic and testable
-- the user does not need to misuse `repeat_tap` for shooter turbo behavior
-
-## 4. Tap-Hold Primitive
-
-### Problem
-
-Some high-value shooter actions want one key to mean:
-
-- tap = one action
-- hold = another action
-
-Current nodes do not model this cleanly.
-
-### Decision
-
-Add a dedicated dual-phase control instead of forcing this into macros or layers.
-
-### Proposed Control
-
-Suggested node name:
-
-- `tap_hold`
-
-Likely fields:
-
-- `tap_slot`
-- `tap_pos`
-- `hold_slot`
-- `hold_pos`
-- `key`
-- `hold_threshold_ms`
-
-### Runtime Architecture
-
-Primary files:
-
-- `phantom/src/profile.rs`
-- `phantom/src/engine.rs`
-
-Behavior:
-
-- tap path must remain low-latency
-- hold path must be deterministic
-- cancellation rules must be explicit
-
-### GUI Architecture
-
-- editor needs a clear tap-vs-hold explanation
-- the inspect panel should make the threshold visible and understandable
-
-### Implementation Checklist
-
-- [ ] add schema and validation
-- [ ] implement runtime threshold state machine
-- [ ] add GUI editor support
-- [ ] add tests for tap, hold, and edge-threshold behavior
-- [ ] document strong shooter use cases
-
-### Acceptance Criteria
-
-- common dual-action keys become easy to author
-- users no longer need awkward macro or layer hacks for tap-vs-hold bindings
-
-## 5. Dedicated Wheel Controls
+- implemented in `0.8.x`
 
 ### Problem
 
@@ -319,14 +200,19 @@ Plain wheel-as-key is not enough for all of these.
 
 ### Decision
 
-Add explicit wheel-oriented control types rather than expecting users to model
-everything through generic key behavior.
+Add one explicit paired wheel control first instead of a whole family of wheel
+types.
 
-### Candidates
+### Implemented Control
 
-- `wheel_tap`
-- `wheel_repeat`
-- `wheel_drag`
+- `wheel`
+
+Fields:
+
+- `up_slot`
+- `up_pos`
+- `down_slot`
+- `down_pos`
 
 ### Runtime Architecture
 
@@ -334,25 +220,41 @@ Primary files:
 
 - `phantom/src/profile.rs`
 - `phantom/src/engine.rs`
-- `phantom/src/input.rs` only if richer wheel semantics are needed
+
+Behavior:
+
+- `WheelUp` triggers a one-shot tap at the upper target
+- `WheelDown` triggers a one-shot tap at the lower target
+- each direction owns its own logical touch slot
+- slots must be distinct and validate cleanly
 
 ### GUI Architecture
 
-- add editor affordances that make wheel direction explicit
+Primary file:
+
+- `phantom-gui/src/main.rs`
+
+Needs:
+
+- one placement tool that edits both up/down targets together
+- clear inspector language that wheel directions are built in
+- correct logical slot allocation for both targets
 
 ### Implementation Checklist
 
-- [ ] decide minimal useful wheel primitives
-- [ ] add schema and validation
-- [ ] add GUI support
-- [ ] document good wheel-based shooter patterns
+- [x] decide minimal useful wheel primitive
+- [x] add schema and validation
+- [x] add GUI support
+- [x] add audit output support
+- [x] document good wheel-based shooter patterns
+- [x] add tests for both wheel directions
 
 ### Acceptance Criteria
 
 - wheel-heavy profiles become easier to author cleanly
 - users no longer need awkward macro workarounds for common wheel actions
 
-## 6. Layer Workflow Improvements
+## 4. Layer Workflow Improvements
 
 ### Problem
 
@@ -398,7 +300,7 @@ High-value additions:
 - large PUBG/COD-style profiles are faster to build and maintain
 - users stop fighting the editor when managing many contexts
 
-## 7. Control Conflict Analysis
+## 5. Control Conflict Analysis
 
 ### Problem
 
@@ -435,7 +337,7 @@ Potential conflict checks:
 - risky layouts are visible before live gameplay testing
 - Phantom starts offering premium setup guidance instead of only raw freedom
 
-## 8. Macro Improvements
+## 6. Macro Improvements
 
 ### Problem
 
@@ -469,25 +371,22 @@ Primary files:
 
 - macros become more useful without turning into an opaque scripting language
 
-## 9. Prioritization
+## 7. Prioritization
 
 Recommended order:
 
 1. Aim V2 cleanup
-2. Burst / turbo control
-3. Tap-hold primitive
-4. Control conflict analysis
-5. Layer workflow improvements
-6. Wheel controls
-7. Macro improvements
+2. dedicated wheel controls
+3. layer workflow improvements
+4. macro improvements
+5. control conflict analysis if it still has product value after the core workflows settle
 
-## 10. Success Criteria
+## 8. Success Criteria
 
 This roadmap is successful when:
 
 - menu-touch no longer relies on desktop click ownership during capture
 - aim behaves like a camera primitive, not a roaming wrapper
-- Phantom has at least one dedicated shooter-grade rapid-fire primitive
+- wheel-heavy shooter profiles become easier to author and maintain
 - large layered shooter profiles become practical to author
-- users get warnings before creating self-conflicting layouts
 - docs and GUI both reflect the real runtime model

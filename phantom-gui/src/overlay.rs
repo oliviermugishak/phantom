@@ -67,6 +67,9 @@ fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) 
             | Node::HoldTap { pos, .. }
             | Node::ToggleTap { pos, .. }
             | Node::RepeatTap { pos, .. } => draw_button_marker(painter, rect, node, pos),
+            Node::Wheel {
+                up_pos, down_pos, ..
+            } => draw_wheel_markers(painter, rect, up_pos, down_pos),
             Node::Joystick {
                 mode: JoystickMode::Fixed,
                 pos,
@@ -102,6 +105,30 @@ fn draw_button_marker(painter: &egui::Painter, rect: Rect, node: &Node, pos: &Re
         MARKER_RADIUS,
         marker_stroke(node),
         compact_label(node),
+    );
+}
+
+fn draw_wheel_markers(painter: &egui::Painter, rect: Rect, up_pos: &RelPos, down_pos: &RelPos) {
+    let up_center = to_canvas_pos(rect, up_pos);
+    let down_center = to_canvas_pos(rect, down_pos);
+    let stroke = wheel_stroke();
+    draw_ring_marker(
+        painter,
+        up_center,
+        MARKER_RADIUS,
+        Stroke::new(2.0, stroke),
+        "Up",
+    );
+    draw_ring_marker(
+        painter,
+        down_center,
+        MARKER_RADIUS,
+        Stroke::new(2.0, stroke),
+        "Dn",
+    );
+    painter.line_segment(
+        [up_center, down_center],
+        Stroke::new(1.5, stroke.gamma_multiply(0.7)),
     );
 }
 
@@ -306,6 +333,7 @@ fn compact_label(node: &Node) -> String {
         | Node::ToggleTap { key, .. }
         | Node::Drag { key, .. }
         | Node::RepeatTap { key, .. } => key.clone(),
+        Node::Wheel { .. } => "Wheel".into(),
         Node::Joystick { .. } => "Move".into(),
         Node::MouseCamera {
             activation_mode,
@@ -355,6 +383,10 @@ fn joystick_stroke() -> Color32 {
 
 fn drag_stroke() -> Color32 {
     Color32::from_rgba_unmultiplied(0, 200, 140, 220)
+}
+
+fn wheel_stroke() -> Color32 {
+    Color32::from_rgba_unmultiplied(87, 175, 255, 220)
 }
 
 fn look_stroke() -> Color32 {

@@ -25,6 +25,7 @@ const COLOR_JOYSTICK: Color32 = Color32::from_rgb(52, 168, 83);
 const COLOR_DRAG: Color32 = Color32::from_rgb(0, 200, 140);
 const COLOR_LOOK: Color32 = Color32::from_rgb(251, 188, 4);
 const COLOR_REPEAT: Color32 = Color32::from_rgb(171, 71, 188);
+const COLOR_WHEEL: Color32 = Color32::from_rgb(255, 138, 101);
 const COLOR_MACRO: Color32 = Color32::from_rgb(255, 112, 67);
 const COLOR_LAYER: Color32 = Color32::from_rgb(158, 158, 158);
 const CANVAS_BG: Color32 = Color32::from_rgb(19, 21, 26);
@@ -145,6 +146,7 @@ enum NodeTemplate {
     Drag,
     MouseLook,
     RepeatTap,
+    Wheel,
     Macro,
     LayerShift,
 }
@@ -742,7 +744,7 @@ impl PhantomGui {
                 ui.label("No Aim node in this profile yet.");
                 ui.label(
                     RichText::new(
-                        "Add an Aim control, then select it to edit activation mode, anchor, and activation key.",
+                        "Add an Aim control, then select it to edit activation mode, anchor, and activation key. Travel tuning lives under Advanced because Aim is primarily a camera tool.",
                     )
                     .small(),
                 );
@@ -1408,11 +1410,42 @@ impl PhantomGui {
         self.runtime_poll_interval()
     }
 
-    fn next_slot(&self) -> Option<u8> {
+    fn used_touch_slots(&self) -> Option<std::collections::HashSet<u8>> {
         let profile = self.profile.as_ref()?;
-        let used_slots: std::collections::HashSet<u8> =
-            profile.nodes.iter().filter_map(Node::slot).collect();
+        let mut used_slots = std::collections::HashSet::new();
+        for node in &profile.nodes {
+            match node {
+                Node::Wheel {
+                    up_slot, down_slot, ..
+                } => {
+                    used_slots.insert(*up_slot);
+                    used_slots.insert(*down_slot);
+                }
+                _ => {
+                    if let Some(slot) = node.slot() {
+                        used_slots.insert(slot);
+                    }
+                }
+            }
+        }
+        Some(used_slots)
+    }
+
+    fn next_slot(&self) -> Option<u8> {
+        let used_slots = self.used_touch_slots()?;
         (0..=MAX_LOGICAL_TOUCH_SLOT).find(|slot| !used_slots.contains(slot))
+    }
+
+    fn next_distinct_slots(&self, count: usize) -> Option<Vec<u8>> {
+        let mut used_slots = self.used_touch_slots()?;
+        let mut slots = Vec::with_capacity(count);
+        for _ in 0..count {
+            let slot =
+                (0..=MAX_LOGICAL_TOUCH_SLOT).find(|candidate| !used_slots.contains(candidate))?;
+            used_slots.insert(slot);
+            slots.push(slot);
+        }
+        Some(slots)
     }
 
     fn unique_node_id(&self, prefix: &str) -> String {
@@ -1440,6 +1473,19 @@ impl PhantomGui {
             | Node::RepeatTap { slot, pos, .. } => {
                 *slot = self.next_slot()?;
                 *pos = offset_rel_pos(*pos);
+            }
+            Node::Wheel {
+                up_slot,
+                up_pos,
+                down_slot,
+                down_pos,
+                ..
+            } => {
+                let slots = self.next_distinct_slots(2)?;
+                *up_slot = slots[0];
+                *down_slot = slots[1];
+                *up_pos = offset_rel_pos(*up_pos);
+                *down_pos = offset_rel_pos(*down_pos);
             }
             Node::Drag {
                 slot, start, end, ..
@@ -1558,6 +1604,7 @@ impl PhantomGui {
             | Node::Drag { layer, .. }
             | Node::MouseCamera { layer, .. }
             | Node::RepeatTap { layer, .. }
+            | Node::Wheel { layer, .. }
             | Node::Macro { layer, .. } => *layer = target_layer.clone(),
             Node::LayerShift { .. } => {
                 self.set_banner("Layer switch nodes are not duplicated into layers", true);
@@ -1648,13 +1695,27 @@ impl PhantomGui {
     }
 
     fn place_node(&mut self, template: NodeTemplate, rel: RelPos) {
-        let Some(slot) = self.next_slot() else {
-            self.set_banner("All logical touch slot ids are already assigned", true);
-            return;
-        };
         if self.profile.is_none() {
             return;
         }
+        let slot = if matches!(template, NodeTemplate::Wheel) {
+            0
+        } else {
+            let Some(slot) = self.next_slot() else {
+                self.set_banner("All logical touch slot ids are already assigned", true);
+                return;
+            };
+            slot
+        };
+        let wheel_slots = if matches!(template, NodeTemplate::Wheel) {
+            let Some(slots) = self.next_distinct_slots(2) else {
+                self.set_banner("Wheel control needs two free logical touch slots", true);
+                return;
+            };
+            slots
+        } else {
+            Vec::new()
+        };
         self.begin_edit();
         let Some(profile) = &mut self.profile else {
             return;
@@ -1727,6 +1788,20 @@ impl PhantomGui {
                 pos: rel,
                 key: "F".into(),
                 interval_ms: 90,
+            },
+            NodeTemplate::Wheel => Node::Wheel {
+                id: format!("wheel_{}", wheel_slots[0]),
+                layer: String::new(),
+                up_slot: wheel_slots[0],
+                up_pos: RelPos {
+                    x: rel.x,
+                    y: (rel.y - 0.05).clamp(0.0, 1.0),
+                },
+                down_slot: wheel_slots[1],
+                down_pos: RelPos {
+                    x: rel.x,
+                    y: (rel.y + 0.05).clamp(0.0, 1.0),
+                },
             },
             NodeTemplate::Macro | NodeTemplate::LayerShift => return,
         };
@@ -1849,7 +1924,7 @@ impl PhantomGui {
                         *key = binding;
                         true
                     }
-                    Node::Joystick { .. } => false,
+                    Node::Joystick { .. } | Node::Wheel { .. } => false,
                     Node::MouseCamera { activation_key, .. } => {
                         *activation_key = Some(binding);
                         true
@@ -2023,6 +2098,9 @@ impl PhantomGui {
         if ctx.input(|i| i.key_pressed(egui::Key::Num8)) {
             self.tool = Tool::Place(NodeTemplate::RepeatTap);
         }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num9)) {
+            self.tool = Tool::Place(NodeTemplate::Wheel);
+        }
     }
 
     fn draw_top_bar(&mut self, ctx: &egui::Context) {
@@ -2140,6 +2218,12 @@ impl PhantomGui {
                         &mut self.tool,
                         Tool::Place(NodeTemplate::RepeatTap),
                         "Rapid Tap (8)",
+                    );
+                    tool_button(
+                        ui,
+                        &mut self.tool,
+                        Tool::Place(NodeTemplate::Wheel),
+                        "Wheel (9)",
                     );
                     if ui.button("Add Macro").clicked() {
                         self.add_non_canvas_node(NodeTemplate::Macro);
@@ -2570,8 +2654,8 @@ impl PhantomGui {
                     ui.group(|ui| {
                         ui.label(RichText::new("Quick Starts").strong());
                         ui.label(
-                            RichText::new(
-                                "Use Aim for camera drag, Drag for one-shot swipes, and Layer Switch for context-specific remaps.",
+                        RichText::new(
+                                "Use Aim for camera drag, Drag for one-shot swipes, Wheel for paired scroll up/down taps, and Layer Switch for context-specific remaps.",
                             )
                             .small()
                             .color(Color32::from_gray(165)),
@@ -2582,6 +2666,9 @@ impl PhantomGui {
                             }
                             if ui.button("Add Drag").clicked() {
                                 self.tool = Tool::Place(NodeTemplate::Drag);
+                            }
+                            if ui.button("Add Wheel").clicked() {
+                                self.tool = Tool::Place(NodeTemplate::Wheel);
                             }
                             if ui.button("Add Layer Switch").clicked() {
                                 self.add_non_canvas_node(NodeTemplate::LayerShift);
@@ -2620,6 +2707,11 @@ impl PhantomGui {
 
                 if let Some(slot) = node.slot() {
                     ui.label(format!("Touch slot {}", slot));
+                } else if let Node::Wheel {
+                    up_slot, down_slot, ..
+                } = node
+                {
+                    ui.label(format!("Touch slots {} / {}", up_slot, down_slot));
                 } else {
                     ui.label("No touch slot");
                 }
@@ -2638,6 +2730,25 @@ impl PhantomGui {
                             &mut dirty,
                         );
                         position_editor(ui, pos, screen.as_ref(), &mut dirty);
+                    }
+                    Node::Wheel {
+                        layer,
+                        up_pos,
+                        down_pos,
+                        ..
+                    } => {
+                        layer_row(
+                            ui,
+                            layer,
+                            ("layer_row", idx),
+                            &layer_choices,
+                            suggested_layer,
+                            &mut dirty,
+                        );
+                        ui.label(RichText::new("Wheel Up").small().strong());
+                        position_editor(ui, up_pos, screen.as_ref(), &mut dirty);
+                        ui.label(RichText::new("Wheel Down").small().strong());
+                        position_editor(ui, down_pos, screen.as_ref(), &mut dirty);
                     }
                     Node::Joystick {
                         layer,
@@ -2788,29 +2899,39 @@ impl PhantomGui {
                             suggested_layer,
                             &mut dirty,
                         );
+                        ui.label(RichText::new("Anchor").small().strong());
                         position_editor(ui, anchor, screen.as_ref(), &mut dirty);
-                        ui.horizontal(|ui| {
-                            ui.label("Reach");
-                            let mut value = *reach;
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut value)
-                                        .speed(0.005)
-                                        .range(0.05..=0.45),
-                                )
-                                .changed()
-                            {
-                                *reach = round3(value);
-                                dirty = true;
-                            }
-                        });
                         ui.label(
                             RichText::new(
-                                "Aim is engine-managed camera drag. The anchor is where Phantom re-centers the hidden look touch.",
+                                "Aim is engine-managed camera drag. The anchor is where Phantom re-centers the hidden look touch between camera segments.",
                             )
                             .small()
                             .color(Color32::from_gray(170)),
                         );
+                        ui.collapsing("Advanced", |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Travel Envelope");
+                                let mut value = *reach;
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut value)
+                                            .speed(0.005)
+                                            .range(0.05..=0.45),
+                                    )
+                                    .changed()
+                                {
+                                    *reach = round3(value);
+                                    dirty = true;
+                                }
+                            });
+                            ui.label(
+                                RichText::new(
+                                    "Configured reach is an upper envelope. Phantom keeps live aim travel tighter internally, so large values mostly affect how aggressively it can re-segment rather than turning Aim into a giant screen wrapper.",
+                                )
+                                .small()
+                                .color(Color32::from_gray(160)),
+                            );
+                        });
                     }
                     Node::Macro { layer, .. } => {
                         layer_row(
@@ -2913,6 +3034,15 @@ impl PhantomGui {
                             self.pending_binding.as_ref(),
                             &mut start_binding,
                             &mut dirty,
+                        );
+                    }
+                    Node::Wheel { .. } => {
+                        ui.label(
+                            RichText::new(
+                                "Wheel uses the mouse scroll directions directly: WheelUp triggers the upper target and WheelDown triggers the lower target.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(170)),
                         );
                     }
                     Node::MouseCamera {
@@ -3046,6 +3176,7 @@ impl PhantomGui {
                         }
                     });
                 }
+
 
                 if let Node::Macro { sequence, .. } = node {
                     ui.separator();
@@ -4064,6 +4195,7 @@ fn display_type(node: &Node) -> &'static str {
         Node::Drag { .. } => "Drag Gesture",
         Node::MouseCamera { .. } => "Aim",
         Node::RepeatTap { .. } => "Rapid Tap",
+        Node::Wheel { .. } => "Wheel Control",
         Node::Macro { .. } => "Macro",
         Node::LayerShift { .. } => "Layer Switch",
     }
@@ -4078,6 +4210,7 @@ fn display_binding(node: &Node) -> String {
         | Node::RepeatTap { key, .. }
         | Node::Macro { key, .. }
         | Node::LayerShift { key, .. } => key.clone(),
+        Node::Wheel { .. } => "WheelUp / WheelDown".into(),
         Node::Joystick { keys, .. } => {
             format!("{}/{}/{}/{}", keys.up, keys.left, keys.down, keys.right)
         }
@@ -4220,6 +4353,7 @@ fn node_color(node: &Node) -> Color32 {
         Node::Drag { .. } => COLOR_DRAG,
         Node::MouseCamera { .. } => COLOR_LOOK,
         Node::RepeatTap { .. } => COLOR_REPEAT,
+        Node::Wheel { .. } => COLOR_WHEEL,
         Node::Macro { .. } => COLOR_MACRO,
         Node::LayerShift { .. } => COLOR_LAYER,
     }
@@ -4268,6 +4402,7 @@ fn marker_glyph(node: &Node) -> &'static str {
         Node::Drag { .. } => "D",
         Node::MouseCamera { .. } => "A",
         Node::RepeatTap { .. } => "R",
+        Node::Wheel { .. } => "W",
         Node::Macro { .. } => "C",
         Node::LayerShift { .. } => "L",
     }
@@ -4279,7 +4414,8 @@ fn node_pos(node: &Node) -> Option<&RelPos> {
         | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
         | Node::Drag { start: pos, .. }
-        | Node::RepeatTap { pos, .. } => Some(pos),
+        | Node::RepeatTap { pos, .. }
+        | Node::Wheel { up_pos: pos, .. } => Some(pos),
         Node::Joystick {
             mode: JoystickMode::Fixed,
             pos,
@@ -4301,7 +4437,8 @@ fn node_pos_mut(node: &mut Node) -> Option<&mut RelPos> {
         | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
         | Node::Drag { start: pos, .. }
-        | Node::RepeatTap { pos, .. } => Some(pos),
+        | Node::RepeatTap { pos, .. }
+        | Node::Wheel { up_pos: pos, .. } => Some(pos),
         Node::Joystick {
             mode: JoystickMode::Fixed,
             pos,
@@ -4326,6 +4463,7 @@ fn set_node_id(node: &mut Node, id: String) {
         | Node::Drag { id: field, .. }
         | Node::MouseCamera { id: field, .. }
         | Node::RepeatTap { id: field, .. }
+        | Node::Wheel { id: field, .. }
         | Node::Macro { id: field, .. }
         | Node::LayerShift { id: field, .. } => *field = id,
     }
@@ -4341,6 +4479,7 @@ fn tool_label(tool: Tool) -> &'static str {
         Tool::Place(NodeTemplate::Drag) => "drag gesture",
         Tool::Place(NodeTemplate::MouseLook) => "aim anchor",
         Tool::Place(NodeTemplate::RepeatTap) => "rapid tap button",
+        Tool::Place(NodeTemplate::Wheel) => "wheel control",
         Tool::Place(NodeTemplate::Macro) => "macro",
         Tool::Place(NodeTemplate::LayerShift) => "layer switch",
     }
@@ -4955,6 +5094,7 @@ fn node_id_prefix(node: &Node) -> &'static str {
         Node::Drag { .. } => "drag",
         Node::MouseCamera { .. } => "aim",
         Node::RepeatTap { .. } => "rapid",
+        Node::Wheel { .. } => "wheel",
         Node::Macro { .. } => "macro",
         Node::LayerShift { .. } => "layer",
     }
@@ -4990,6 +5130,28 @@ fn draw_hover_card(
             if let Some(screen) = screen {
                 let (px, py) = rel_to_pixels(pos, screen);
                 lines.push(format!("Pixels: {}, {}", px, py));
+            }
+        }
+        Node::Wheel {
+            up_slot,
+            up_pos,
+            down_slot,
+            down_pos,
+            ..
+        } => {
+            lines.push(format!(
+                "Wheel Up: slot {} @ {:.3}, {:.3}",
+                up_slot, up_pos.x, up_pos.y
+            ));
+            lines.push(format!(
+                "Wheel Down: slot {} @ {:.3}, {:.3}",
+                down_slot, down_pos.x, down_pos.y
+            ));
+            if let Some(screen) = screen {
+                let (up_px, up_py) = rel_to_pixels(up_pos, screen);
+                let (down_px, down_py) = rel_to_pixels(down_pos, screen);
+                lines.push(format!("Up Pixels: {}, {}", up_px, up_py));
+                lines.push(format!("Down Pixels: {}, {}", down_px, down_py));
             }
         }
         Node::Joystick {
@@ -5053,7 +5215,7 @@ fn draw_hover_card(
             ..
         } => {
             lines.push(format!("Anchor: {:.3}, {:.3}", anchor.x, anchor.y));
-            lines.push(format!("Reach: {:.3}", reach));
+            lines.push(format!("Travel Envelope: {:.3}", reach));
             lines.push(format!("Sensitivity: {:.2}", sensitivity));
             lines.push(format!(
                 "Mode: {}",

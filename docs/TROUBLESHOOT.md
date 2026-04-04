@@ -181,6 +181,8 @@ If it still feels wrong:
 - check whether the profile uses `toggle` or `while_held`
 - verify the activation key is a real mouse button such as `MouseRight`
 - test with a real mouse to separate touchpad-feel issues from routing-state issues
+- for touchpad play, keep the aim anchor in clear space; Phantom now re-arms aim
+  between touch contacts, but a real mouse is still the better hardware path
 
 ## Menus Need Touch Instead Of Raw Mouse
 

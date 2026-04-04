@@ -25,7 +25,18 @@ Still worth doing:
 - consider very slow polling when the GUI is unfocused
 - add light instrumentation so GUI-side IPC frequency is measurable
 
-## 2. Large-Profile Authoring
+## 2. Gameplay Control Primitives
+
+Status:
+
+- partially addressed in `0.8.x`
+
+High-value items:
+
+- macro improvements once the dedicated control primitives settle
+- keep `aim` camera-first and keep touchpad behavior best-effort without penalizing real mouse feel
+
+## 3. Large-Profile Authoring
 
 Status:
 
@@ -38,7 +49,7 @@ High-value items:
 - easier movement of controls across layers
 - more guided flows for shooter-style profiles
 
-## 3. Overlay Reliability
+## 4. Overlay Reliability
 
 Status:
 
@@ -53,7 +64,7 @@ High-value items:
 - replace the host debug preview with an Android-side in-surface overlay if that work is funded
 - remove the host debug preview entirely if it remains too unreliable to justify keeping
 
-## 4. Gameplay Feel
+## 5. Gameplay Feel
 
 Status:
 
@@ -67,7 +78,7 @@ High-value items:
 - tune fast-turn behavior for shooter use cases
 - keep owned `menu_touch` cursor feel direct without adding visible lag or smoothing
 
-## 5. Documentation Depth
+## 6. Documentation Depth
 
 Status:
 
@@ -80,7 +91,7 @@ High-value items:
 - keep behavior docs aligned with runtime semantics
 - add stronger “how to debug a bad profile” guidance
 
-## 6. Completed In 0.8.0
+## 7. Completed In 0.8.x
 
 - owned `menu_touch` mode replaced the old released-mouse model
 - menu-touch now keeps click ownership inside Phantom during capture
@@ -88,12 +99,14 @@ High-value items:
 - accurate host-seeded menu-touch cursor initialization
 - touchpad tap-to-click and double-tap-hold drag in owned menu-touch
 - cursor overlay polish and direct cursor-feel refinements
+- Aim V2 cleanup reduced the old region-tool feel and added explicit touchpad swipe re-arming for aim
+- dedicated `wheel` controls now exist for paired scroll-up / scroll-down touch targets
 
-## 7. Recommended Next Order
+## 8. Recommended Next Order
 
-1. large-profile authoring
-2. gameplay-feel follow-up for aim and shooter ergonomics
-3. control conflict analysis
+1. macro improvements
+2. gameplay feel follow-up
+3. large-profile authoring
 4. runtime efficiency follow-through
 5. documentation depth
 6. host debug preview replacement or removal

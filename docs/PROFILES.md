@@ -266,9 +266,9 @@ Fields:
 - `anchor`
   Normalized internal recenter point for the hidden look touch.
 - `reach`
-  Maximum normalized travel from the anchor before Phantom re-segments the gesture.
-  In practice, Phantom keeps aim tighter than this for stability, so larger
-  values have diminishing returns.
+  Advanced travel envelope for the hidden look touch. Phantom re-segments aim
+  internally before the raw configured value is fully used, so larger values
+  have diminishing returns and should not be treated like a visible region size.
 - `sensitivity`
   Node-local multiplier.
 - `activation_mode`
@@ -290,6 +290,8 @@ Important:
 - aim motion is still emitted immediately from input movement
 - touchpad roughness is reduced in input translation by splitting large absolute
   touchpad jumps into smaller motion steps before they reach the engine
+- touchpad contact start and end now explicitly re-arm aim between swipes, so
+  fast repeated swipe contacts do not inherit stale hidden-touch edge state
 - toggled aim state survives `F1` mouse routing changes
 - `while_held` mouse activation keys are resynced when mouse routing is re-enabled
 - older profiles using `type = "mouse_camera"` and `region` still load; Phantom normalizes them to `aim` semantics internally
@@ -315,6 +317,32 @@ Behavior:
 - key release stops it and releases the slot
 - `interval_ms` must be greater than zero
 - practical repeat timing is bounded by the daemon tick cadence; Phantom now runs that at `4ms`, so values below that may collapse toward the same effective rate depending on scheduler timing
+
+Use `repeat_tap` when you only need a simple repeating interval.
+
+### `wheel`
+
+```json
+{
+  "id": "stance_wheel",
+  "type": "wheel",
+  "up_slot": 8,
+  "up_pos": { "x": 0.84, "y": 0.40 },
+  "down_slot": 9,
+  "down_pos": { "x": 0.84, "y": 0.56 }
+}
+```
+
+Behavior:
+
+- `WheelUp` injects a one-shot tap on `up_slot` at `up_pos`
+- `WheelDown` injects a one-shot tap on `down_slot` at `down_pos`
+- the wheel directions are built in; this node does not bind an arbitrary key
+- `up_slot` and `down_slot` must be different
+
+Use `wheel` when a shooter or menu-heavy game needs scroll-up and scroll-down
+to hit different on-screen targets such as zoom, stance, weapon cycling, or
+context actions.
 
 ### `macro`
 

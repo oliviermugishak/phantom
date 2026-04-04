@@ -7,9 +7,9 @@ use crate::profile::{
     JoystickMode, LayerMode, MacroAction, MouseCameraActivationMode, Node, Profile, Region, RelPos,
 };
 
-const MOUSE_LOOK_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
-const MOUSE_LOOK_SCALE: f64 = 1.0 / 500.0;
-const MOUSE_LOOK_OPERATIONAL_REACH_CAP: f64 = 0.08;
+const AIM_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
+const AIM_SCALE: f64 = 1.0 / 500.0;
+const AIM_OPERATIONAL_REACH_CAP: f64 = 0.08;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TouchCommand {
@@ -56,6 +56,7 @@ enum NodeState {
         last_toggle: Instant,
         finger_down: bool,
     },
+    Wheel,
     Macro {
         running: bool,
         step_index: usize,
@@ -79,9 +80,7 @@ pub struct KeymapEngine {
 
 impl KeymapEngine {
     fn mouse_camera_effective_reach(reach: f64) -> f64 {
-        reach
-            .clamp(0.01, 0.45)
-            .min(MOUSE_LOOK_OPERATIONAL_REACH_CAP)
+        reach.clamp(0.01, 0.45).min(AIM_OPERATIONAL_REACH_CAP)
     }
 
     fn mouse_camera_center(anchor: &RelPos, reach: f64) -> (f64, f64) {
@@ -325,6 +324,7 @@ impl KeymapEngine {
                 last_toggle: Instant::now(),
                 finger_down: false,
             },
+            Node::Wheel { .. } => NodeState::Wheel,
             Node::Macro { .. } => NodeState::Macro {
                 running: false,
                 step_index: 0,
@@ -389,6 +389,10 @@ impl KeymapEngine {
             InputEvent::KeyPress(key) => self.handle_key_press(*key),
             InputEvent::KeyRelease(key) => self.handle_key_release(*key),
             InputEvent::MouseMove { dx, dy, .. } => self.handle_mouse_move(*dx, *dy),
+            InputEvent::PointerContactStart { source } => {
+                self.handle_pointer_contact_start(*source)
+            }
+            InputEvent::PointerContactEnd { source } => self.handle_pointer_contact_end(*source),
         };
         if !cmds.is_empty() || trace_detail_enabled() {
             tracing::trace!(
@@ -432,7 +436,7 @@ impl KeymapEngine {
                 {
                     if *enabled
                         && *finger_active
-                        && now.duration_since(*last_motion) >= MOUSE_LOOK_IDLE_TIMEOUT
+                        && now.duration_since(*last_motion) >= AIM_IDLE_TIMEOUT
                     {
                         cmds.push(TouchCommand::TouchUp { slot: *slot });
                         self.states[idx] = Self::mouse_camera_state(anchor, *reach, *enabled);
@@ -838,6 +842,25 @@ impl KeymapEngine {
                     }
                 }
             }
+            Node::Wheel {
+                up_slot,
+                up_pos,
+                down_slot,
+                down_pos,
+                ..
+            } => {
+                let (slot, pos) = match key {
+                    Key::WheelUp => (*up_slot, *up_pos),
+                    Key::WheelDown => (*down_slot, *down_pos),
+                    _ => return cmds,
+                };
+                cmds.push(TouchCommand::TouchDown {
+                    slot,
+                    x: pos.x,
+                    y: pos.y,
+                });
+                cmds.push(TouchCommand::TouchUp { slot });
+            }
             Node::Drag { slot, start, .. } => {
                 if let NodeState::Drag { running, .. } = &self.states[idx] {
                     if !*running {
@@ -999,6 +1022,7 @@ impl KeymapEngine {
                     };
                 }
             }
+            Node::Wheel { .. } => {}
             Node::Drag { .. } => {}
             Node::Macro { .. } => {
                 if let NodeState::Macro { running, .. } = &self.states[idx] {
@@ -1121,7 +1145,7 @@ impl KeymapEngine {
                             anchor,
                             *reach,
                             (*finger_active, *current_x, *current_y),
-                            (delta_x * MOUSE_LOOK_SCALE, delta_y * MOUSE_LOOK_SCALE),
+                            (delta_x * AIM_SCALE, delta_y * AIM_SCALE),
                         );
 
                     cmds.append(&mut move_cmds);
@@ -1135,6 +1159,68 @@ impl KeymapEngine {
                 }
             }
         }
+        cmds
+    }
+
+    fn handle_pointer_contact_start(
+        &mut self,
+        source: crate::input::MouseMotionSource,
+    ) -> Vec<TouchCommand> {
+        if !matches!(source, crate::input::MouseMotionSource::Absolute) {
+            return Vec::new();
+        }
+        self.reset_absolute_aim_contacts()
+    }
+
+    fn handle_pointer_contact_end(
+        &mut self,
+        source: crate::input::MouseMotionSource,
+    ) -> Vec<TouchCommand> {
+        if !matches!(source, crate::input::MouseMotionSource::Absolute) {
+            return Vec::new();
+        }
+        self.reset_absolute_aim_contacts()
+    }
+
+    fn reset_absolute_aim_contacts(&mut self) -> Vec<TouchCommand> {
+        let mut cmds = Vec::new();
+
+        for idx in 0..self.profile.nodes.len() {
+            let node = &self.profile.nodes[idx];
+            if !self.is_node_active(node) {
+                continue;
+            }
+
+            let Node::MouseCamera {
+                slot,
+                anchor,
+                reach,
+                ..
+            } = node
+            else {
+                continue;
+            };
+
+            let NodeState::MouseCamera {
+                enabled,
+                finger_active,
+                ..
+            } = &self.states[idx]
+            else {
+                continue;
+            };
+
+            if !*enabled {
+                continue;
+            }
+
+            if *finger_active {
+                cmds.push(TouchCommand::TouchUp { slot: *slot });
+            }
+
+            self.states[idx] = Self::mouse_camera_state(anchor, *reach, *enabled);
+        }
+
         cmds
     }
 
@@ -1355,6 +1441,7 @@ impl KeymapEngine {
                     finger_down: false,
                 };
             }
+            NodeState::Wheel => {}
             NodeState::Macro {
                 running: true,
                 active_slots,
@@ -1937,7 +2024,7 @@ mod tests {
             TouchCommand::TouchMove { x, .. } => *x,
             other => panic!("expected move, got {other:?}"),
         };
-        std::thread::sleep(MOUSE_LOOK_IDLE_TIMEOUT + Duration::from_millis(10));
+        std::thread::sleep(AIM_IDLE_TIMEOUT + Duration::from_millis(10));
         let cmds = engine.tick();
         assert!(matches!(
             cmds.as_slice(),

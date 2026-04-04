@@ -293,6 +293,9 @@ Runtime note:
 - absolute-touchpad translation now suppresses fresh-contact reseed jumps before
   the engine sees motion, and keeps tiny single-step motion available for held
   drags and careful cursor work
+- touchpad contact start and end are now explicit engine-visible boundaries for
+  aim, so repeated swipe contacts can lift and re-arm the hidden look touch
+  cleanly instead of inheriting stale edge position
 - the engine also keeps aim travel tighter around its anchor than the raw
   profile reach alone would suggest, so the hidden touch is less likely to roam
   into nearby controls
