@@ -1,6 +1,6 @@
 # Roadmad
 
-This file is the detailed architecture backlog for Phantom after `0.7.0`.
+This file is the detailed architecture backlog for Phantom after `0.8.0`.
 
 It is intentionally deeper than [ROADMAP.md](ROADMAP.md). The short roadmap
 tracks product direction at a high level. This file records the specific system
@@ -33,6 +33,10 @@ These are not acceptable solutions:
 - exposing user-facing "magic" behavior without status fields, logs, or docs
 
 ## 1. Owned Menu-Touch Mode
+
+Status:
+
+- completed in `0.8.0`
 
 ### Problem
 
@@ -96,13 +100,14 @@ Status/reporting:
 
 ### Implementation Checklist
 
-- [ ] keep physical mouse grab active through capture
-- [ ] add explicit runtime mouse mode state
-- [ ] seed owned menu-touch cursor from host position on menu-touch entry
-- [ ] route menu-touch entirely through Phantom-owned cursor state after that seed
-- [ ] visualize the owned menu-touch cursor through a dedicated runtime overlay
-- [ ] extend CLI/GUI status with `mouse_mode`
-- [ ] document owned menu-touch behavior and limitations
+- [x] keep physical mouse grab active through capture
+- [x] add explicit runtime mouse mode state
+- [x] seed owned menu-touch cursor from host position on menu-touch entry
+- [x] route menu-touch entirely through Phantom-owned cursor state after that seed
+- [x] visualize the owned menu-touch cursor through a dedicated runtime overlay
+- [x] extend CLI/GUI status with `mouse_mode`
+- [x] document owned menu-touch behavior and limitations
+- [x] support touchpad tap-to-click and double-tap-hold drag in owned menu-touch
 
 ### Acceptance Criteria
 
@@ -468,14 +473,13 @@ Primary files:
 
 Recommended order:
 
-1. Owned menu-touch mode
-2. Aim V2 cleanup
-3. Burst / turbo control
-4. Tap-hold primitive
-5. Control conflict analysis
-6. Layer workflow improvements
-7. Wheel controls
-8. Macro improvements
+1. Aim V2 cleanup
+2. Burst / turbo control
+3. Tap-hold primitive
+4. Control conflict analysis
+5. Layer workflow improvements
+6. Wheel controls
+7. Macro improvements
 
 ## 10. Success Criteria
 
