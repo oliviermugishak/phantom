@@ -153,7 +153,7 @@ Default daemon hotkeys:
 - `F1` -> toggle mouse routing
 - `F8` -> toggle capture
 - `F9` -> toggle pause
-- `F10` -> toggle the experimental debug overlay preview
+- `F10` -> toggle the experimental debug control preview
 - `F2` -> shutdown daemon
 
 These are configured in:
@@ -168,7 +168,7 @@ Important keyboard note:
 
 ## Overlay Preview
 
-Press `F10` while the daemon is running to show or hide the experimental debug overlay preview.
+Press `F10` while the daemon is running to show or hide the experimental debug control preview.
 
 What it shows:
 
@@ -179,14 +179,15 @@ What it shows:
 
 Important:
 
-- this is a host-side debug window, not an Android in-surface overlay
+- on Wayland, Phantom now prefers a compositor-native passthrough HUD made of compact marker surfaces positioned over the current game/client frame
+- if that Wayland HUD path is unavailable, Phantom falls back to the older fullscreen preview window
+- it is still a debug surface, not an Android in-surface overlay
 - it is intended for brief previewing and debugging, not for normal gameplay
-- it may not behave consistently across compositors and desktop sessions
 - overlay launcher output is written to `~/.config/phantom/overlay.log`
 
 Current product direction:
 
-- the host-side overlay is experimental and may be removed later
+- the current preview surface is still experimental and may be replaced later
 - the preferred long-term direction is an Android-side in-surface overlay and is tracked in [docs/ROADMAD.md](docs/ROADMAD.md)
 
 ## Tracing And Logging

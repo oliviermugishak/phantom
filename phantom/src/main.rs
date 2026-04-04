@@ -48,7 +48,7 @@ KEYS (while daemon running, configurable in config.toml [runtime_hotkeys]):
     F1   Toggle mouse grab (default)
     F8   Toggle capture mode (default)
     F9   Toggle pause (default)
-    F10  Toggle experimental debug overlay preview (default)
+    F10  Toggle experimental debug control preview (default)
 
 FLAGS:
     --daemon      Run as daemon (requires root)
@@ -567,9 +567,16 @@ async fn handle_runtime_shortcut(
                 let engine = state.engine.read().await;
                 engine.profile_clone()
             };
+            let preview_frame = {
+                let mut mouse_touch = ipc::lock_mouse_touch(state)?;
+                if mouse_touch.overlay_frame().is_none() {
+                    mouse_touch.seed_from_host_cursor();
+                }
+                mouse_touch.overlay_frame()
+            };
             let visible = {
                 let mut overlay = ipc::lock_overlay(state)?;
-                overlay.toggle(&profile)?
+                overlay.toggle(&profile, preview_frame)?
             };
             tracing::info!(
                 "{}",

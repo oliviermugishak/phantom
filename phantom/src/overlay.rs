@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::error::{PhantomError, Result};
+use crate::mouse_touch::HostFrame;
 use crate::profile::Profile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -16,6 +17,32 @@ pub struct CursorOverlayState {
     pub pressed: bool,
     pub screen_x: f32,
     pub screen_y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OverlayFrame {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl From<HostFrame> for OverlayFrame {
+    fn from(value: HostFrame) -> Self {
+        Self {
+            left: value.left as f32,
+            top: value.top as f32,
+            width: value.width as f32,
+            height: value.height as f32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlayPreviewSnapshot {
+    pub profile: Profile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame: Option<OverlayFrame>,
 }
 
 pub struct OverlayPreview {
@@ -46,13 +73,13 @@ impl OverlayPreview {
         }
     }
 
-    pub fn toggle(&mut self, profile: &Profile) -> Result<bool> {
+    pub fn toggle(&mut self, profile: &Profile, frame: Option<OverlayFrame>) -> Result<bool> {
         self.refresh_status();
         if self.child.is_some() {
             self.stop()?;
             Ok(false)
         } else {
-            self.start(profile)?;
+            self.start(profile, frame)?;
             Ok(true)
         }
     }
@@ -71,14 +98,17 @@ impl OverlayPreview {
         self.child.is_some()
     }
 
-    fn start(&mut self, profile: &Profile) -> Result<()> {
+    fn start(&mut self, profile: &Profile, frame: Option<OverlayFrame>) -> Result<()> {
         if let Some(parent) = self.snapshot_path.parent() {
             fs::create_dir_all(parent)?;
         }
         if let Some(parent) = self.log_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let snapshot = serde_json::to_string_pretty(profile)?;
+        let snapshot = serde_json::to_string_pretty(&OverlayPreviewSnapshot {
+            profile: profile.clone(),
+            frame,
+        })?;
         fs::write(&self.snapshot_path, snapshot)?;
 
         let stdout_log = fs::OpenOptions::new()

@@ -5525,7 +5525,7 @@ Fullscreen mapping GUI and runtime control surface for Phantom.
 USAGE:
     {binary}
     {binary} --cursor-overlay <state.json>
-    {binary} --overlay <profile.json>
+    {binary} --overlay <overlay.json>
     {binary} version
 
 FLAGS:
@@ -5534,7 +5534,7 @@ FLAGS:
 
 INTERNAL:
     --cursor-overlay <state.json>    Launch the owned menu-touch cursor overlay
-    --overlay <profile.json>    Launch the experimental debug overlay preview"#,
+    --overlay <overlay.json>    Launch the experimental debug control preview"#,
         binary = binary,
         version = env!("CARGO_PKG_VERSION"),
     );

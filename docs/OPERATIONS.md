@@ -132,7 +132,7 @@ Defaults:
 - `F1` -> toggle mouse routing
 - `F8` -> toggle capture
 - `F9` -> toggle pause
-- `F10` -> toggle the experimental debug overlay preview
+- `F10` -> toggle the experimental debug control preview
 - `F2` -> shutdown daemon
 
 Fn row warning:
@@ -142,9 +142,10 @@ Fn row warning:
 
 Overlay notes:
 
-- `F10` shows or hides an experimental host-side debug preview of the current profile
+- `F10` shows or hides an experimental debug preview of the current profile
+- on Wayland, Phantom prefers a compact passthrough HUD built from layer-shell marker surfaces
+- if that path is unavailable, Phantom falls back to the older fullscreen preview window
 - it is not intended for normal gameplay
-- it may behave differently across compositors and sessions
 - overlay launcher output is written to `~/.config/phantom/overlay.log`
 
 ## Tracing Levels

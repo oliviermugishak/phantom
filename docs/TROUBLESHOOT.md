@@ -51,7 +51,9 @@ Symptom:
 
 Important:
 
-- the current `F10` overlay is an experimental host-side debug window
+- the current `F10` preview is experimental
+- on Wayland, Phantom first tries a compact passthrough HUD
+- if that path cannot be used, it falls back to the older fullscreen preview window
 - it is not an Android in-surface overlay
 
 Checks:

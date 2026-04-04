@@ -116,7 +116,7 @@ That is a keyboard behavior issue on many compact keyboards, not usually a Phant
 
 For `F10`, also remember:
 
-- the current overlay is an experimental host-side debug window
+- the current overlay is experimental; on Wayland it should prefer the compact passthrough HUD and only fall back to the older fullscreen preview when needed
 - if it does not appear, inspect `~/.config/phantom/overlay.log`
 - if the log mentions missing `WAYLAND_DISPLAY` or `DISPLAY`, the overlay child was launched without a usable desktop session environment
 

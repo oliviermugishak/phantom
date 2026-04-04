@@ -130,6 +130,10 @@ impl MouseTouchEmulator {
         }
     }
 
+    pub fn overlay_frame(&self) -> Option<crate::overlay::OverlayFrame> {
+        self.host_frame.map(Into::into)
+    }
+
     pub fn suspend(&mut self) -> Vec<TouchCommand> {
         if self.finger_down {
             self.finger_down = false;
