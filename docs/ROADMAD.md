@@ -1,6 +1,6 @@
 # Roadmad
 
-This file is the detailed architecture backlog for Phantom after `0.8.1`.
+This file is the detailed architecture backlog for Phantom after `0.8.2`.
 
 This file records the specific system decisions, module boundaries, and
 implementation checklists for the highest-value next work.

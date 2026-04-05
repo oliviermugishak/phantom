@@ -1492,10 +1492,15 @@ fn joystick_origin(
 ) -> (f64, f64) {
     match mode {
         JoystickMode::Fixed => (pos.x, pos.y),
-        JoystickMode::Floating => {
-            let region = region.expect("floating joystick requires region");
-            floating_joystick_origin(region, radius, dir_x, dir_y)
-        }
+        JoystickMode::Floating => match region {
+            Some(region) => floating_joystick_origin(region, radius, dir_x, dir_y),
+            None => {
+                tracing::warn!(
+                    "floating joystick missing region at runtime; falling back to fixed origin"
+                );
+                (pos.x, pos.y)
+            }
+        },
     }
 }
 

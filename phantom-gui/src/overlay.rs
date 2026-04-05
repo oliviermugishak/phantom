@@ -31,11 +31,9 @@ const OVERLAY_BG: Color32 = Color32::from_rgb(11, 13, 18);
 const MARKER_RADIUS: f32 = 14.0;
 const SMALL_MARKER_RADIUS: f32 = 9.0;
 const TEXT_SHADOW: Color32 = Color32::from_black_alpha(190);
-const GUIDE_LENGTH: f32 = 14.0;
 const HEADER_TEXT: &str = "Experimental debug preview — not gameplay-safe";
 
 const MARKER_SIZE: u32 = 64;
-const GUIDE_SIZE: u32 = 22;
 const JOYSTICK_PADDING: f32 = 34.0;
 
 #[derive(Clone, Copy)]
@@ -80,26 +78,19 @@ struct FixedJoystickSpec {
     color: Rgba,
 }
 
-#[derive(Clone, Copy)]
-enum GuideCorner {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
 #[derive(Clone)]
-struct CornerGuideSpec {
+struct FloatingJoystickSpec {
     rect: PixelRect,
+    radius: f32,
     color: Rgba,
-    corner: GuideCorner,
+    label: String,
 }
 
 #[derive(Clone)]
 enum PreviewSpec {
     Marker(MarkerSpec),
     FixedJoystick(FixedJoystickSpec),
-    CornerGuide(CornerGuideSpec),
+    FloatingJoystick(FloatingJoystickSpec),
 }
 
 impl PreviewSpec {
@@ -107,7 +98,7 @@ impl PreviewSpec {
         match self {
             Self::Marker(spec) => spec.rect,
             Self::FixedJoystick(spec) => spec.rect,
-            Self::CornerGuide(spec) => spec.rect,
+            Self::FloatingJoystick(spec) => spec.rect,
         }
     }
 }
@@ -325,9 +316,10 @@ impl PreviewLayerApp {
             .layer
             .wl_surface()
             .damage_buffer(0, 0, surface.width as i32, surface.height as i32);
-        buffer
-            .attach_to(surface.layer.wl_surface())
-            .expect("preview overlay buffer attach");
+        if let Err(err) = buffer.attach_to(surface.layer.wl_surface()) {
+            tracing::warn!("preview overlay buffer attach failed: {}", err);
+            return;
+        }
         surface.layer.commit();
     }
 }
@@ -515,7 +507,7 @@ fn build_preview_specs(profile: &Profile, frame: OverlayFrame) -> Vec<PreviewSpe
                 ..
             } => {
                 let zone = frame_region(frame, region);
-                specs.extend(floating_joystick_specs(zone));
+                specs.push(PreviewSpec::FloatingJoystick(floating_joystick_spec(zone)));
             }
             Node::Drag { .. } => {}
             Node::MouseCamera {
@@ -592,67 +584,19 @@ fn fixed_joystick_spec(
     }
 }
 
-fn floating_joystick_specs(zone: PixelRect) -> Vec<PreviewSpec> {
+fn floating_joystick_spec(zone: PixelRect) -> FloatingJoystickSpec {
     let color = joystick_color();
-    vec![
-        PreviewSpec::CornerGuide(CornerGuideSpec {
-            rect: PixelRect {
-                left: zone.left - 1,
-                top: zone.top - 1,
-                width: GUIDE_SIZE,
-                height: GUIDE_SIZE,
-            },
-            color,
-            corner: GuideCorner::TopLeft,
-        }),
-        PreviewSpec::CornerGuide(CornerGuideSpec {
-            rect: PixelRect {
-                left: zone.left + zone.width as i32 - GUIDE_SIZE as i32 + 1,
-                top: zone.top - 1,
-                width: GUIDE_SIZE,
-                height: GUIDE_SIZE,
-            },
-            color,
-            corner: GuideCorner::TopRight,
-        }),
-        PreviewSpec::CornerGuide(CornerGuideSpec {
-            rect: PixelRect {
-                left: zone.left - 1,
-                top: zone.top + zone.height as i32 - GUIDE_SIZE as i32 + 1,
-                width: GUIDE_SIZE,
-                height: GUIDE_SIZE,
-            },
-            color,
-            corner: GuideCorner::BottomLeft,
-        }),
-        PreviewSpec::CornerGuide(CornerGuideSpec {
-            rect: PixelRect {
-                left: zone.left + zone.width as i32 - GUIDE_SIZE as i32 + 1,
-                top: zone.top + zone.height as i32 - GUIDE_SIZE as i32 + 1,
-                width: GUIDE_SIZE,
-                height: GUIDE_SIZE,
-            },
-            color,
-            corner: GuideCorner::BottomRight,
-        }),
-        PreviewSpec::Marker(MarkerSpec {
-            rect: PixelRect {
-                left: zone.left + zone.width as i32 / 2 - MARKER_SIZE as i32 / 2,
-                top: zone.top + zone.height as i32 / 2 - MARKER_SIZE as i32 / 2,
-                width: MARKER_SIZE,
-                height: MARKER_SIZE,
-            },
-            radius: 15.0,
-            stroke: color,
-            fill: Rgba {
-                r: color.r,
-                g: color.g,
-                b: color.b,
-                a: 14,
-            },
-            label: "Move".into(),
-        }),
-    ]
+    FloatingJoystickSpec {
+        rect: PixelRect {
+            left: zone.left + zone.width as i32 / 2 - 38,
+            top: zone.top + zone.height as i32 / 2 - 38,
+            width: 76,
+            height: 76,
+        },
+        radius: 17.0,
+        color,
+        label: "Move".into(),
+    }
 }
 
 fn frame_point(frame: OverlayFrame, pos: &RelPos) -> (f32, f32) {
@@ -712,7 +656,9 @@ fn draw_preview_spec(canvas: &mut [u8], width: u32, height: u32, spec: &PreviewS
     match spec {
         PreviewSpec::Marker(spec) => draw_marker(canvas, width, height, spec),
         PreviewSpec::FixedJoystick(spec) => draw_fixed_joystick(canvas, width, height, spec),
-        PreviewSpec::CornerGuide(spec) => draw_bitmap_corner_guide(canvas, width, height, spec),
+        PreviewSpec::FloatingJoystick(spec) => {
+            draw_floating_joystick_bitmap(canvas, width, height, spec)
+        }
     }
 }
 
@@ -737,6 +683,19 @@ fn draw_marker(canvas: &mut [u8], width: u32, height: u32, spec: &MarkerSpec) {
             a: 44,
         },
     );
+    draw_circle_fill(
+        canvas,
+        width,
+        height,
+        center,
+        spec.radius + 1.8,
+        Rgba {
+            r: spec.stroke.r,
+            g: spec.stroke.g,
+            b: spec.stroke.b,
+            a: 10,
+        },
+    );
     draw_circle_fill(canvas, width, height, center, spec.radius - 1.6, spec.fill);
     draw_circle_stroke(canvas, width, height, center, spec.radius, 1.8, spec.stroke);
     draw_text_centered(
@@ -756,29 +715,7 @@ fn draw_marker(canvas: &mut [u8], width: u32, height: u32, spec: &MarkerSpec) {
 
 fn draw_fixed_joystick(canvas: &mut [u8], width: u32, height: u32, spec: &FixedJoystickSpec) {
     let center = (width as f32 * 0.5, height as f32 * 0.5);
-    draw_circle_fill(
-        canvas,
-        width,
-        height,
-        (center.0 + 1.6, center.1 + 2.2),
-        spec.radius + 1.8,
-        Rgba {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: 26,
-        },
-    );
-    draw_circle_stroke(canvas, width, height, center, spec.radius, 1.8, spec.color);
-    draw_circle_stroke(
-        canvas,
-        width,
-        height,
-        center,
-        (spec.radius * 0.22).max(10.0),
-        1.4,
-        dim_color(spec.color, 0.82),
-    );
+    draw_joystick_pad(canvas, width, height, center, spec.radius, spec.color);
 
     let label_radius = spec.radius + 18.0;
     draw_small_bubble(
@@ -812,6 +749,88 @@ fn draw_fixed_joystick(canvas: &mut [u8], width: u32, height: u32, spec: &FixedJ
         (center.0, center.1 + label_radius),
         &spec.keys[3],
         spec.color,
+    );
+}
+
+fn draw_floating_joystick_bitmap(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    spec: &FloatingJoystickSpec,
+) {
+    let center = (width as f32 * 0.5, height as f32 * 0.5 - 6.0);
+    draw_joystick_pad(canvas, width, height, center, spec.radius, spec.color);
+    draw_text_centered(
+        canvas,
+        width,
+        height,
+        (center.0, center.1 + spec.radius + 13.0),
+        &spec.label,
+        Rgba {
+            r: 240,
+            g: 243,
+            b: 246,
+            a: 228,
+        },
+    );
+}
+
+fn draw_joystick_pad(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    center: (f32, f32),
+    radius: f32,
+    color: Rgba,
+) {
+    draw_circle_fill(
+        canvas,
+        width,
+        height,
+        (center.0 + 1.6, center.1 + 2.2),
+        radius + 1.8,
+        Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 26,
+        },
+    );
+    draw_circle_fill(
+        canvas,
+        width,
+        height,
+        center,
+        radius - 1.6,
+        Rgba {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+            a: 12,
+        },
+    );
+    draw_circle_stroke(canvas, width, height, center, radius, 1.8, color);
+    draw_circle_fill(
+        canvas,
+        width,
+        height,
+        center,
+        (radius * 0.16).max(4.5),
+        Rgba {
+            r: 241,
+            g: 244,
+            b: 246,
+            a: 112,
+        },
+    );
+    draw_circle_stroke(
+        canvas,
+        width,
+        height,
+        center,
+        (radius * 0.18).max(5.4),
+        1.1,
+        dim_color(color, 0.78),
     );
 }
 
@@ -863,92 +882,6 @@ fn draw_small_bubble(
             a: 255,
         },
     );
-}
-
-fn draw_bitmap_corner_guide(canvas: &mut [u8], width: u32, height: u32, spec: &CornerGuideSpec) {
-    let stroke = spec.color;
-    match spec.corner {
-        GuideCorner::TopLeft => {
-            draw_line(
-                canvas,
-                width,
-                height,
-                (1.0, 1.0),
-                (GUIDE_SIZE as f32 - 2.0, 1.0),
-                1.8,
-                stroke,
-            );
-            draw_line(
-                canvas,
-                width,
-                height,
-                (1.0, 1.0),
-                (1.0, GUIDE_SIZE as f32 - 2.0),
-                1.8,
-                stroke,
-            );
-        }
-        GuideCorner::TopRight => {
-            draw_line(
-                canvas,
-                width,
-                height,
-                (width as f32 - 2.0, 1.0),
-                (2.0, 1.0),
-                1.8,
-                stroke,
-            );
-            draw_line(
-                canvas,
-                width,
-                height,
-                (width as f32 - 2.0, 1.0),
-                (width as f32 - 2.0, GUIDE_SIZE as f32 - 2.0),
-                1.8,
-                stroke,
-            );
-        }
-        GuideCorner::BottomLeft => {
-            draw_line(
-                canvas,
-                width,
-                height,
-                (1.0, height as f32 - 2.0),
-                (GUIDE_SIZE as f32 - 2.0, height as f32 - 2.0),
-                1.8,
-                stroke,
-            );
-            draw_line(
-                canvas,
-                width,
-                height,
-                (1.0, height as f32 - 2.0),
-                (1.0, 2.0),
-                1.8,
-                stroke,
-            );
-        }
-        GuideCorner::BottomRight => {
-            draw_line(
-                canvas,
-                width,
-                height,
-                (width as f32 - 2.0, height as f32 - 2.0),
-                (2.0, height as f32 - 2.0),
-                1.8,
-                stroke,
-            );
-            draw_line(
-                canvas,
-                width,
-                height,
-                (width as f32 - 2.0, height as f32 - 2.0),
-                (width as f32 - 2.0, 2.0),
-                1.8,
-                stroke,
-            );
-        }
-    }
 }
 
 fn draw_circle_fill(
@@ -1003,36 +936,6 @@ fn draw_circle_stroke(
                 let outer_cov = outer - distance;
                 let inner_cov = distance - inner;
                 outer_cov.min(inner_cov)
-            });
-            if coverage > 0.0 {
-                blend_pixel(canvas, width, x, y, multiply_alpha(color, coverage));
-            }
-        }
-    }
-}
-
-fn draw_line(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
-    start: (f32, f32),
-    end: (f32, f32),
-    thickness: f32,
-    color: Rgba,
-) {
-    let min_x = (start.0.min(end.0) - thickness - 2.0).floor().max(0.0) as u32;
-    let max_x = (start.0.max(end.0) + thickness + 2.0)
-        .ceil()
-        .min(width as f32) as u32;
-    let min_y = (start.1.min(end.1) - thickness - 2.0).floor().max(0.0) as u32;
-    let max_y = (start.1.max(end.1) + thickness + 2.0)
-        .ceil()
-        .min(height as f32) as u32;
-
-    for y in min_y..max_y {
-        for x in min_x..max_x {
-            let coverage = sample_distance_coverage((x as f32, y as f32), |sx, sy| {
-                thickness * 0.5 - distance_to_segment((sx, sy), start, end)
             });
             if coverage > 0.0 {
                 blend_pixel(canvas, width, x, y, multiply_alpha(color, coverage));
@@ -1282,18 +1185,6 @@ fn multiply_alpha(color: Rgba, factor: f32) -> Rgba {
     }
 }
 
-fn distance_to_segment(point: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
-    let ab = (b.0 - a.0, b.1 - a.1);
-    let ap = (point.0 - a.0, point.1 - a.1);
-    let len_sq = ab.0 * ab.0 + ab.1 * ab.1;
-    if len_sq <= f32::EPSILON {
-        return ((point.0 - a.0).powi(2) + (point.1 - a.1).powi(2)).sqrt();
-    }
-    let t = ((ap.0 * ab.0 + ap.1 * ab.1) / len_sq).clamp(0.0, 1.0);
-    let closest = (a.0 + ab.0 * t, a.1 + ab.1 * t);
-    ((point.0 - closest.0).powi(2) + (point.1 - closest.1).powi(2)).sqrt()
-}
-
 fn marker_color(node: &Node) -> Rgba {
     match node {
         Node::Tap { .. } => rgba(66, 133, 244, 230),
@@ -1341,12 +1232,12 @@ fn display_label(label: &str) -> String {
         "MouseLeft" => "LMB".into(),
         "MouseRight" => "RMB".into(),
         "MouseMiddle" => "MMB".into(),
-        "LeftShift" => "Shift".into(),
-        "RightShift" => "Shift".into(),
-        "LeftCtrl" => "Ctrl".into(),
-        "RightCtrl" => "Ctrl".into(),
-        "LeftAlt" => "Alt".into(),
-        "RightAlt" => "Alt".into(),
+        "LeftShift" => "LShift".into(),
+        "RightShift" => "RShift".into(),
+        "LeftCtrl" => "LCtrl".into(),
+        "RightCtrl" => "RCtrl".into(),
+        "LeftAlt" => "LAlt".into(),
+        "RightAlt" => "RAlt".into(),
         "PageUp" => "PgUp".into(),
         "PageDown" => "PgDn".into(),
         other if other.chars().count() <= 6 => other.into(),
@@ -1479,12 +1370,7 @@ fn draw_fixed_joystick_legacy(
 ) {
     let center = to_canvas_pos(rect, pos);
     let radius_px = rect.width().min(rect.height()) * radius as f32;
-    painter.circle_stroke(center, radius_px, Stroke::new(2.0, joystick_stroke()));
-    painter.circle_stroke(
-        center,
-        (radius_px * 0.22).max(10.0),
-        Stroke::new(1.5, joystick_stroke().gamma_multiply(0.8)),
-    );
+    draw_joystick_pad_legacy(painter, center, radius_px, joystick_stroke());
     if let Node::Joystick { keys, .. } = node {
         let label_radius = radius_px + 22.0;
         draw_ring_marker(
@@ -1520,13 +1406,14 @@ fn draw_fixed_joystick_legacy(
 
 fn draw_floating_joystick(painter: &egui::Painter, rect: Rect, node: &Node, region: &Region) {
     let zone = region_rect(rect, region);
-    draw_corner_guides(painter, zone, joystick_stroke());
-    draw_ring_marker(
-        painter,
-        zone.center(),
-        SMALL_MARKER_RADIUS,
-        Stroke::new(1.5, joystick_stroke()),
+    let center = zone.center();
+    draw_joystick_pad_legacy(painter, center, 16.0, joystick_stroke());
+    painter.text(
+        center + Vec2::new(0.0, 22.0),
+        Align2::CENTER_TOP,
         compact_label(node),
+        egui::FontId::proportional(11.0),
+        Color32::from_rgba_unmultiplied(240, 243, 246, 220),
     );
 }
 
@@ -1582,6 +1469,11 @@ fn draw_ring_marker(
     stroke: Stroke,
     text: impl AsRef<str>,
 ) {
+    painter.circle_filled(
+        center + Vec2::new(1.2, 1.8),
+        radius + 0.8,
+        Color32::from_black_alpha(42),
+    );
     painter.circle_stroke(center, radius, stroke);
     painter.circle_filled(center, radius - 2.0, marker_fill(stroke.color));
     draw_centered_text(painter, center, text.as_ref(), Color32::WHITE);
@@ -1621,47 +1513,28 @@ fn draw_centered_text(painter: &egui::Painter, center: Pos2, text: &str, color: 
     painter.text(center, Align2::CENTER_CENTER, text, font, color);
 }
 
-fn draw_corner_guides(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let stroke = Stroke::new(2.0, color);
-    draw_corner_guide(
-        painter,
-        rect.left_top(),
-        Vec2::new(GUIDE_LENGTH, 0.0),
-        Vec2::new(0.0, GUIDE_LENGTH),
-        stroke,
+fn draw_joystick_pad_legacy(painter: &egui::Painter, center: Pos2, radius: f32, color: Color32) {
+    painter.circle_filled(
+        center + Vec2::new(1.4, 2.0),
+        radius + 1.0,
+        Color32::from_black_alpha(34),
     );
-    draw_corner_guide(
-        painter,
-        rect.right_top(),
-        Vec2::new(-GUIDE_LENGTH, 0.0),
-        Vec2::new(0.0, GUIDE_LENGTH),
-        stroke,
+    painter.circle_filled(
+        center,
+        radius - 1.8,
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 16),
     );
-    draw_corner_guide(
-        painter,
-        rect.left_bottom(),
-        Vec2::new(GUIDE_LENGTH, 0.0),
-        Vec2::new(0.0, -GUIDE_LENGTH),
-        stroke,
+    painter.circle_stroke(center, radius, Stroke::new(2.0, color));
+    painter.circle_filled(
+        center,
+        (radius * 0.16).max(4.5),
+        Color32::from_rgba_unmultiplied(241, 244, 246, 120),
     );
-    draw_corner_guide(
-        painter,
-        rect.right_bottom(),
-        Vec2::new(-GUIDE_LENGTH, 0.0),
-        Vec2::new(0.0, -GUIDE_LENGTH),
-        stroke,
+    painter.circle_stroke(
+        center,
+        (radius * 0.18).max(5.4),
+        Stroke::new(1.1, color.gamma_multiply(0.78)),
     );
-}
-
-fn draw_corner_guide(
-    painter: &egui::Painter,
-    corner: Pos2,
-    horizontal: Vec2,
-    vertical: Vec2,
-    stroke: Stroke,
-) {
-    painter.line_segment([corner, corner + horizontal], stroke);
-    painter.line_segment([corner, corner + vertical], stroke);
 }
 
 fn compact_label(node: &Node) -> String {

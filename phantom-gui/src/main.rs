@@ -4391,38 +4391,13 @@ fn draw_node(
     };
     if let Some(region) = node_region(node) {
         let rect = region_rect(content, region);
-        draw_dashed_rect(
-            painter,
-            rect,
-            Stroke::new(
-                if selected || hovered_region { 3.0 } else { 2.0 },
-                if selected || hovered_region || layer_active {
-                    accent
-                } else {
-                    color.gamma_multiply(0.85)
-                },
-            ),
-        );
         if let Node::Joystick { radius, .. } = node {
             let center = to_canvas_pos(content, &region_center(region));
             let radius_px = (*radius as f32 * content.width()).max(16.0);
-            painter.circle_stroke(
-                center,
-                radius_px,
-                Stroke::new(2.0, color.gamma_multiply(0.65)),
-            );
-            let marker_radius = if selected { 16.0 } else { 12.0 };
-            painter.circle_filled(center, marker_radius, color);
-            if selected || layer_active {
-                painter.circle_stroke(center, marker_radius + 3.0, Stroke::new(2.0, accent));
+            if selected || hovered_region {
+                draw_dashed_rect(painter, rect, Stroke::new(2.5, accent.gamma_multiply(0.92)));
             }
-            painter.text(
-                center,
-                Align2::CENTER_CENTER,
-                marker_glyph(node),
-                egui::FontId::proportional(12.0),
-                Color32::BLACK,
-            );
+            draw_canvas_joystick(painter, center, radius_px, color, selected, layer_active);
             if show_labels {
                 draw_joystick_compass_labels(
                     painter,
@@ -4447,7 +4422,7 @@ fn draw_node(
                 );
             }
         }
-        if show_labels {
+        if show_labels && (selected || hovered_region || layer_active) {
             draw_region_badge(
                 painter,
                 rect,
@@ -4474,37 +4449,27 @@ fn draw_node(
 
     if let Node::Joystick { radius, .. } = node {
         let radius_px = (*radius as f32 * content.width()).max(16.0);
-        painter.circle_stroke(
-            point,
-            radius_px,
-            Stroke::new(2.0, color.gamma_multiply(0.65)),
-        );
+        draw_canvas_joystick(painter, point, radius_px, color, selected, layer_active);
         if show_labels {
             draw_joystick_compass_labels(painter, point, radius_px, node, accent, layer_active);
         }
+        return;
     }
 
     let marker_radius = if selected { 16.0 } else { 12.0 };
-    painter.circle_filled(point, marker_radius, color);
-    if selected || layer_active {
-        painter.circle_stroke(point, marker_radius + 3.0, Stroke::new(2.0, accent));
-    }
-    painter.text(
+    draw_canvas_marker(
+        painter,
         point,
-        Align2::CENTER_CENTER,
-        marker_glyph(node),
-        egui::FontId::proportional(12.0),
-        Color32::BLACK,
+        marker_radius,
+        color,
+        node_marker_label(node),
+        selected,
+        if selected || layer_active {
+            Some(accent)
+        } else {
+            None
+        },
     );
-    if show_labels && !matches!(node, Node::Joystick { .. }) {
-        painter.text(
-            point + Vec2::new(0.0, marker_radius + 6.0),
-            Align2::CENTER_TOP,
-            display_binding(node),
-            egui::FontId::proportional(11.0),
-            if layer_active { accent } else { Color32::WHITE },
-        );
-    }
 }
 
 fn display_type(node: &Node) -> &'static str {
@@ -4621,6 +4586,12 @@ fn draw_control_card(
                         action = Some(ControlListAction::Select(idx));
                     }
 
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        draw_kind_chip(ui, kind, color);
+                        ui.label(RichText::new(metadata.as_str()).small().color(accent));
+                    });
+
                     if selected {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
@@ -4644,8 +4615,6 @@ fn draw_control_card(
                         });
                     }
 
-                    ui.label(RichText::new(kind).small().color(Color32::from_gray(205)));
-                    ui.label(RichText::new(metadata).small().color(accent));
                     if !node.id().is_empty() {
                         ui.label(RichText::new(node.id()).small().italics().weak());
                     }
@@ -4661,6 +4630,25 @@ fn action_button<'a>(ui: &'a mut egui::Ui, text: &'a str, tooltip: &'a str) -> e
         egui::Button::new(RichText::new(text).small()),
     )
     .on_hover_text(tooltip)
+}
+
+fn draw_kind_chip(ui: &mut egui::Ui, label: &str, color: Color32) {
+    let text = RichText::new(label)
+        .small()
+        .color(color.gamma_multiply(1.04));
+    egui::Frame::NONE
+        .fill(Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            18,
+        ))
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.82)))
+        .corner_radius(999.0)
+        .inner_margin(Vec2::new(8.0, 3.0))
+        .show(ui, |ui| {
+            ui.label(text);
+        });
 }
 
 fn node_color(node: &Node) -> Color32 {
@@ -4711,17 +4699,29 @@ fn sync_node_pos_from_region(node: &mut Node) {
     }
 }
 
-fn marker_glyph(node: &Node) -> &'static str {
+fn node_marker_label(node: &Node) -> String {
     match node {
-        Node::Tap { .. } => "T",
-        Node::ToggleTap { .. } => "G",
-        Node::Joystick { .. } => "J",
-        Node::Drag { .. } => "D",
-        Node::MouseCamera { .. } => "A",
-        Node::RepeatTap { .. } => "R",
-        Node::Wheel { .. } => "W",
-        Node::Macro { .. } => "C",
-        Node::LayerShift { .. } => "L",
+        Node::Tap { key, .. }
+        | Node::ToggleTap { key, .. }
+        | Node::Drag { key, .. }
+        | Node::RepeatTap { key, .. }
+        | Node::Macro { key, .. }
+        | Node::LayerShift { key, .. } => display_key_label(key),
+        Node::Wheel { .. } => "Wheel".into(),
+        Node::Joystick { .. } => "Move".into(),
+        Node::MouseCamera {
+            activation_mode,
+            activation_key,
+            ..
+        } => match activation_mode {
+            MouseCameraActivationMode::AlwaysOn => "Aim".into(),
+            MouseCameraActivationMode::WhileHeld | MouseCameraActivationMode::Toggle => {
+                activation_key
+                    .as_deref()
+                    .map(display_key_label)
+                    .unwrap_or_else(|| "Aim".into())
+            }
+        },
     }
 }
 
@@ -5255,6 +5255,95 @@ fn draw_region_badge(painter: &egui::Painter, rect: Rect, text: String, color: C
     );
 }
 
+fn draw_canvas_marker(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    color: Color32,
+    label: String,
+    selected: bool,
+    highlight: Option<Color32>,
+) {
+    painter.circle_filled(
+        center + Vec2::new(1.2, 1.8),
+        radius + 0.8,
+        Color32::from_black_alpha(48),
+    );
+    painter.circle_filled(
+        center,
+        radius - 1.8,
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 24),
+    );
+    painter.circle_stroke(center, radius, Stroke::new(1.8, color.gamma_multiply(0.96)));
+    if let Some(accent) = highlight {
+        painter.circle_stroke(
+            center,
+            radius + 3.0,
+            Stroke::new(
+                if selected { 1.8 } else { 1.4 },
+                accent.gamma_multiply(0.94),
+            ),
+        );
+    }
+    let font_size = if label.len() >= 6 {
+        10.0
+    } else if label.len() >= 4 {
+        11.0
+    } else {
+        12.5
+    };
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(font_size),
+        Color32::from_rgb(246, 247, 250),
+    );
+}
+
+fn draw_canvas_joystick(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    color: Color32,
+    selected: bool,
+    layer_active: bool,
+) {
+    painter.circle_filled(
+        center + Vec2::new(1.4, 2.0),
+        radius + 1.2,
+        Color32::from_black_alpha(34),
+    );
+    painter.circle_filled(
+        center,
+        radius - 1.8,
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 14),
+    );
+    painter.circle_stroke(center, radius, Stroke::new(2.0, color.gamma_multiply(0.72)));
+    painter.circle_filled(
+        center,
+        (radius * 0.16).max(4.5),
+        Color32::from_rgba_unmultiplied(240, 244, 247, 116),
+    );
+    painter.circle_stroke(
+        center,
+        (radius * 0.19).max(5.8),
+        Stroke::new(1.1, color.gamma_multiply(0.7)),
+    );
+    if selected || layer_active {
+        let accent = if layer_active {
+            Color32::from_rgb(255, 218, 121)
+        } else {
+            Color32::WHITE
+        };
+        painter.circle_stroke(
+            center,
+            radius + 3.0,
+            Stroke::new(1.4, accent.gamma_multiply(0.92)),
+        );
+    }
+}
+
 fn draw_joystick_compass_labels(
     painter: &egui::Painter,
     center: Pos2,
@@ -5297,11 +5386,11 @@ fn draw_joystick_compass_labels(
 fn draw_key_chip(painter: &egui::Painter, center: Pos2, text: &str, text_color: Color32) {
     let width = (text.len() as f32 * 7.5).clamp(24.0, 68.0);
     let rect = Rect::from_center_size(center, Vec2::new(width, 22.0));
-    painter.rect_filled(rect, 999.0, Color32::from_black_alpha(178));
+    painter.rect_filled(rect, 999.0, Color32::from_black_alpha(156));
     painter.rect_stroke(
         rect,
         999.0,
-        Stroke::new(1.0, text_color.gamma_multiply(0.8)),
+        Stroke::new(1.0, text_color.gamma_multiply(0.72)),
         StrokeKind::Outside,
     );
     painter.text(
@@ -5311,6 +5400,24 @@ fn draw_key_chip(painter: &egui::Painter, center: Pos2, text: &str, text_color: 
         egui::FontId::proportional(11.0),
         text_color,
     );
+}
+
+fn display_key_label(key: &str) -> String {
+    match key {
+        "MouseLeft" => "LMB".into(),
+        "MouseRight" => "RMB".into(),
+        "MouseMiddle" => "MMB".into(),
+        "LeftShift" => "LShift".into(),
+        "RightShift" => "RShift".into(),
+        "LeftCtrl" => "LCtrl".into(),
+        "RightCtrl" => "RCtrl".into(),
+        "LeftAlt" => "LAlt".into(),
+        "RightAlt" => "RAlt".into(),
+        "PageUp" => "PgUp".into(),
+        "PageDown" => "PgDn".into(),
+        other if other.chars().count() <= 6 => other.into(),
+        other => other.chars().take(6).collect(),
+    }
 }
 
 fn clamp_region(mut region: Region) -> Region {

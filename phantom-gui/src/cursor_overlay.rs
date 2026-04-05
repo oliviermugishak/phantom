@@ -228,9 +228,10 @@ impl CursorLayerApp {
             .layer
             .wl_surface()
             .frame(qh, overlay.layer.wl_surface().clone());
-        buffer
-            .attach_to(overlay.layer.wl_surface())
-            .expect("cursor overlay buffer attach");
+        if let Err(err) = buffer.attach_to(overlay.layer.wl_surface()) {
+            tracing::warn!("cursor overlay buffer attach failed: {}", err);
+            return;
+        }
         overlay.layer.commit();
     }
 
