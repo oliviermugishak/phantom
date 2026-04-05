@@ -79,6 +79,9 @@ pixel_x = rel_x * screen_width
 pixel_y = rel_y * screen_height
 ```
 
+Phantom rounds normalized coordinates to the nearest target pixel at injection
+time instead of always biasing toward the upper-left corner.
+
 ## 5. Slot Rules
 
 Touch-bearing nodes use unique logical touch slots.
@@ -130,6 +133,8 @@ Behavior:
 
 - key press -> `TouchDown`
 - key release -> `TouchUp`
+- very short keyboard taps are kept down for a tiny minimum runtime pulse so
+  Android buttons still register reliably without removing hold behavior
 
 Compatibility:
 
@@ -275,6 +280,9 @@ Important:
 - menu-touch navigation is runtime behavior, not a profile node
 - runtime mouse grab or `F1` alone does not enable camera movement; the loaded profile must contain an `aim` node
 - aim motion is still emitted immediately from input movement
+- real mouse movement keeps per-report relative-event cadence; Phantom combines
+  X/Y from the same evdev report, but does not merge separate reports into
+  larger aim steps
 - touchpad roughness is reduced in input translation by splitting large absolute
   touchpad jumps into smaller motion steps before they reach the engine
 - touchpad contact start and end now explicitly re-arm aim between swipes, so

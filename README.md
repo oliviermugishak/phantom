@@ -242,6 +242,8 @@ Important:
 - actual camera movement only happens if the loaded profile contains an `aim` node
 - when aim is inactive while capture stays on, Phantom stays in owned menu-touch UI navigation
 - touchpads are supported, but a real mouse will usually feel smoother for camera movement
+- real mouse deltas are fed to aim one evdev report at a time, with X/Y from the
+  same report handled together instead of as separate jumps
 - `F1` now preserves toggle-look state and resyncs `while_held` mouse buttons when routing is restored
 - `phantom status` shows whether menu touch is active, which backend seeded the owned cursor, and which runtime mouse mode is active
 

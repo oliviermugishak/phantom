@@ -11,6 +11,7 @@ use crate::profile::{
 const AIM_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
 const AIM_SCALE: f64 = 1.0 / 500.0;
 const AIM_OPERATIONAL_REACH_CAP: f64 = 0.08;
+const STANDARD_TAP_MIN_PULSE: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TouchCommand {
@@ -24,6 +25,8 @@ pub enum TouchCommand {
 enum NodeState {
     Tap {
         active: bool,
+        pressed_at: Option<Instant>,
+        pending_release_at: Option<Instant>,
     },
     ToggleTap {
         active: bool,
@@ -219,6 +222,7 @@ impl KeymapEngine {
                 x: current_x,
                 y: current_y,
             });
+            cmds.push(TouchCommand::Commit);
             finger_active = true;
         }
 
@@ -247,12 +251,17 @@ impl KeymapEngine {
                 break;
             }
 
+            if matches!(cmds.last(), Some(TouchCommand::TouchMove { .. })) {
+                cmds.push(TouchCommand::Commit);
+            }
             cmds.push(TouchCommand::TouchUp { slot });
+            cmds.push(TouchCommand::Commit);
             cmds.push(TouchCommand::TouchDown {
                 slot,
                 x: anchor_x,
                 y: anchor_y,
             });
+            cmds.push(TouchCommand::Commit);
             current_x = anchor_x;
             current_y = anchor_y;
             delta_x = leftover_x;
@@ -289,7 +298,11 @@ impl KeymapEngine {
 
     fn init_state(node: &Node) -> NodeState {
         match node {
-            Node::Tap { .. } => NodeState::Tap { active: false },
+            Node::Tap { .. } => NodeState::Tap {
+                active: false,
+                pressed_at: None,
+                pending_release_at: None,
+            },
             Node::ToggleTap { .. } => NodeState::ToggleTap { active: false },
             Node::Joystick { .. } => NodeState::Joystick {
                 up: false,
@@ -384,7 +397,7 @@ impl KeymapEngine {
         let cmds = match event {
             InputEvent::KeyPress(key) => self.handle_key_press(*key),
             InputEvent::KeyRelease(key) => self.handle_key_release(*key),
-            InputEvent::MouseMove { dx, dy, .. } => self.handle_mouse_move(*dx, *dy),
+            InputEvent::MouseMove { dx, dy, source } => self.handle_mouse_move(*dx, *dy, *source),
             InputEvent::PointerContactStart { source } => {
                 self.handle_pointer_contact_start(*source)
             }
@@ -414,6 +427,24 @@ impl KeymapEngine {
             let node = &self.profile.nodes[idx];
             if !self.is_node_active(node) {
                 continue;
+            }
+
+            if let Node::Tap { slot, .. } = node {
+                if let NodeState::Tap {
+                    active: true,
+                    pending_release_at: Some(deadline),
+                    ..
+                } = &self.states[idx]
+                {
+                    if now >= *deadline {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                        self.states[idx] = NodeState::Tap {
+                            active: false,
+                            pressed_at: None,
+                            pending_release_at: None,
+                        };
+                    }
+                }
             }
 
             if let Node::MouseCamera {
@@ -656,14 +687,29 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         match node {
             Node::Tap { slot, pos, .. } => {
-                if let NodeState::Tap { active } = &self.states[idx] {
+                if let NodeState::Tap {
+                    active,
+                    pressed_at,
+                    pending_release_at,
+                } = &self.states[idx]
+                {
                     if !*active {
                         cmds.push(TouchCommand::TouchDown {
                             slot: *slot,
                             x: pos.x,
                             y: pos.y,
                         });
-                        self.states[idx] = NodeState::Tap { active: true };
+                        self.states[idx] = NodeState::Tap {
+                            active: true,
+                            pressed_at: Some(Instant::now()),
+                            pending_release_at: None,
+                        };
+                    } else if pending_release_at.is_some() {
+                        self.states[idx] = NodeState::Tap {
+                            active: true,
+                            pressed_at: *pressed_at,
+                            pending_release_at: None,
+                        };
                     }
                 }
             }
@@ -839,10 +885,30 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         match node {
             Node::Tap { slot, .. } => {
-                if let NodeState::Tap { active } = &self.states[idx] {
+                if let NodeState::Tap {
+                    active,
+                    pressed_at,
+                    pending_release_at: _,
+                } = &self.states[idx]
+                {
                     if *active {
-                        cmds.push(TouchCommand::TouchUp { slot: *slot });
-                        self.states[idx] = NodeState::Tap { active: false };
+                        let now = Instant::now();
+                        let pressed_at = pressed_at.unwrap_or(now);
+                        let release_at = pressed_at + STANDARD_TAP_MIN_PULSE;
+                        if now >= release_at {
+                            cmds.push(TouchCommand::TouchUp { slot: *slot });
+                            self.states[idx] = NodeState::Tap {
+                                active: false,
+                                pressed_at: None,
+                                pending_release_at: None,
+                            };
+                        } else {
+                            self.states[idx] = NodeState::Tap {
+                                active: true,
+                                pressed_at: Some(pressed_at),
+                                pending_release_at: Some(release_at),
+                            };
+                        }
                     }
                 }
             }
@@ -1015,7 +1081,12 @@ impl KeymapEngine {
         }
     }
 
-    fn handle_mouse_move(&mut self, dx: i32, dy: i32) -> Vec<TouchCommand> {
+    fn handle_mouse_move(
+        &mut self,
+        dx: i32,
+        dy: i32,
+        source: crate::input::MouseMotionSource,
+    ) -> Vec<TouchCommand> {
         let mut cmds = Vec::new();
         for idx in 0..self.profile.nodes.len() {
             let node = &self.profile.nodes[idx];
@@ -1044,10 +1115,12 @@ impl KeymapEngine {
                         continue;
                     }
 
-                    let delta_x = dx as f64 * sensitivity * self.sensitivity;
+                    let delta_x =
+                        dx as f64 * sensitivity * self.sensitivity * aim_scale_for_source(source);
                     let delta_y = if *invert_y { -(dy as f64) } else { dy as f64 }
                         * sensitivity
-                        * self.sensitivity;
+                        * self.sensitivity
+                        * aim_scale_for_source(source);
 
                     let (mut move_cmds, next_active, next_x, next_y) =
                         Self::move_mouse_camera_segmented(
@@ -1055,7 +1128,7 @@ impl KeymapEngine {
                             anchor,
                             *reach,
                             (*finger_active, *current_x, *current_y),
-                            (delta_x * AIM_SCALE, delta_y * AIM_SCALE),
+                            (delta_x, delta_y),
                         );
 
                     cmds.append(&mut move_cmds);
@@ -1171,7 +1244,7 @@ impl KeymapEngine {
                         continue;
                     }
                     let should_hold = pressed.contains(&bound_key);
-                    if let NodeState::Tap { active } = &self.states[idx] {
+                    if let NodeState::Tap { active, .. } = &self.states[idx] {
                         match (*active, should_hold) {
                             (false, true) => {
                                 cmds.push(TouchCommand::TouchDown {
@@ -1179,11 +1252,19 @@ impl KeymapEngine {
                                     x: pos.x,
                                     y: pos.y,
                                 });
-                                self.states[idx] = NodeState::Tap { active: true };
+                                self.states[idx] = NodeState::Tap {
+                                    active: true,
+                                    pressed_at: Some(Instant::now()),
+                                    pending_release_at: None,
+                                };
                             }
                             (true, false) => {
                                 cmds.push(TouchCommand::TouchUp { slot: *slot });
-                                self.states[idx] = NodeState::Tap { active: false };
+                                self.states[idx] = NodeState::Tap {
+                                    active: false,
+                                    pressed_at: None,
+                                    pending_release_at: None,
+                                };
                             }
                             _ => {}
                         }
@@ -1276,11 +1357,15 @@ impl KeymapEngine {
         let node = &self.profile.nodes[idx];
         let slot = node.slot();
         match &self.states[idx] {
-            NodeState::Tap { active: true } => {
+            NodeState::Tap { active: true, .. } => {
                 if let Some(s) = slot {
                     cmds.push(TouchCommand::TouchUp { slot: s });
                 }
-                self.states[idx] = NodeState::Tap { active: false };
+                self.states[idx] = NodeState::Tap {
+                    active: false,
+                    pressed_at: None,
+                    pending_release_at: None,
+                };
             }
             NodeState::ToggleTap { active: true } => {
                 if let Some(s) = slot {
@@ -1453,6 +1538,13 @@ fn joystick_offset(up: bool, down: bool, left: bool, right: bool, radius: f64) -
     (dir_x * radius, dir_y * radius)
 }
 
+fn aim_scale_for_source(source: crate::input::MouseMotionSource) -> f64 {
+    match source {
+        crate::input::MouseMotionSource::Relative => AIM_SCALE,
+        crate::input::MouseMotionSource::Absolute => AIM_SCALE,
+    }
+}
+
 fn joystick_direction_vector(up: bool, down: bool, left: bool, right: bool) -> (f64, f64) {
     let mut dx = 0.0;
     let mut dy = 0.0;
@@ -1622,6 +1714,9 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 0, .. }));
         let cmds = engine.process(&InputEvent::KeyRelease(Key::Space));
+        assert!(cmds.is_empty());
+        std::thread::sleep(STANDARD_TAP_MIN_PULSE + Duration::from_millis(5));
+        let cmds = engine.tick();
         assert_eq!(cmds.len(), 1);
         assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
     }
@@ -1754,7 +1849,8 @@ mod tests {
             source: MouseMotionSource::Relative,
         });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::Commit));
+        assert!(matches!(&cmds[2], TouchCommand::TouchMove { slot: 1, .. }));
     }
 
     #[test]
@@ -1786,7 +1882,8 @@ mod tests {
             source: MouseMotionSource::Relative,
         });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::Commit));
+        assert!(matches!(&cmds[2], TouchCommand::TouchMove { slot: 1, .. }));
         let cmds = engine.process(&InputEvent::KeyRelease(Key::MouseRight));
         assert!(matches!(
             cmds.as_slice(),
@@ -1823,7 +1920,8 @@ mod tests {
             source: MouseMotionSource::Relative,
         });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::Commit));
+        assert!(matches!(&cmds[2], TouchCommand::TouchMove { slot: 1, .. }));
         assert!(engine
             .process(&InputEvent::KeyRelease(Key::MouseRight))
             .is_empty());
@@ -1873,6 +1971,7 @@ mod tests {
             source: MouseMotionSource::Relative,
         });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::Commit));
     }
 
     #[test]
@@ -1906,7 +2005,7 @@ mod tests {
             dy: 5,
             source: MouseMotionSource::Relative,
         });
-        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds.len(), 3);
 
         pressed.clear();
         let cmds = engine.resync_mouse_buttons(&pressed);
@@ -1931,7 +2030,7 @@ mod tests {
             dy: 0,
             source: MouseMotionSource::Relative,
         });
-        let moved_x = match &cmds[1] {
+        let moved_x = match &cmds[2] {
             TouchCommand::TouchMove { x, .. } => *x,
             other => panic!("expected move, got {other:?}"),
         };
@@ -1951,6 +2050,21 @@ mod tests {
             other => panic!("expected down, got {other:?}"),
         };
         assert!(restart_x < moved_x);
+    }
+
+    #[test]
+    fn tap_quick_repress_cancels_pending_release() {
+        let mut engine = KeymapEngine::new(test_profile());
+        let _ = engine.process(&InputEvent::KeyPress(Key::Space));
+        assert!(engine
+            .process(&InputEvent::KeyRelease(Key::Space))
+            .is_empty());
+        assert!(engine.process(&InputEvent::KeyPress(Key::Space)).is_empty());
+        std::thread::sleep(STANDARD_TAP_MIN_PULSE + Duration::from_millis(5));
+        assert!(engine.tick().is_empty());
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::Space));
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
     }
 
     #[test]
@@ -2056,7 +2170,9 @@ mod tests {
             .is_empty());
         let cmds = engine.process(&InputEvent::KeyPress(Key::E));
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        let cmds = engine.process(&InputEvent::KeyRelease(Key::E));
+        assert!(engine.process(&InputEvent::KeyRelease(Key::E)).is_empty());
+        std::thread::sleep(STANDARD_TAP_MIN_PULSE + Duration::from_millis(5));
+        let cmds = engine.tick();
         assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 1 }));
         let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
         assert!(cmds.is_empty());

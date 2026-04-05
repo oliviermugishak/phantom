@@ -170,6 +170,9 @@ Note:
 - Phantom now suppresses fresh-contact touchpad jumps before motion reaches aim and keeps tiny single-step movement available for held drags and careful cursor movement
 - a real mouse is still the best path for the highest-end fast aim-heavy play, but touchpad behavior should now be less jumpy without adding tick-latency to aim
 - this is intentional: Phantom does not add extra smoothing to the real relative-mouse path, because that would trade aim feel for latency
+- if real-mouse aim feels jumpy, verify you are on the current build; Phantom
+  now handles relative mouse motion one evdev report at a time, with X/Y from
+  the same report kept together instead of being emitted as separate aim jumps
 
 ## Aim Stops After `F1` Mouse Toggle
 

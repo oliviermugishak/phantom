@@ -1,6 +1,7 @@
 use phantom::engine::{KeymapEngine, TouchCommand};
 use phantom::input::{InputEvent, Key, MouseMotionSource};
 use phantom::profile::*;
+use std::time::Duration;
 
 fn pubg_profile() -> Profile {
     Profile {
@@ -115,6 +116,15 @@ fn empty_profile() -> Profile {
         global_sensitivity: 1.0,
         nodes: vec![],
     }
+}
+
+fn release_standard_button(engine: &mut KeymapEngine, key: Key) -> Vec<TouchCommand> {
+    let cmds = engine.process(&InputEvent::KeyRelease(key));
+    if !cmds.is_empty() {
+        return cmds;
+    }
+    std::thread::sleep(Duration::from_millis(25));
+    engine.tick()
 }
 
 fn macro_profile() -> Profile {
@@ -232,11 +242,11 @@ fn full_pubg_move_and_shoot() {
     assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 3, .. }));
 
     // Release everything
-    let cmds = engine.process(&InputEvent::KeyRelease(Key::MouseLeft));
+    let cmds = release_standard_button(&mut engine, Key::MouseLeft);
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 2 }));
 
-    let cmds = engine.process(&InputEvent::KeyRelease(Key::Space));
+    let cmds = release_standard_button(&mut engine, Key::Space);
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 3 }));
 
@@ -313,9 +323,10 @@ fn mouse_camera_tracks_movement() {
         dy: 5,
         source: MouseMotionSource::Relative,
     });
-    assert!(cmds.len() >= 2); // down + move
+    assert!(cmds.len() >= 3); // down + commit + move
     assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-    match (&cmds[0], &cmds[1]) {
+    assert!(matches!(&cmds[1], TouchCommand::Commit));
+    match (&cmds[0], &cmds[2]) {
         (
             TouchCommand::TouchDown {
                 x: down_x,
@@ -672,7 +683,7 @@ fn tap_at_screen_edges() {
         assert_eq!(*x, 0.0);
         assert_eq!(*y, 0.0);
     }
-    let cmds = engine.process(&InputEvent::KeyRelease(Key::A));
+    let cmds = release_standard_button(&mut engine, Key::A);
     assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
 
     let cmds = engine.process(&InputEvent::KeyPress(Key::B));
@@ -680,7 +691,7 @@ fn tap_at_screen_edges() {
         assert_eq!(*x, 1.0);
         assert_eq!(*y, 1.0);
     }
-    let cmds = engine.process(&InputEvent::KeyRelease(Key::B));
+    let cmds = release_standard_button(&mut engine, Key::B);
     assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 1 }));
 }
 
@@ -815,8 +826,8 @@ fn simultaneous_tap_keys_both_register() {
     ));
 
     // Release both: standard button lifecycles complete here.
-    let cmds_a_up = engine.process(&InputEvent::KeyRelease(Key::A));
-    let cmds_b_up = engine.process(&InputEvent::KeyRelease(Key::B));
+    let cmds_a_up = release_standard_button(&mut engine, Key::A);
+    let cmds_b_up = release_standard_button(&mut engine, Key::B);
     assert_eq!(cmds_a_up.len(), 1);
     assert_eq!(cmds_b_up.len(), 1);
     assert!(matches!(&cmds_a_up[0], TouchCommand::TouchUp { slot: 0 }));
@@ -881,7 +892,7 @@ fn simultaneous_tap_and_joystick() {
 
     // Both slots are active simultaneously
     // Release Space, movement continues
-    let cmds_jump_up = engine.process(&InputEvent::KeyRelease(Key::Space));
+    let cmds_jump_up = release_standard_button(&mut engine, Key::Space);
     assert_eq!(cmds_jump_up.len(), 1);
     assert!(matches!(
         &cmds_jump_up[0],

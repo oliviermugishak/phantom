@@ -215,13 +215,7 @@ impl AndroidInjector {
     }
 
     fn scale_coords(&self, x: f64, y: f64) -> (i32, i32) {
-        let px = ((x.clamp(0.0, 1.0)) * (self.screen_width as f64)) as i32;
-        let py = ((y.clamp(0.0, 1.0)) * (self.screen_height as f64)) as i32;
-
-        (
-            px.clamp(0, self.screen_width.saturating_sub(1)),
-            py.clamp(0, self.screen_height.saturating_sub(1)),
-        )
+        scale_coords_to_screen(self.screen_width, self.screen_height, x, y)
     }
 
     fn position_frame(kind: u8, slot: u8, x: i32, y: i32) -> [u8; 10] {
@@ -236,6 +230,15 @@ impl AndroidInjector {
     fn slot_frame(kind: u8, slot: u8) -> [u8; 2] {
         [kind, slot]
     }
+}
+
+fn scale_coords_to_screen(screen_width: i32, screen_height: i32, x: f64, y: f64) -> (i32, i32) {
+    let max_x = screen_width.saturating_sub(1);
+    let max_y = screen_height.saturating_sub(1);
+    let px = (x.clamp(0.0, 1.0) * (max_x as f64)).round() as i32;
+    let py = (y.clamp(0.0, 1.0) * (max_y as f64)).round() as i32;
+
+    (px.clamp(0, max_x), py.clamp(0, max_y))
 }
 
 impl TouchDevice for AndroidInjector {
@@ -301,5 +304,11 @@ mod tests {
             AndroidInjector::slot_frame(CMD_TOUCH_UP, 4),
             [CMD_TOUCH_UP, 4]
         );
+    }
+
+    #[test]
+    fn scale_coords_rounds_to_nearest_pixel() {
+        assert_eq!(scale_coords_to_screen(1920, 1080, 0.5, 0.5), (960, 540));
+        assert_eq!(scale_coords_to_screen(1920, 1080, 0.001, 0.001), (2, 1));
     }
 }

@@ -442,13 +442,7 @@ impl UinputDevice {
     }
 
     fn scale_coords(&self, x: f64, y: f64) -> (i32, i32) {
-        let px = ((x.clamp(0.0, 1.0)) * (self.screen_width as f64)) as i32;
-        let py = ((y.clamp(0.0, 1.0)) * (self.screen_height as f64)) as i32;
-
-        (
-            px.clamp(0, self.screen_width.saturating_sub(1)),
-            py.clamp(0, self.screen_height.saturating_sub(1)),
-        )
+        scale_coords_to_screen(self.screen_width, self.screen_height, x, y)
     }
 
     fn alloc_tracking_id(&mut self) -> i32 {
@@ -555,6 +549,15 @@ fn ioctl_err(op: &str, errno: Errno) -> PhantomError {
         path: "/dev/uinput".into(),
         reason: std::io::Error::from_raw_os_error(errno as i32).to_string(),
     }
+}
+
+fn scale_coords_to_screen(screen_width: i32, screen_height: i32, x: f64, y: f64) -> (i32, i32) {
+    let max_x = screen_width.saturating_sub(1);
+    let max_y = screen_height.saturating_sub(1);
+    let px = (x.clamp(0.0, 1.0) * (max_x as f64)).round() as i32;
+    let py = (y.clamp(0.0, 1.0) * (max_y as f64)).round() as i32;
+
+    (px.clamp(0, max_x), py.clamp(0, max_y))
 }
 
 #[cfg(test)]
@@ -790,5 +793,15 @@ mod tests {
         drop(file);
         let _ = std::fs::remove_file(path);
         events
+    }
+
+    #[test]
+    fn scale_coords_rounds_to_nearest_pixel() {
+        let (_dev, path) = fake_device();
+        let coords = scale_coords_to_screen(1920, 1080, 0.5, 0.5);
+        assert_eq!(coords, (960, 540));
+        let coords = scale_coords_to_screen(1920, 1080, 0.001, 0.001);
+        assert_eq!(coords, (2, 1));
+        let _ = std::fs::remove_file(path);
     }
 }

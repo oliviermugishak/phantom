@@ -292,12 +292,17 @@ Why the enabled state exists:
 Runtime note:
 
 - aim still reacts immediately to mouse/touchpad movement
+- relative mouse motion now keeps per-report cadence through input translation:
+  X/Y deltas from the same evdev report are combined, but separate reports are
+  not merged into larger batches before the engine sees them
 - absolute-touchpad translation now suppresses fresh-contact reseed jumps before
   the engine sees motion, and keeps tiny single-step motion available for held
   drags and careful cursor work
 - touchpad contact start and end are now explicit engine-visible boundaries for
   aim, so repeated swipe contacts can lift and re-arm the hidden look touch
   cleanly instead of inheriting stale edge position
+- when aim has to re-center or start a fresh drag segment, the engine emits
+  explicit transport boundaries so the backend sees a real drag lifecycle
 - the engine also keeps aim travel tighter around its anchor than the raw
   profile reach alone would suggest, so the hidden touch is less likely to roam
   into nearby controls
