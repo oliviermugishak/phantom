@@ -42,6 +42,26 @@ Fix:
 
 - enable Fn Lock so the top row emits real `F1`, `F8`, `F9`, and `F10` function keys
 
+## Capture Toggle Leaves Keys Stuck Or Keyboard Input Feels Broken
+
+Symptoms:
+
+- after `F8` or `phantom enter-capture` / `phantom exit-capture`, some keys appear stuck
+- desktop input feels wrong until you restart the daemon
+- held movement keys do not rebuild cleanly when capture is turned on
+
+Current behavior:
+
+- capture transitions now flush Phantom's desktop keyboard relay before ownership changes
+- entering capture rebuilds currently held keyboard-driven hold controls from the real pressed-key state
+- edge-trigger controls such as `toggle_tap`, `drag`, and `macro` are not replayed automatically on capture entry
+
+If it still feels wrong:
+
+- confirm you are running a current build
+- use `phantom status` to verify `capture` and `mouse mode`
+- if a problem happens right after a dropped-event warning, retest with `PHANTOM_TRACE_DETAIL=1` and inspect whether the affected device is producing repeated `SYN_DROPPED`
+
 ## `F10` Works But No Overlay Appears
 
 Symptom:

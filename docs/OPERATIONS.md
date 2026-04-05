@@ -168,6 +168,8 @@ Runtime note:
 - `F1` switches between gameplay aim and owned menu-touch
 - it no longer destroys toggle-look state
 - `while_held` mouse buttons are resynced when mouse routing is turned back on
+- entering capture also re-establishes currently held keyboard-driven hold controls such as `tap`, `repeat_tap`, `joystick`, and hold-mode `layer_shift`
+- capture transitions release any stale desktop-relay keys before mode ownership changes, so toggling capture should not leave desktop keys logically stuck
 - status output now includes:
   - the active menu-touch backend
   - the current runtime mouse mode

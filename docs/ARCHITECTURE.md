@@ -142,6 +142,7 @@ Important runtime boundary:
 - menu-touch is a runtime-owned mouse mode, not a profile node
 - the owned menu-touch cursor is seeded from host cursor position when capture enters menu-touch
 - after that seed, menu-touch uses Phantom-owned cursor state and does not depend on desktop click delivery
+- capture transitions now also flush the desktop keyboard relay and rebuild hold-style keyboard state from the real currently pressed keys so Phantom does not carry stale key ownership across mode changes
 - a separate lightweight cursor overlay visualizes the owned menu-touch cursor while that mode is active
 - on Wayland compositors, that cursor overlay uses a layer-shell surface with an empty input region so Phantom does not steal mouse input back from Waydroid
 - touchpad tap gestures are synthesized inside Phantom while menu-touch owns the mouse, because the desktop is no longer responsible for translating them

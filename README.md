@@ -168,6 +168,7 @@ Important keyboard note:
 
 - on many laptops and compact keyboards, the top row only sends standard `F1`/`F8`/`F9`/`F10` events when Fn Lock is enabled
 - if `F2` works but `F1`, `F8`, or `F10` do not, check Fn Lock first
+- when capture is toggled, Phantom now flushes any stale desktop-relay key state before switching modes so the desktop does not keep phantom-held keys stuck down
 
 ## Overlay Preview
 
@@ -245,6 +246,7 @@ Important:
 - real mouse deltas are fed to aim one evdev report at a time, with X/Y from the
   same report handled together instead of as separate jumps
 - `F1` now preserves toggle-look state and resyncs `while_held` mouse buttons when routing is restored
+- entering capture also resyncs currently held keyboard controls for hold-style nodes such as `tap`, `repeat_tap`, `joystick`, and hold-mode `layer_shift`
 - `phantom status` shows whether menu touch is active, which backend seeded the owned cursor, and which runtime mouse mode is active
 
 Supported activation modes:

@@ -1342,6 +1342,152 @@ impl KeymapEngine {
         cmds
     }
 
+    pub fn resync_keyboard_keys(&mut self, pressed: &HashSet<Key>) -> Vec<TouchCommand> {
+        let mut cmds = Vec::new();
+
+        // Hold-style layer shifts must be re-established first so held keys in
+        // those layers can be resynced against the correct active-layer state.
+        for idx in 0..self.profile.nodes.len() {
+            let (bound_key, layer_name, mode) = match &self.profile.nodes[idx] {
+                Node::LayerShift {
+                    key,
+                    layer_name,
+                    mode,
+                    ..
+                } => (key.clone(), layer_name.clone(), mode.clone()),
+                _ => continue,
+            };
+
+            if !matches!(mode, LayerMode::Hold) {
+                continue;
+            }
+
+            let Ok(bound_key) = bound_key.parse::<Key>() else {
+                continue;
+            };
+            if bound_key.is_mouse() {
+                continue;
+            }
+
+            let held = matches!(&self.states[idx], NodeState::LayerShift { held: true });
+            let should_hold = pressed.contains(&bound_key);
+            match (held, should_hold) {
+                (false, true) => {
+                    cmds.extend(self.handle_layer_shift_press(idx, &layer_name, &mode))
+                }
+                (true, false) => {
+                    cmds.extend(self.handle_layer_shift_release(idx, &layer_name, &mode))
+                }
+                _ => {}
+            }
+        }
+
+        for idx in 0..self.profile.nodes.len() {
+            let node = &self.profile.nodes[idx];
+            if !self.is_node_active(node) {
+                continue;
+            }
+
+            match node {
+                Node::Tap { key, .. } | Node::RepeatTap { key, .. } => {
+                    let Ok(bound_key) = key.parse::<Key>() else {
+                        continue;
+                    };
+                    if bound_key.is_mouse() {
+                        continue;
+                    }
+
+                    let should_hold = pressed.contains(&bound_key);
+                    let active = match &self.states[idx] {
+                        NodeState::Tap { active, .. } => *active,
+                        NodeState::RepeatTap { active, .. } => *active,
+                        _ => false,
+                    };
+
+                    match (active, should_hold) {
+                        (false, true) => cmds.extend(self.handle_action_press(idx, bound_key)),
+                        (true, false) => cmds.extend(self.handle_action_release(idx, bound_key)),
+                        _ => {}
+                    }
+                }
+                Node::Joystick { keys, .. } => {
+                    let states = match &self.states[idx] {
+                        NodeState::Joystick {
+                            up,
+                            down,
+                            left,
+                            right,
+                            ..
+                        } => Some((*up, *down, *left, *right)),
+                        _ => None,
+                    };
+                    let Some((up_active, down_active, left_active, right_active)) = states else {
+                        continue;
+                    };
+
+                    let directions = [
+                        (keys.up.clone(), up_active),
+                        (keys.down.clone(), down_active),
+                        (keys.left.clone(), left_active),
+                        (keys.right.clone(), right_active),
+                    ];
+
+                    for (binding, active) in directions {
+                        let Ok(bound_key) = binding.parse::<Key>() else {
+                            continue;
+                        };
+                        if bound_key.is_mouse() {
+                            continue;
+                        }
+                        let should_hold = pressed.contains(&bound_key);
+                        match (active, should_hold) {
+                            (false, true) => cmds.extend(self.handle_action_press(idx, bound_key)),
+                            (true, false) => {
+                                cmds.extend(self.handle_action_release(idx, bound_key))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Node::MouseCamera {
+                    activation_mode,
+                    activation_key,
+                    ..
+                } => {
+                    if !matches!(activation_mode, MouseCameraActivationMode::WhileHeld) {
+                        continue;
+                    }
+                    let Some(key_name) = activation_key.as_deref() else {
+                        continue;
+                    };
+                    let Ok(bound_key) = key_name.parse::<Key>() else {
+                        continue;
+                    };
+                    if bound_key.is_mouse() {
+                        continue;
+                    }
+                    let should_hold = pressed.contains(&bound_key);
+                    let enabled = matches!(
+                        &self.states[idx],
+                        NodeState::MouseCamera { enabled: true, .. }
+                    );
+                    match (enabled, should_hold) {
+                        (false, true) => cmds.extend(self.handle_action_press(idx, bound_key)),
+                        (true, false) => cmds.extend(self.handle_action_release(idx, bound_key)),
+                        _ => {}
+                    }
+                }
+                Node::LayerShift { .. }
+                | Node::ToggleTap { .. }
+                | Node::Wheel { .. }
+                | Node::Drag { .. }
+                | Node::Macro { .. } => {}
+            }
+        }
+
+        cmds
+    }
+
     fn release_layer(&mut self, layer_name: &str) -> Vec<TouchCommand> {
         let mut cmds = Vec::new();
         for idx in 0..self.profile.nodes.len() {
@@ -2012,6 +2158,36 @@ mod tests {
         assert!(matches!(
             cmds.as_slice(),
             [TouchCommand::TouchUp { slot: 1 }]
+        ));
+    }
+
+    #[test]
+    fn keyboard_resync_restores_held_standard_button() {
+        let mut engine = KeymapEngine::new(test_profile());
+        let mut pressed = HashSet::new();
+        pressed.insert(Key::Space);
+
+        let cmds = engine.resync_keyboard_keys(&pressed);
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchDown { slot: 0, .. }]
+        ));
+    }
+
+    #[test]
+    fn keyboard_resync_restores_fixed_joystick_direction() {
+        let mut engine = KeymapEngine::new(test_profile());
+        let mut pressed = HashSet::new();
+        pressed.insert(Key::W);
+
+        let cmds = engine.resync_keyboard_keys(&pressed);
+        assert!(matches!(
+            cmds.as_slice(),
+            [
+                TouchCommand::TouchDown { slot: 1, .. },
+                TouchCommand::Commit,
+                TouchCommand::TouchMove { slot: 1, .. }
+            ]
         ));
     }
 

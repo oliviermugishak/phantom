@@ -631,12 +631,15 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
         return Ok(());
     }
 
-    if !active {
-        let cmds = {
-            let mut engine = state.engine.write().await;
-            engine.release_all()
-        };
-        apply_commands(state, &cmds)?;
+    let release_cmds = {
+        let mut engine = state.engine.write().await;
+        engine.release_all()
+    };
+    apply_commands(state, &release_cmds)?;
+
+    {
+        let mut relay = lock_desktop_keyboard(state)?;
+        relay.release_all()?;
     }
 
     let mouse_touch_cmds = {
@@ -662,10 +665,22 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
             let mut mouse_touch = lock_mouse_touch(state)?;
             mouse_touch.seed_from_host_cursor();
         }
-        let pressed_mouse = {
+        let (pressed_keyboard, pressed_mouse) = {
             let capture = lock_capture(state)?;
-            capture.current_pressed_mouse_keys()
+            (
+                capture.current_pressed_keyboard_keys(),
+                capture.current_pressed_mouse_keys(),
+            )
         };
+        let keyboard_cmds = {
+            let mut engine = state.engine.write().await;
+            if engine.is_paused() {
+                Vec::new()
+            } else {
+                engine.resync_keyboard_keys(&pressed_keyboard)
+            }
+        };
+        apply_commands(state, &keyboard_cmds)?;
         let cmds = {
             let mut mouse_touch = lock_mouse_touch(state)?;
             mouse_touch.resync_buttons(&pressed_mouse)

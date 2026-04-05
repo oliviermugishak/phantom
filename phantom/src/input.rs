@@ -1268,6 +1268,21 @@ impl InputCapture {
         pressed
     }
 
+    pub fn current_pressed_keyboard_keys(&self) -> HashSet<Key> {
+        let mut pressed = HashSet::new();
+        for device in &self.devices {
+            if !device.is_keyboard {
+                continue;
+            }
+            for key in &device.pressed_keys {
+                if !key.is_mouse() {
+                    pressed.insert(*key);
+                }
+            }
+        }
+        pressed
+    }
+
     pub fn set_grabbed_all(&mut self, grabbed: bool) -> Result<()> {
         let previous_keyboard = self.keyboard_grabbed;
         let previous_mouse = self.mouse_grabbed;
