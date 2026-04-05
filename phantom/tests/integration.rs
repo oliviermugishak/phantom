@@ -39,7 +39,7 @@ fn pubg_profile() -> Profile {
                 invert_y: false,
                 legacy_region: None,
             },
-            Node::HoldTap {
+            Node::Tap {
                 id: "fire".into(),
                 layer: String::new(),
                 slot: 2,
@@ -201,11 +201,14 @@ fn full_pubg_move_and_shoot() {
 
     // Press W to move
     let cmds = engine.process(&InputEvent::KeyPress(Key::W));
-    assert_eq!(cmds.len(), 1); // fixed joystick engages on down, then moves on tick
-    assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 0, .. }));
-    let cmds = engine.tick();
-    assert_eq!(cmds.len(), 1);
-    assert!(matches!(&cmds[0], TouchCommand::TouchMove { slot: 0, .. }));
+    assert!(matches!(
+        cmds.as_slice(),
+        [
+            TouchCommand::TouchDown { slot: 0, .. },
+            TouchCommand::Commit,
+            TouchCommand::TouchMove { slot: 0, .. }
+        ]
+    ));
 
     // Press D while holding W = diagonal
     let cmds = engine.process(&InputEvent::KeyPress(Key::D));
@@ -251,6 +254,37 @@ fn full_pubg_move_and_shoot() {
     let cmds = engine.process(&InputEvent::KeyRelease(Key::D));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
+}
+
+#[test]
+fn fixed_joystick_represses_without_stale_diagonal_state() {
+    let mut engine = KeymapEngine::new(pubg_profile());
+
+    let cmds = engine.process(&InputEvent::KeyPress(Key::A));
+    let [TouchCommand::TouchDown { slot, .. }, TouchCommand::Commit, TouchCommand::TouchMove { x, y, .. }] =
+        cmds.as_slice()
+    else {
+        panic!("expected down+commit+move, got {cmds:?}");
+    };
+    assert_eq!(*slot, 0);
+    assert!(*x < 0.18);
+    assert!((y - 0.72).abs() < 0.001);
+
+    let cmds = engine.process(&InputEvent::KeyRelease(Key::A));
+    assert!(matches!(
+        cmds.as_slice(),
+        [TouchCommand::TouchUp { slot: 0 }]
+    ));
+
+    let cmds = engine.process(&InputEvent::KeyPress(Key::W));
+    let [TouchCommand::TouchDown { slot, .. }, TouchCommand::Commit, TouchCommand::TouchMove { x, y, .. }] =
+        cmds.as_slice()
+    else {
+        panic!("expected down+commit+move, got {cmds:?}");
+    };
+    assert_eq!(*slot, 0);
+    assert!((x - 0.18).abs() < 0.001);
+    assert!(*y < 0.72);
 }
 
 #[test]
@@ -409,7 +443,6 @@ fn release_all_clears_everything() {
     engine.process(&InputEvent::KeyPress(Key::Space));
 
     let cmds = engine.release_all();
-    // Should have 3 touch up commands (joystick=0, fire=2, jump=3)
     assert_eq!(cmds.len(), 3);
     let slots: Vec<u8> = cmds
         .iter()
@@ -639,12 +672,16 @@ fn tap_at_screen_edges() {
         assert_eq!(*x, 0.0);
         assert_eq!(*y, 0.0);
     }
+    let cmds = engine.process(&InputEvent::KeyRelease(Key::A));
+    assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
 
     let cmds = engine.process(&InputEvent::KeyPress(Key::B));
     if let TouchCommand::TouchDown { x, y, .. } = &cmds[0] {
         assert_eq!(*x, 1.0);
         assert_eq!(*y, 1.0);
     }
+    let cmds = engine.process(&InputEvent::KeyRelease(Key::B));
+    assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 1 }));
 }
 
 // ===== Sensitivity =====
@@ -766,7 +803,6 @@ fn simultaneous_tap_keys_both_register() {
     // Press B (same batch, as if simultaneous)
     let cmds_b = engine.process(&InputEvent::KeyPress(Key::B));
 
-    // Both should produce TouchDown on different slots
     assert_eq!(cmds_a.len(), 1);
     assert_eq!(cmds_b.len(), 1);
     assert!(matches!(
@@ -778,7 +814,7 @@ fn simultaneous_tap_keys_both_register() {
         TouchCommand::TouchDown { slot: 1, .. }
     ));
 
-    // Release both
+    // Release both: standard button lifecycles complete here.
     let cmds_a_up = engine.process(&InputEvent::KeyRelease(Key::A));
     let cmds_b_up = engine.process(&InputEvent::KeyRelease(Key::B));
     assert_eq!(cmds_a_up.len(), 1);
@@ -826,11 +862,18 @@ fn simultaneous_tap_and_joystick() {
 
     // Press W to move
     let cmds_move = engine.process(&InputEvent::KeyPress(Key::W));
-    assert_eq!(cmds_move.len(), 1); // fixed joystick engages, move follows on tick
+    assert!(matches!(
+        cmds_move.as_slice(),
+        [
+            TouchCommand::TouchDown { slot: 0, .. },
+            TouchCommand::Commit,
+            TouchCommand::TouchMove { slot: 0, .. }
+        ]
+    ));
 
     // Press Space while W is held
     let cmds_jump = engine.process(&InputEvent::KeyPress(Key::Space));
-    assert_eq!(cmds_jump.len(), 1); // down on slot 1
+    assert_eq!(cmds_jump.len(), 1);
     assert!(matches!(
         &cmds_jump[0],
         TouchCommand::TouchDown { slot: 1, .. }

@@ -131,23 +131,10 @@ Behavior:
 - key press -> `TouchDown`
 - key release -> `TouchUp`
 
-### `hold_tap`
+Compatibility:
 
-```json
-{
-  "id": "fire",
-  "type": "hold_tap",
-  "slot": 2,
-  "pos": { "x": 0.88, "y": 0.62 },
-  "key": "MouseLeft"
-}
-```
-
-Behavior:
-
-- key press -> `TouchDown`
-- key held -> finger remains down
-- key release -> `TouchUp`
+- legacy `"type": "hold_tap"` entries still load
+- Phantom normalizes them to standard `tap` behavior on load
 
 ### `toggle_tap`
 
@@ -209,12 +196,12 @@ Modes:
 
 - `fixed`
   - uses `pos` as the exact center
-  - engages in two stages: `TouchDown` first, then the first `TouchMove` on the next engine tick
+  - starts with an immediate two-frame drag: `TouchDown` at center, then `TouchMove`
   - best for visible static sticks
 - `floating`
   - chooses a runtime origin inside `region`
   - keeps that origin stable until all movement keys are released
-  - starts with immediate `TouchDown` + `TouchMove`
+  - starts with an immediate two-frame drag from its runtime origin
   - best for floating movement zones and football-style drag movement
 
 ### `drag`

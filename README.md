@@ -42,7 +42,6 @@ Runtime features:
 Profile primitives:
 
 - `tap`
-- `hold_tap`
 - `toggle_tap`
 - `joystick`
 - `drag`
@@ -51,6 +50,10 @@ Profile primitives:
 - `wheel`
 - `macro`
 - `layer_shift`
+
+Compatibility note:
+
+- legacy `hold_tap` profile entries still load, but Phantom now treats them as standard `tap` nodes
 
 Important recent additions:
 
@@ -259,7 +262,7 @@ Typical use:
 Phantom now supports:
 
 - floating movement zones through `joystick` with `mode = "floating"`
-- visible fixed sticks through staged `joystick` engage in `mode = "fixed"`
+- visible fixed sticks through immediate two-frame `joystick` drag engage in `mode = "fixed"`
 - one-shot swipes and drags through `drag`
 
 That makes it viable for:

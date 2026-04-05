@@ -255,6 +255,7 @@ impl TouchDevice for AndroidInjector {
                 TouchCommand::TouchDown { slot, x, y } => self.touch_down_inner(*slot, *x, *y)?,
                 TouchCommand::TouchMove { slot, x, y } => self.touch_move_inner(*slot, *x, *y)?,
                 TouchCommand::TouchUp { slot } => self.touch_up_inner(*slot, false)?,
+                TouchCommand::Commit => {}
             }
         }
 

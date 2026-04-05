@@ -424,22 +424,21 @@ async fn run_daemon() -> Result<()> {
                         if !gameplay_events.is_empty() {
                             tracing::trace!(events = ?gameplay_events, "forwarding gameplay events to engine");
                             let mut engine = state.engine.write().await;
-                            let mut pending = Vec::new();
+                            let mut dev = match ipc::lock_touch_device(&state) {
+                                Ok(dev) => dev,
+                                Err(e) => {
+                                    tracing::warn!("touch backend lock error: {}", e);
+                                    continue;
+                                }
+                            };
                             for event in &gameplay_events {
-                                pending.extend(engine.process(event));
-                            }
-                            drop(engine);
-
-                            if !pending.is_empty() {
-                                let mut dev = match ipc::lock_touch_device(&state) {
-                                    Ok(dev) => dev,
-                                    Err(e) => {
-                                        tracing::warn!("touch backend lock error: {}", e);
-                                        continue;
-                                    }
-                                };
-                                if let Err(e) = dev.apply_commands(&pending) {
+                                let cmds = engine.process(event);
+                                if cmds.is_empty() {
+                                    continue;
+                                }
+                                if let Err(e) = dev.apply_commands(&cmds) {
                                     tracing::warn!("inject error: {}", e);
+                                    break;
                                 }
                             }
                         }

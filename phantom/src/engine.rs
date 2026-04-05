@@ -17,15 +17,13 @@ pub enum TouchCommand {
     TouchDown { slot: u8, x: f64, y: f64 },
     TouchMove { slot: u8, x: f64, y: f64 },
     TouchUp { slot: u8 },
+    Commit,
 }
 
 #[derive(Debug)]
 enum NodeState {
     Tap {
         active: bool,
-    },
-    HoldTap {
-        held: bool,
     },
     ToggleTap {
         active: bool,
@@ -36,7 +34,6 @@ enum NodeState {
         left: bool,
         right: bool,
         finger_active: bool,
-        pending_move: bool,
         origin_x: f64,
         origin_y: f64,
     },
@@ -293,7 +290,6 @@ impl KeymapEngine {
     fn init_state(node: &Node) -> NodeState {
         match node {
             Node::Tap { .. } => NodeState::Tap { active: false },
-            Node::HoldTap { .. } => NodeState::HoldTap { held: false },
             Node::ToggleTap { .. } => NodeState::ToggleTap { active: false },
             Node::Joystick { .. } => NodeState::Joystick {
                 up: false,
@@ -301,7 +297,6 @@ impl KeymapEngine {
                 left: false,
                 right: false,
                 finger_active: false,
-                pending_move: false,
                 origin_x: 0.0,
                 origin_y: 0.0,
             },
@@ -441,53 +436,6 @@ impl KeymapEngine {
                     {
                         cmds.push(TouchCommand::TouchUp { slot: *slot });
                         self.states[idx] = Self::mouse_camera_state(anchor, *reach, *enabled);
-                    }
-                }
-            }
-
-            if let Node::Joystick {
-                slot,
-                radius,
-                region,
-                ..
-            } = node
-            {
-                if let NodeState::Joystick {
-                    up,
-                    down,
-                    left,
-                    right,
-                    finger_active,
-                    pending_move,
-                    origin_x,
-                    origin_y,
-                } = &self.states[idx]
-                {
-                    if *finger_active && *pending_move {
-                        let (offset_x, offset_y) =
-                            joystick_offset(*up, *down, *left, *right, *radius);
-                        let (move_x, move_y) = joystick_target(
-                            *origin_x,
-                            *origin_y,
-                            offset_x,
-                            offset_y,
-                            region.as_ref(),
-                        );
-                        cmds.push(TouchCommand::TouchMove {
-                            slot: *slot,
-                            x: move_x,
-                            y: move_y,
-                        });
-                        self.states[idx] = NodeState::Joystick {
-                            up: *up,
-                            down: *down,
-                            left: *left,
-                            right: *right,
-                            finger_active: true,
-                            pending_move: false,
-                            origin_x: *origin_x,
-                            origin_y: *origin_y,
-                        };
                     }
                 }
             }
@@ -719,18 +667,6 @@ impl KeymapEngine {
                     }
                 }
             }
-            Node::HoldTap { slot, pos, .. } => {
-                if let NodeState::HoldTap { held } = &self.states[idx] {
-                    if !*held {
-                        cmds.push(TouchCommand::TouchDown {
-                            slot: *slot,
-                            x: pos.x,
-                            y: pos.y,
-                        });
-                        self.states[idx] = NodeState::HoldTap { held: true };
-                    }
-                }
-            }
             Node::ToggleTap { slot, pos, .. } => {
                 if let NodeState::ToggleTap { active } = &self.states[idx] {
                     if *active {
@@ -760,7 +696,6 @@ impl KeymapEngine {
                         left,
                         right,
                         finger_active,
-                        pending_move: _,
                         origin_x,
                         origin_y,
                     } = &self.states[idx]
@@ -770,7 +705,6 @@ impl KeymapEngine {
                         let mut l = *left;
                         let mut r = *right;
                         let mut fa = *finger_active;
-                        let mut pm = matches!(mode, JoystickMode::Fixed) && !fa;
                         let mut ox = *origin_x;
                         let mut oy = *origin_y;
                         match d {
@@ -791,21 +725,19 @@ impl KeymapEngine {
                                 x: start_x,
                                 y: start_y,
                             });
+                            cmds.push(TouchCommand::Commit);
                             fa = true;
-                            pm = matches!(mode, JoystickMode::Fixed);
                         }
 
                         let (offset_x, offset_y) = joystick_offset(u, dn, l, r, *radius);
                         let (move_x, move_y) =
                             joystick_target(ox, oy, offset_x, offset_y, region.as_ref());
 
-                        if !pm {
-                            cmds.push(TouchCommand::TouchMove {
-                                slot: *slot,
-                                x: move_x,
-                                y: move_y,
-                            });
-                        }
+                        cmds.push(TouchCommand::TouchMove {
+                            slot: *slot,
+                            x: move_x,
+                            y: move_y,
+                        });
 
                         self.states[idx] = NodeState::Joystick {
                             up: u,
@@ -813,7 +745,6 @@ impl KeymapEngine {
                             left: l,
                             right: r,
                             finger_active: fa,
-                            pending_move: pm,
                             origin_x: ox,
                             origin_y: oy,
                         };
@@ -915,14 +846,6 @@ impl KeymapEngine {
                     }
                 }
             }
-            Node::HoldTap { slot, .. } => {
-                if let NodeState::HoldTap { held } = &self.states[idx] {
-                    if *held {
-                        cmds.push(TouchCommand::TouchUp { slot: *slot });
-                        self.states[idx] = NodeState::HoldTap { held: false };
-                    }
-                }
-            }
             Node::ToggleTap { .. } => {}
             Node::Joystick {
                 slot,
@@ -937,7 +860,6 @@ impl KeymapEngine {
                         left,
                         right,
                         finger_active,
-                        pending_move: _,
                         origin_x,
                         origin_y,
                     } = &self.states[idx]
@@ -961,7 +883,6 @@ impl KeymapEngine {
                                 left: false,
                                 right: false,
                                 finger_active: false,
-                                pending_move: false,
                                 origin_x: 0.0,
                                 origin_y: 0.0,
                             };
@@ -985,7 +906,6 @@ impl KeymapEngine {
                                 left: l,
                                 right: r,
                                 finger_active: fa,
-                                pending_move: false,
                                 origin_x: *origin_x,
                                 origin_y: *origin_y,
                             };
@@ -1243,7 +1163,7 @@ impl KeymapEngine {
             }
 
             match node {
-                Node::HoldTap { slot, pos, key, .. } => {
+                Node::Tap { slot, pos, key, .. } => {
                     let Ok(bound_key) = key.parse::<Key>() else {
                         continue;
                     };
@@ -1251,19 +1171,19 @@ impl KeymapEngine {
                         continue;
                     }
                     let should_hold = pressed.contains(&bound_key);
-                    if let NodeState::HoldTap { held } = &self.states[idx] {
-                        match (*held, should_hold) {
+                    if let NodeState::Tap { active } = &self.states[idx] {
+                        match (*active, should_hold) {
                             (false, true) => {
                                 cmds.push(TouchCommand::TouchDown {
                                     slot: *slot,
                                     x: pos.x,
                                     y: pos.y,
                                 });
-                                self.states[idx] = NodeState::HoldTap { held: true };
+                                self.states[idx] = NodeState::Tap { active: true };
                             }
                             (true, false) => {
                                 cmds.push(TouchCommand::TouchUp { slot: *slot });
-                                self.states[idx] = NodeState::HoldTap { held: false };
+                                self.states[idx] = NodeState::Tap { active: false };
                             }
                             _ => {}
                         }
@@ -1362,12 +1282,6 @@ impl KeymapEngine {
                 }
                 self.states[idx] = NodeState::Tap { active: false };
             }
-            NodeState::HoldTap { held: true } => {
-                if let Some(s) = slot {
-                    cmds.push(TouchCommand::TouchUp { slot: s });
-                }
-                self.states[idx] = NodeState::HoldTap { held: false };
-            }
             NodeState::ToggleTap { active: true } => {
                 if let Some(s) = slot {
                     cmds.push(TouchCommand::TouchUp { slot: s });
@@ -1387,7 +1301,6 @@ impl KeymapEngine {
                     left: false,
                     right: false,
                     finger_active: false,
-                    pending_move: false,
                     origin_x: 0.0,
                     origin_y: 0.0,
                 };
@@ -1711,11 +1624,14 @@ mod tests {
     #[test]
     fn joystick_diagonal_is_normalized() {
         let mut engine = KeymapEngine::new(test_profile());
-        let _ = engine.process(&InputEvent::KeyPress(Key::W));
-        let cmds = engine.tick();
+        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
         assert!(matches!(
             cmds.as_slice(),
-            [TouchCommand::TouchMove { slot: 1, .. }]
+            [
+                TouchCommand::TouchDown { slot: 1, .. },
+                TouchCommand::Commit,
+                TouchCommand::TouchMove { slot: 1, .. }
+            ]
         ));
         let cmds = engine.process(&InputEvent::KeyPress(Key::D));
         match &cmds[0] {
@@ -1762,13 +1678,13 @@ mod tests {
             x: down_x,
             y: down_y,
             ..
-        }, TouchCommand::TouchMove {
+        }, TouchCommand::Commit, TouchCommand::TouchMove {
             x: move_x,
             y: move_y,
             ..
         }] = cmds.as_slice()
         else {
-            panic!("expected down+move, got {cmds:?}");
+            panic!("expected down+commit+move, got {cmds:?}");
         };
         assert!((*down_x >= 0.0) && (*down_x <= 0.45));
         assert!((*down_y >= 0.4) && (*down_y <= 0.85));
@@ -2033,18 +1949,46 @@ mod tests {
     }
 
     #[test]
-    fn fixed_joystick_engages_then_moves_on_tick() {
+    fn fixed_joystick_engages_immediately() {
         let mut engine = KeymapEngine::new(test_profile());
         let cmds = engine.process(&InputEvent::KeyPress(Key::W));
         assert!(matches!(
             cmds.as_slice(),
-            [TouchCommand::TouchDown { slot: 1, .. }]
+            [
+                TouchCommand::TouchDown { slot: 1, .. },
+                TouchCommand::Commit,
+                TouchCommand::TouchMove { slot: 1, .. }
+            ]
         ));
-        let cmds = engine.tick();
+    }
+
+    #[test]
+    fn fixed_joystick_release_then_repress_uses_fresh_direction() {
+        let mut engine = KeymapEngine::new(test_profile());
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::A));
+        let [TouchCommand::TouchDown { .. }, TouchCommand::Commit, TouchCommand::TouchMove { x, y, .. }] =
+            cmds.as_slice()
+        else {
+            panic!("expected down+commit+move, got {cmds:?}");
+        };
+        assert!(*x < 0.2);
+        assert!((*y - 0.7).abs() < 0.001);
+
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::A));
         assert!(matches!(
             cmds.as_slice(),
-            [TouchCommand::TouchMove { slot: 1, .. }]
+            [TouchCommand::TouchUp { slot: 1 }]
         ));
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
+        let [TouchCommand::TouchDown { .. }, TouchCommand::Commit, TouchCommand::TouchMove { x, y, .. }] =
+            cmds.as_slice()
+        else {
+            panic!("expected down+commit+move, got {cmds:?}");
+        };
+        assert!((*x - 0.2).abs() < 0.001);
+        assert!(*y < 0.7);
     }
 
     #[test]
@@ -2107,7 +2051,9 @@ mod tests {
             .is_empty());
         let cmds = engine.process(&InputEvent::KeyPress(Key::E));
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::E));
         assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 1 }));
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
+        assert!(cmds.is_empty());
     }
 }

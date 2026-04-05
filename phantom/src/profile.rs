@@ -58,15 +58,8 @@ pub enum MacroRunMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
+    #[serde(alias = "hold_tap")]
     Tap {
-        id: String,
-        #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
-        layer: String,
-        slot: u8,
-        pos: RelPos,
-        key: String,
-    },
-    HoldTap {
         id: String,
         #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
         layer: String,
@@ -283,7 +276,6 @@ impl Node {
     pub fn kind(&self) -> &'static str {
         match self {
             Node::Tap { .. } => "tap",
-            Node::HoldTap { .. } => "hold_tap",
             Node::ToggleTap { .. } => "toggle_tap",
             Node::Joystick { .. } => "joystick",
             Node::Drag { .. } => "drag",
@@ -298,7 +290,6 @@ impl Node {
     pub fn id(&self) -> &str {
         match self {
             Node::Tap { id, .. }
-            | Node::HoldTap { id, .. }
             | Node::ToggleTap { id, .. }
             | Node::Joystick { id, .. }
             | Node::Drag { id, .. }
@@ -313,7 +304,6 @@ impl Node {
     pub fn layer(&self) -> &str {
         match self {
             Node::Tap { layer, .. }
-            | Node::HoldTap { layer, .. }
             | Node::ToggleTap { layer, .. }
             | Node::Joystick { layer, .. }
             | Node::Drag { layer, .. }
@@ -328,7 +318,6 @@ impl Node {
     pub fn slot(&self) -> Option<u8> {
         match self {
             Node::Tap { slot, .. }
-            | Node::HoldTap { slot, .. }
             | Node::ToggleTap { slot, .. }
             | Node::Joystick { slot, .. }
             | Node::Drag { slot, .. }
@@ -341,7 +330,6 @@ impl Node {
     pub fn bound_keys(&self) -> Vec<&str> {
         match self {
             Node::Tap { key, .. }
-            | Node::HoldTap { key, .. }
             | Node::ToggleTap { key, .. }
             | Node::RepeatTap { key, .. }
             | Node::Drag { key, .. }
@@ -363,7 +351,6 @@ impl Node {
     pub fn primary_binding(&self) -> Option<&str> {
         match self {
             Node::Tap { key, .. }
-            | Node::HoldTap { key, .. }
             | Node::ToggleTap { key, .. }
             | Node::RepeatTap { key, .. }
             | Node::Drag { key, .. }
@@ -377,7 +364,6 @@ impl Node {
     pub fn audit_bindings(&self) -> Vec<String> {
         match self {
             Node::Tap { key, .. }
-            | Node::HoldTap { key, .. }
             | Node::ToggleTap { key, .. }
             | Node::RepeatTap { key, .. }
             | Node::Drag { key, .. }
@@ -730,7 +716,6 @@ fn validate_node(node: &Node) -> Result<()> {
 
     match node {
         Node::Tap { pos, key, .. }
-        | Node::HoldTap { pos, key, .. }
         | Node::ToggleTap { pos, key, .. }
         | Node::RepeatTap { pos, key, .. } => {
             validate_pos(pos, &format!("nodes.{id}.pos"))?;
@@ -1024,7 +1009,7 @@ mod tests {
             layer_name: "combat".into(),
             mode: LayerMode::Toggle,
         });
-        profile.nodes.push(Node::HoldTap {
+        profile.nodes.push(Node::Tap {
             id: "fire".into(),
             layer: "combat".into(),
             slot: 3,
@@ -1259,6 +1244,40 @@ mod tests {
                 assert_eq!(profile.nodes[0].kind(), "aim");
             }
             other => panic!("expected normalized aim node, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_hold_tap_alias_loads_as_tap() {
+        let raw = r#"
+        {
+          "name": "Legacy Hold",
+          "version": 1,
+          "screen": { "width": 1920, "height": 1080 },
+          "global_sensitivity": 1.0,
+          "nodes": [
+            {
+              "id": "fire",
+              "type": "hold_tap",
+              "slot": 2,
+              "pos": { "x": 0.88, "y": 0.62 },
+              "key": "MouseLeft"
+            }
+          ]
+        }
+        "#;
+
+        let profile: Profile = serde_json::from_str(raw).unwrap();
+        let profile = profile.normalized();
+        profile.validate().unwrap();
+
+        match &profile.nodes[0] {
+            Node::Tap { key, slot, .. } => {
+                assert_eq!(key, "MouseLeft");
+                assert_eq!(*slot, 2);
+                assert_eq!(profile.nodes[0].kind(), "tap");
+            }
+            other => panic!("expected tap node, got {:?}", other),
         }
     }
 

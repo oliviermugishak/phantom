@@ -248,6 +248,8 @@ It emits:
 - `TouchMove`
 - `TouchUp`
 
+During runtime, Phantom now applies gameplay touch commands per translated input event instead of coalescing unrelated key transitions into one larger backend batch. That keeps release and re-engage boundaries explicit for controls like fixed joysticks. Joystick startup also uses an explicit commit boundary between `TouchDown` and the first `TouchMove` so visible sticks behave like a real drag rather than a teleported touch.
+
 That abstraction is the key boundary in the codebase.
 
 Backends then decide how to realize those commands:

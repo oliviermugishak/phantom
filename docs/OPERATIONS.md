@@ -228,8 +228,8 @@ Modes:
 
 Practical difference:
 
-- `fixed` is for visible static sticks and now uses a staged engage path
-- `floating` is for drag zones and starts moving immediately from a runtime origin
+- `fixed` is for visible static sticks and engages as an immediate center-down then move drag
+- `floating` is for drag zones and starts from a runtime origin using the same two-frame drag shape
 
 ### `drag`
 

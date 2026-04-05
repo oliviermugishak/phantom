@@ -19,7 +19,6 @@ use phantom::profile::{
 };
 
 const COLOR_TAP: Color32 = Color32::from_rgb(66, 133, 244);
-const COLOR_HOLD: Color32 = Color32::from_rgb(234, 67, 53);
 const COLOR_TOGGLE: Color32 = Color32::from_rgb(0, 172, 193);
 const COLOR_JOYSTICK: Color32 = Color32::from_rgb(52, 168, 83);
 const COLOR_DRAG: Color32 = Color32::from_rgb(0, 200, 140);
@@ -143,7 +142,6 @@ enum Tool {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NodeTemplate {
     Tap,
-    HoldTap,
     ToggleTap,
     Joystick,
     Drag,
@@ -1463,6 +1461,251 @@ impl PhantomGui {
         Some(slots)
     }
 
+    fn used_touch_slots_excluding(
+        &self,
+        exclude_idx: usize,
+    ) -> Option<std::collections::HashSet<u8>> {
+        let profile = self.profile.as_ref()?;
+        let mut used_slots = std::collections::HashSet::new();
+        for (idx, node) in profile.nodes.iter().enumerate() {
+            if idx == exclude_idx {
+                continue;
+            }
+            match node {
+                Node::Wheel {
+                    up_slot, down_slot, ..
+                } => {
+                    used_slots.insert(*up_slot);
+                    used_slots.insert(*down_slot);
+                }
+                _ => {
+                    if let Some(slot) = node.slot() {
+                        used_slots.insert(slot);
+                    }
+                }
+            }
+        }
+        Some(used_slots)
+    }
+
+    fn next_slot_excluding(&self, exclude_idx: usize) -> Option<u8> {
+        let used_slots = self.used_touch_slots_excluding(exclude_idx)?;
+        (0..=MAX_LOGICAL_TOUCH_SLOT).find(|slot| !used_slots.contains(slot))
+    }
+
+    fn convert_selected_node(&mut self, template: NodeTemplate) -> bool {
+        let Some(idx) = self.selected else {
+            return false;
+        };
+        let Some(source) = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.nodes.get(idx))
+            .cloned()
+        else {
+            return false;
+        };
+
+        if template_from_node(&source) == template {
+            return false;
+        }
+
+        let id = source.id().to_string();
+        let layer = source.layer().to_string();
+        let anchor = node_conversion_anchor(&source);
+        let primary_key = node_primary_binding_for_conversion(&source);
+        let single_slot = reusable_single_slot(self, idx, &source);
+        let wheel_slots = reusable_wheel_slots(self, idx, &source);
+        let require_single_slot = |slot: Option<u8>| -> Option<u8> {
+            if slot.is_none() {
+                tracing::warn!("no free logical touch slot available while converting node");
+            }
+            slot
+        };
+        let replacement = match template {
+            NodeTemplate::Tap => Node::Tap {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                pos: anchor,
+                key: primary_key.unwrap_or_else(|| "Space".into()),
+            },
+            NodeTemplate::ToggleTap => Node::ToggleTap {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                pos: anchor,
+                key: primary_key.unwrap_or_else(|| "Q".into()),
+            },
+            NodeTemplate::Joystick => Node::Joystick {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                pos: anchor,
+                radius: 0.08,
+                mode: JoystickMode::Fixed,
+                region: None,
+                keys: match &source {
+                    Node::Joystick { keys, .. } => keys.clone(),
+                    _ => JoystickKeys {
+                        up: "W".into(),
+                        down: "S".into(),
+                        left: "A".into(),
+                        right: "D".into(),
+                    },
+                },
+            },
+            NodeTemplate::Drag => Node::Drag {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                start: anchor,
+                end: RelPos {
+                    x: anchor.x,
+                    y: (anchor.y - 0.18).clamp(0.0, 1.0),
+                },
+                key: primary_key.unwrap_or_else(|| "Up".into()),
+                duration_ms: 90,
+            },
+            NodeTemplate::MouseLook => {
+                let preserved_key = primary_key;
+                Node::MouseCamera {
+                    id,
+                    layer,
+                    slot: match require_single_slot(single_slot) {
+                        Some(slot) => slot,
+                        None => {
+                            self.set_banner("No free logical touch slot for conversion", true);
+                            return false;
+                        }
+                    },
+                    anchor,
+                    reach: 0.18,
+                    sensitivity: 1.0,
+                    activation_mode: if preserved_key.is_some() {
+                        MouseCameraActivationMode::WhileHeld
+                    } else {
+                        MouseCameraActivationMode::AlwaysOn
+                    },
+                    activation_key: preserved_key,
+                    invert_y: false,
+                    legacy_region: None,
+                }
+            }
+            NodeTemplate::RepeatTap => Node::RepeatTap {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                pos: anchor,
+                key: primary_key.unwrap_or_else(|| "F".into()),
+                interval_ms: 90,
+            },
+            NodeTemplate::Wheel => {
+                let Some((up_slot, down_slot)) = wheel_slots else {
+                    self.set_banner("Wheel control needs two free logical touch slots", true);
+                    return false;
+                };
+                Node::Wheel {
+                    id,
+                    layer,
+                    up_slot,
+                    up_pos: RelPos {
+                        x: anchor.x,
+                        y: (anchor.y - 0.05).clamp(0.0, 1.0),
+                    },
+                    down_slot,
+                    down_pos: RelPos {
+                        x: anchor.x,
+                        y: (anchor.y + 0.05).clamp(0.0, 1.0),
+                    },
+                }
+            }
+            NodeTemplate::Macro => Node::Macro {
+                id,
+                layer,
+                key: primary_key.unwrap_or_else(|| "G".into()),
+                mode: MacroRunMode::CancelOnRelease,
+                sequence: vec![
+                    MacroStep {
+                        action: MacroAction::Down,
+                        pos: Some(anchor),
+                        slot: match require_single_slot(single_slot) {
+                            Some(slot) => slot,
+                            None => {
+                                self.set_banner("No free logical touch slot for conversion", true);
+                                return false;
+                            }
+                        },
+                        delay_ms: 0,
+                    },
+                    MacroStep {
+                        action: MacroAction::Up,
+                        pos: None,
+                        slot: match require_single_slot(single_slot) {
+                            Some(slot) => slot,
+                            None => {
+                                self.set_banner("No free logical touch slot for conversion", true);
+                                return false;
+                            }
+                        },
+                        delay_ms: 30,
+                    },
+                ],
+            },
+            NodeTemplate::LayerShift => Node::LayerShift {
+                id,
+                key: primary_key.unwrap_or_else(|| "LeftAlt".into()),
+                layer_name: if layer.is_empty() {
+                    "combat".into()
+                } else {
+                    layer.clone()
+                },
+                mode: LayerMode::Hold,
+            },
+        };
+
+        let Some(profile) = &mut self.profile else {
+            return false;
+        };
+        profile.nodes[idx] = replacement;
+        self.right_panel_tab = RightPanelTab::Inspect;
+        self.set_banner(
+            format!("Converted control to {}", template_label(template)),
+            false,
+        );
+        true
+    }
+
     fn unique_node_id(&self, prefix: &str) -> String {
         let Some(profile) = &self.profile else {
             return format!("{prefix}_1");
@@ -1483,7 +1726,6 @@ impl PhantomGui {
         set_node_id(&mut node, self.unique_node_id(prefix));
         match &mut node {
             Node::Tap { slot, pos, .. }
-            | Node::HoldTap { slot, pos, .. }
             | Node::ToggleTap { slot, pos, .. }
             | Node::RepeatTap { slot, pos, .. } => {
                 *slot = self.next_slot()?;
@@ -1613,7 +1855,6 @@ impl PhantomGui {
 
         match &mut node {
             Node::Tap { layer, .. }
-            | Node::HoldTap { layer, .. }
             | Node::ToggleTap { layer, .. }
             | Node::Joystick { layer, .. }
             | Node::Drag { layer, .. }
@@ -1743,13 +1984,6 @@ impl PhantomGui {
                 slot,
                 pos: rel,
                 key: "Space".into(),
-            },
-            NodeTemplate::HoldTap => Node::HoldTap {
-                id: format!("hold_{}", slot),
-                layer: String::new(),
-                slot,
-                pos: rel,
-                key: "MouseLeft".into(),
             },
             NodeTemplate::ToggleTap => Node::ToggleTap {
                 id: format!("toggle_{}", slot),
@@ -1931,7 +2165,6 @@ impl PhantomGui {
                 };
                 match node {
                     Node::Tap { key, .. }
-                    | Node::HoldTap { key, .. }
                     | Node::ToggleTap { key, .. }
                     | Node::Drag { key, .. }
                     | Node::RepeatTap { key, .. }
@@ -2097,24 +2330,21 @@ impl PhantomGui {
             self.tool = Tool::Place(NodeTemplate::Tap);
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Num3)) {
-            self.tool = Tool::Place(NodeTemplate::HoldTap);
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num4)) {
             self.tool = Tool::Place(NodeTemplate::ToggleTap);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num5)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num4)) {
             self.tool = Tool::Place(NodeTemplate::Joystick);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num6)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num5)) {
             self.tool = Tool::Place(NodeTemplate::Drag);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num7)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num6)) {
             self.tool = Tool::Place(NodeTemplate::MouseLook);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num8)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num7)) {
             self.tool = Tool::Place(NodeTemplate::RepeatTap);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num9)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num8)) {
             self.tool = Tool::Place(NodeTemplate::Wheel);
         }
     }
@@ -2202,44 +2432,38 @@ impl PhantomGui {
                     tool_button(
                         ui,
                         &mut self.tool,
-                        Tool::Place(NodeTemplate::HoldTap),
-                        "Hold (3)",
-                    );
-                    tool_button(
-                        ui,
-                        &mut self.tool,
                         Tool::Place(NodeTemplate::ToggleTap),
-                        "Toggle (4)",
+                        "Toggle (3)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::Joystick),
-                        "Left Stick (5)",
+                        "Left Stick (4)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::Drag),
-                        "Drag (6)",
+                        "Drag (5)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::MouseLook),
-                        "Aim (7)",
+                        "Aim (6)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::RepeatTap),
-                        "Rapid Tap (8)",
+                        "Rapid Tap (7)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::Wheel),
-                        "Wheel (9)",
+                        "Wheel (8)",
                     );
                     if ui.button("Add Macro").clicked() {
                         self.add_non_canvas_node(NodeTemplate::Macro);
@@ -2700,41 +2924,71 @@ impl PhantomGui {
 
                 let mut start_binding = None;
                 let mut delete_current = false;
+                let mut convert_to = None;
                 let mut dirty = false;
                 let screen = profile.screen.clone();
                 let mut duplicate_into_layer = None;
 
-                let node = &mut profile.nodes[idx];
-                ui.label(
-                    RichText::new(display_type(node))
-                        .strong()
-                        .color(node_color(node)),
-                );
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Id");
-                    let mut id = node.id().to_string();
-                    if ui.text_edit_singleline(&mut id).changed() {
-                        set_node_id(node, id);
-                        dirty = true;
-                    }
-                });
-
-                if let Some(slot) = node.slot() {
-                    ui.label(format!("Touch slot {}", slot));
-                } else if let Node::Wheel {
-                    up_slot, down_slot, ..
-                } = node
                 {
-                    ui.label(format!("Touch slots {} / {}", up_slot, down_slot));
-                } else {
-                    ui.label("No touch slot");
-                }
+                    let node = &mut profile.nodes[idx];
+                    ui.label(
+                        RichText::new(display_type(node))
+                            .strong()
+                            .color(node_color(node)),
+                    );
+                    ui.add_space(4.0);
 
-                match node {
+                    ui.horizontal(|ui| {
+                        ui.label("Type");
+                        egui::ComboBox::from_id_salt(("node_type", idx))
+                            .selected_text(template_label(template_from_node(node)))
+                            .show_ui(ui, |ui| {
+                                for template in [
+                                    NodeTemplate::Tap,
+                                    NodeTemplate::ToggleTap,
+                                    NodeTemplate::Joystick,
+                                    NodeTemplate::Drag,
+                                    NodeTemplate::MouseLook,
+                                    NodeTemplate::RepeatTap,
+                                    NodeTemplate::Wheel,
+                                    NodeTemplate::Macro,
+                                    NodeTemplate::LayerShift,
+                                ] {
+                                    if ui
+                                        .selectable_label(
+                                            template_from_node(node) == template,
+                                            template_label(template),
+                                        )
+                                        .clicked()
+                                    {
+                                        convert_to = Some(template);
+                                    }
+                                }
+                            });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Id");
+                        let mut id = node.id().to_string();
+                        if ui.text_edit_singleline(&mut id).changed() {
+                            set_node_id(node, id);
+                            dirty = true;
+                        }
+                    });
+
+                    if let Some(slot) = node.slot() {
+                        ui.label(format!("Touch slot {}", slot));
+                    } else if let Node::Wheel {
+                        up_slot, down_slot, ..
+                    } = node
+                    {
+                        ui.label(format!("Touch slots {} / {}", up_slot, down_slot));
+                    } else {
+                        ui.label("No touch slot");
+                    }
+
+                    match node {
                     Node::Tap { layer, pos, .. }
-                    | Node::HoldTap { layer, pos, .. }
                     | Node::ToggleTap { layer, pos, .. }
                     | Node::RepeatTap { layer, pos, .. } => {
                         layer_row(
@@ -2997,33 +3251,32 @@ impl PhantomGui {
                         );
                     }
                     Node::LayerShift { .. } => {}
-                }
+                    }
 
-                if !matches!(node, Node::LayerShift { .. }) {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("Duplicate Into Base").clicked() {
-                            duplicate_into_layer = Some(String::new());
-                        }
-                        if let Some(layer_name) = suggested_layer {
-                            let button = format!("Duplicate Into {}", layer_name);
-                            if ui.button(button).clicked() {
-                                duplicate_into_layer = Some(layer_name.to_string());
+                    if !matches!(node, Node::LayerShift { .. }) {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Duplicate Into Base").clicked() {
+                                duplicate_into_layer = Some(String::new());
                             }
-                        }
-                    });
-                    ui.label(
-                        RichText::new(
-                            "Use layer duplicates to reuse a control in a new context without rebuilding it from scratch.",
-                        )
-                        .small()
-                        .color(Color32::from_gray(160)),
-                    );
-                }
+                            if let Some(layer_name) = suggested_layer {
+                                let button = format!("Duplicate Into {}", layer_name);
+                                if ui.button(button).clicked() {
+                                    duplicate_into_layer = Some(layer_name.to_string());
+                                }
+                            }
+                        });
+                        ui.label(
+                            RichText::new(
+                                "Use layer duplicates to reuse a control in a new context without rebuilding it from scratch.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(160)),
+                        );
+                    }
 
-                ui.separator();
-                match node {
+                    ui.separator();
+                    match node {
                     Node::Tap { key, .. }
-                    | Node::HoldTap { key, .. }
                     | Node::ToggleTap { key, .. }
                     | Node::Drag { key, .. }
                     | Node::RepeatTap { key, .. }
@@ -3217,154 +3470,161 @@ impl PhantomGui {
                             dirty = true;
                         }
                     }
-                }
+                    }
 
-                if let Node::RepeatTap { interval_ms, .. } = node {
-                    ui.horizontal(|ui| {
-                        ui.label("Interval ms");
-                        let mut value = *interval_ms as f64;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut value)
-                                    .speed(1.0)
-                                    .range(1.0..=1000.0),
-                            )
-                            .changed()
-                        {
-                            *interval_ms = value as u64;
-                            dirty = true;
-                        }
-                    });
-                }
+                    if let Node::RepeatTap { interval_ms, .. } = node {
+                        ui.horizontal(|ui| {
+                            ui.label("Interval ms");
+                            let mut value = *interval_ms as f64;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut value)
+                                        .speed(1.0)
+                                        .range(1.0..=1000.0),
+                                )
+                                .changed()
+                            {
+                                *interval_ms = value as u64;
+                                dirty = true;
+                            }
+                        });
+                    }
 
-
-                if let Node::Macro { sequence, .. } = node {
-                    ui.separator();
-                    ui.label(RichText::new("Macro Steps").strong());
-                    let mut remove_idx = None;
-                    for (step_idx, step) in sequence.iter_mut().enumerate() {
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(format!("Step {}", step_idx + 1));
-                                egui::ComboBox::from_id_salt(("macro_action", idx, step_idx))
-                                    .selected_text(match step.action {
-                                        MacroAction::Down => "Down",
-                                        MacroAction::Up => "Up",
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        if ui
-                                            .selectable_label(
-                                                matches!(step.action, MacroAction::Down),
-                                                "Down",
-                                            )
-                                            .clicked()
-                                        {
-                                            step.action = MacroAction::Down;
-                                            if step.pos.is_none() {
-                                                step.pos = Some(RelPos { x: 0.5, y: 0.5 });
+                    if let Node::Macro { sequence, .. } = node {
+                        ui.separator();
+                        ui.label(RichText::new("Macro Steps").strong());
+                        let mut remove_idx = None;
+                        for (step_idx, step) in sequence.iter_mut().enumerate() {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("Step {}", step_idx + 1));
+                                    egui::ComboBox::from_id_salt(("macro_action", idx, step_idx))
+                                        .selected_text(match step.action {
+                                            MacroAction::Down => "Down",
+                                            MacroAction::Up => "Up",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(
+                                                    matches!(step.action, MacroAction::Down),
+                                                    "Down",
+                                                )
+                                                .clicked()
+                                            {
+                                                step.action = MacroAction::Down;
+                                                if step.pos.is_none() {
+                                                    step.pos = Some(RelPos { x: 0.5, y: 0.5 });
+                                                }
+                                                dirty = true;
                                             }
-                                            dirty = true;
-                                        }
-                                        if ui
-                                            .selectable_label(
-                                                matches!(step.action, MacroAction::Up),
-                                                "Up",
-                                            )
-                                            .clicked()
-                                        {
-                                            step.action = MacroAction::Up;
-                                            step.pos = None;
-                                            dirty = true;
-                                        }
-                                    });
-                                if ui.button("Remove").clicked() {
-                                    remove_idx = Some(step_idx);
+                                            if ui
+                                                .selectable_label(
+                                                    matches!(step.action, MacroAction::Up),
+                                                    "Up",
+                                                )
+                                                .clicked()
+                                            {
+                                                step.action = MacroAction::Up;
+                                                step.pos = None;
+                                                dirty = true;
+                                            }
+                                        });
+                                    if ui.button("Remove").clicked() {
+                                        remove_idx = Some(step_idx);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Slot");
+                                    let mut slot = step.slot as f64;
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut slot)
+                                                .range(0.0..=MAX_LOGICAL_TOUCH_SLOT as f64),
+                                        )
+                                        .changed()
+                                    {
+                                        step.slot = slot as u8;
+                                        dirty = true;
+                                    }
+                                    ui.label("Delay");
+                                    let mut delay = step.delay_ms as f64;
+                                    if ui
+                                        .add(egui::DragValue::new(&mut delay).range(0.0..=5000.0))
+                                        .changed()
+                                    {
+                                        step.delay_ms = delay as u64;
+                                        dirty = true;
+                                    }
+                                });
+                                if let Some(pos) = &mut step.pos {
+                                    position_editor(ui, pos, screen.as_ref(), &mut dirty);
                                 }
                             });
-                            ui.horizontal(|ui| {
-                                ui.label("Slot");
-                                let mut slot = step.slot as f64;
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut slot)
-                                            .range(0.0..=MAX_LOGICAL_TOUCH_SLOT as f64),
-                                    )
-                                    .changed()
-                                {
-                                    step.slot = slot as u8;
-                                    dirty = true;
-                                }
-                                ui.label("Delay");
-                                let mut delay = step.delay_ms as f64;
-                                if ui
-                                    .add(egui::DragValue::new(&mut delay).range(0.0..=5000.0))
-                                    .changed()
-                                {
-                                    step.delay_ms = delay as u64;
-                                    dirty = true;
-                                }
-                            });
-                            if let Some(pos) = &mut step.pos {
-                                position_editor(ui, pos, screen.as_ref(), &mut dirty);
-                            }
-                        });
-                    }
-                    if let Some(remove_idx) = remove_idx {
-                        sequence.remove(remove_idx);
-                        dirty = true;
-                    }
-                    if ui.button("Add Step").clicked() {
-                        sequence.push(MacroStep {
-                            action: MacroAction::Down,
-                            pos: Some(RelPos { x: 0.5, y: 0.5 }),
-                            slot: 0,
-                            delay_ms: 30,
-                        });
-                        dirty = true;
-                    }
-                }
-
-                if let Node::LayerShift {
-                    layer_name, mode, ..
-                } = node
-                {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label("Target layer");
-                        if ui.text_edit_singleline(layer_name).changed() {
+                        }
+                        if let Some(remove_idx) = remove_idx {
+                            sequence.remove(remove_idx);
                             dirty = true;
                         }
-                    });
-                    egui::ComboBox::from_label("Mode")
-                        .selected_text(match mode {
-                            LayerMode::Hold => "Hold",
-                            LayerMode::Toggle => "Toggle",
-                        })
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(matches!(mode, LayerMode::Hold), "Hold")
-                                .clicked()
-                            {
-                                *mode = LayerMode::Hold;
-                                dirty = true;
-                            }
-                            if ui
-                                .selectable_label(matches!(mode, LayerMode::Toggle), "Toggle")
-                                .clicked()
-                            {
-                                *mode = LayerMode::Toggle;
+                        if ui.button("Add Step").clicked() {
+                            sequence.push(MacroStep {
+                                action: MacroAction::Down,
+                                pos: Some(RelPos { x: 0.5, y: 0.5 }),
+                                slot: 0,
+                                delay_ms: 30,
+                            });
+                            dirty = true;
+                        }
+                    }
+
+                    if let Node::LayerShift {
+                        layer_name, mode, ..
+                    } = node
+                    {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("Target layer");
+                            if ui.text_edit_singleline(layer_name).changed() {
                                 dirty = true;
                             }
                         });
-                }
+                        egui::ComboBox::from_label("Mode")
+                            .selected_text(match mode {
+                                LayerMode::Hold => "Hold",
+                                LayerMode::Toggle => "Toggle",
+                            })
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(matches!(mode, LayerMode::Hold), "Hold")
+                                    .clicked()
+                                {
+                                    *mode = LayerMode::Hold;
+                                    dirty = true;
+                                }
+                                if ui
+                                    .selectable_label(matches!(mode, LayerMode::Toggle), "Toggle")
+                                    .clicked()
+                                {
+                                    *mode = LayerMode::Toggle;
+                                    dirty = true;
+                                }
+                            });
+                    }
 
-                ui.separator();
-                if ui.button("Delete Control").clicked() {
-                    delete_current = true;
+                    ui.separator();
+                    if ui.button("Delete Control").clicked() {
+                        delete_current = true;
+                    }
                 }
 
                 if let Some(target) = start_binding {
                     self.begin_binding_capture(target);
+                }
+                if let Some(template) = convert_to {
+                    if self.convert_selected_node(template) {
+                        self.push_history_snapshot(snapshot_before);
+                        self.mark_dirty();
+                    }
+                    return;
                 }
                 if delete_current {
                     self.delete_selected();
@@ -4249,8 +4509,7 @@ fn draw_node(
 
 fn display_type(node: &Node) -> &'static str {
     match node {
-        Node::Tap { .. } => "Tap Button",
-        Node::HoldTap { .. } => "Hold Button",
+        Node::Tap { .. } => "Button",
         Node::ToggleTap { .. } => "Toggle Button",
         Node::Joystick { .. } => "Left Stick",
         Node::Drag { .. } => "Drag Gesture",
@@ -4265,7 +4524,6 @@ fn display_type(node: &Node) -> &'static str {
 fn display_binding(node: &Node) -> String {
     match node {
         Node::Tap { key, .. }
-        | Node::HoldTap { key, .. }
         | Node::ToggleTap { key, .. }
         | Node::Drag { key, .. }
         | Node::RepeatTap { key, .. }
@@ -4408,7 +4666,6 @@ fn action_button<'a>(ui: &'a mut egui::Ui, text: &'a str, tooltip: &'a str) -> e
 fn node_color(node: &Node) -> Color32 {
     match node {
         Node::Tap { .. } => COLOR_TAP,
-        Node::HoldTap { .. } => COLOR_HOLD,
         Node::ToggleTap { .. } => COLOR_TOGGLE,
         Node::Joystick { .. } => COLOR_JOYSTICK,
         Node::Drag { .. } => COLOR_DRAG,
@@ -4457,7 +4714,6 @@ fn sync_node_pos_from_region(node: &mut Node) {
 fn marker_glyph(node: &Node) -> &'static str {
     match node {
         Node::Tap { .. } => "T",
-        Node::HoldTap { .. } => "H",
         Node::ToggleTap { .. } => "G",
         Node::Joystick { .. } => "J",
         Node::Drag { .. } => "D",
@@ -4472,7 +4728,6 @@ fn marker_glyph(node: &Node) -> &'static str {
 fn node_pos(node: &Node) -> Option<&RelPos> {
     match node {
         Node::Tap { pos, .. }
-        | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
         | Node::Drag { start: pos, .. }
         | Node::RepeatTap { pos, .. }
@@ -4495,7 +4750,6 @@ fn node_pos(node: &Node) -> Option<&RelPos> {
 fn node_pos_mut(node: &mut Node) -> Option<&mut RelPos> {
     match node {
         Node::Tap { pos, .. }
-        | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
         | Node::Drag { start: pos, .. }
         | Node::RepeatTap { pos, .. }
@@ -4518,7 +4772,6 @@ fn node_pos_mut(node: &mut Node) -> Option<&mut RelPos> {
 fn set_node_id(node: &mut Node, id: String) {
     match node {
         Node::Tap { id: field, .. }
-        | Node::HoldTap { id: field, .. }
         | Node::ToggleTap { id: field, .. }
         | Node::Joystick { id: field, .. }
         | Node::Drag { id: field, .. }
@@ -4533,8 +4786,7 @@ fn set_node_id(node: &mut Node, id: String) {
 fn tool_label(tool: Tool) -> &'static str {
     match tool {
         Tool::Select => "Select",
-        Tool::Place(NodeTemplate::Tap) => "tap button",
-        Tool::Place(NodeTemplate::HoldTap) => "hold button",
+        Tool::Place(NodeTemplate::Tap) => "button",
         Tool::Place(NodeTemplate::ToggleTap) => "toggle button",
         Tool::Place(NodeTemplate::Joystick) => "left stick",
         Tool::Place(NodeTemplate::Drag) => "drag gesture",
@@ -5146,10 +5398,108 @@ fn offset_region(region: Region) -> Region {
     })
 }
 
+fn template_label(template: NodeTemplate) -> &'static str {
+    match template {
+        NodeTemplate::Tap => "Button",
+        NodeTemplate::ToggleTap => "Toggle Button",
+        NodeTemplate::Joystick => "Left Stick",
+        NodeTemplate::Drag => "Drag Gesture",
+        NodeTemplate::MouseLook => "Aim",
+        NodeTemplate::RepeatTap => "Rapid Tap",
+        NodeTemplate::Wheel => "Wheel Control",
+        NodeTemplate::Macro => "Macro",
+        NodeTemplate::LayerShift => "Layer Switch",
+    }
+}
+
+fn template_from_node(node: &Node) -> NodeTemplate {
+    match node {
+        Node::Tap { .. } => NodeTemplate::Tap,
+        Node::ToggleTap { .. } => NodeTemplate::ToggleTap,
+        Node::Joystick { .. } => NodeTemplate::Joystick,
+        Node::Drag { .. } => NodeTemplate::Drag,
+        Node::MouseCamera { .. } => NodeTemplate::MouseLook,
+        Node::RepeatTap { .. } => NodeTemplate::RepeatTap,
+        Node::Wheel { .. } => NodeTemplate::Wheel,
+        Node::Macro { .. } => NodeTemplate::Macro,
+        Node::LayerShift { .. } => NodeTemplate::LayerShift,
+    }
+}
+
+fn node_conversion_anchor(node: &Node) -> RelPos {
+    match node {
+        Node::Tap { pos, .. } | Node::ToggleTap { pos, .. } | Node::RepeatTap { pos, .. } => *pos,
+        Node::Drag { start, .. } => *start,
+        Node::MouseCamera { anchor, .. } => *anchor,
+        Node::Joystick {
+            mode: JoystickMode::Fixed,
+            pos,
+            ..
+        } => *pos,
+        Node::Joystick {
+            mode: JoystickMode::Floating,
+            region,
+            pos,
+            ..
+        } => region.as_ref().map(region_center).unwrap_or(*pos),
+        Node::Wheel {
+            up_pos, down_pos, ..
+        } => RelPos {
+            x: round3((up_pos.x + down_pos.x) * 0.5),
+            y: round3((up_pos.y + down_pos.y) * 0.5),
+        },
+        Node::Macro { .. } | Node::LayerShift { .. } => RelPos { x: 0.5, y: 0.5 },
+    }
+}
+
+fn node_primary_binding_for_conversion(node: &Node) -> Option<String> {
+    match node {
+        Node::Tap { key, .. }
+        | Node::ToggleTap { key, .. }
+        | Node::Drag { key, .. }
+        | Node::RepeatTap { key, .. }
+        | Node::Macro { key, .. }
+        | Node::LayerShift { key, .. } => Some(key.clone()),
+        Node::MouseCamera {
+            activation_mode,
+            activation_key,
+            ..
+        } => match activation_mode {
+            MouseCameraActivationMode::AlwaysOn => None,
+            MouseCameraActivationMode::WhileHeld | MouseCameraActivationMode::Toggle => {
+                activation_key.clone()
+            }
+        },
+        Node::Joystick { .. } | Node::Wheel { .. } => None,
+    }
+}
+
+fn reusable_single_slot(app: &PhantomGui, exclude_idx: usize, node: &Node) -> Option<u8> {
+    match node {
+        Node::Wheel { up_slot, .. } => Some(*up_slot),
+        _ => node.slot().or_else(|| app.next_slot_excluding(exclude_idx)),
+    }
+}
+
+fn reusable_wheel_slots(app: &PhantomGui, exclude_idx: usize, node: &Node) -> Option<(u8, u8)> {
+    match node {
+        Node::Wheel {
+            up_slot, down_slot, ..
+        } => Some((*up_slot, *down_slot)),
+        _ => {
+            let primary = reusable_single_slot(app, exclude_idx, node)?;
+            let mut used = app.used_touch_slots_excluding(exclude_idx)?;
+            used.insert(primary);
+            let secondary =
+                (0..=MAX_LOGICAL_TOUCH_SLOT).find(|candidate| !used.contains(candidate))?;
+            Some((primary, secondary))
+        }
+    }
+}
+
 fn node_id_prefix(node: &Node) -> &'static str {
     match node {
         Node::Tap { .. } => "tap",
-        Node::HoldTap { .. } => "hold",
         Node::ToggleTap { .. } => "toggle",
         Node::Joystick { .. } => "stick",
         Node::Drag { .. } => "drag",
@@ -5183,10 +5533,7 @@ fn draw_hover_card(
         lines.push(format!("Layer: {}", node.layer()));
     }
     match node {
-        Node::Tap { pos, .. }
-        | Node::HoldTap { pos, .. }
-        | Node::ToggleTap { pos, .. }
-        | Node::RepeatTap { pos, .. } => {
+        Node::Tap { pos, .. } | Node::ToggleTap { pos, .. } | Node::RepeatTap { pos, .. } => {
             lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
             if let Some(screen) = screen {
                 let (px, py) = rel_to_pixels(pos, screen);

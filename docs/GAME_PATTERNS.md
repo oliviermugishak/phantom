@@ -44,7 +44,7 @@ For example:
 
 - `joystick` on `W/A/S/D`
 - `aim` on `MouseRight` in `while_held` or `toggle`
-- `hold_tap` on `MouseLeft` for fire
+- `tap` on `MouseLeft` for fire
 - `repeat_tap` on an auxiliary key when the game benefits from repeated taps
 - `wheel` for scroll-driven stance, zoom, or context actions
 - `tap` on `Space` for jump
@@ -287,8 +287,8 @@ Then vehicle-only actions can live in:
 For example:
 
 - `tap` for exit
-- `hold_tap` for accelerate
-- `hold_tap` for brake
+- `tap` for accelerate
+- `tap` for brake
 - `tap` for seat switch
 
 ## 11. JSON Example: ADS + Aim
@@ -346,7 +346,7 @@ Use a different control type instead of forcing one primitive to do everything:
 - use `drag` for one-shot swipes
 - use `joystick` for continuous movement
 - use `aim` for camera/look
-- use `hold_tap` for true held buttons
+- use `tap` for standard press/release buttons, including actions that the game treats as held while the key stays down
 - use `toggle_tap` only when the game really wants a latched state
 
 This keeps profiles clean and behavior predictable.

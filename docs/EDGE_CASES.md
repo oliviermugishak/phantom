@@ -17,7 +17,6 @@ The real limit is runtime concurrency:
 Affected node types:
 
 - `tap`
-- `hold_tap`
 - `toggle_tap`
 - `joystick`
 - `drag`

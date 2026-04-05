@@ -474,10 +474,7 @@ fn build_preview_specs(profile: &Profile, frame: OverlayFrame) -> Vec<PreviewSpe
     let mut specs = Vec::new();
     for node in &profile.nodes {
         match node {
-            Node::Tap { pos, .. }
-            | Node::HoldTap { pos, .. }
-            | Node::ToggleTap { pos, .. }
-            | Node::RepeatTap { pos, .. } => {
+            Node::Tap { pos, .. } | Node::ToggleTap { pos, .. } | Node::RepeatTap { pos, .. } => {
                 specs.push(PreviewSpec::Marker(button_marker_spec(
                     frame,
                     pos,
@@ -1300,7 +1297,6 @@ fn distance_to_segment(point: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
 fn marker_color(node: &Node) -> Rgba {
     match node {
         Node::Tap { .. } => rgba(66, 133, 244, 230),
-        Node::HoldTap { .. } => rgba(234, 67, 53, 230),
         Node::ToggleTap { .. } => rgba(0, 172, 193, 230),
         Node::RepeatTap { .. } => rgba(171, 71, 188, 230),
         _ => rgba(255, 255, 255, 230),
@@ -1406,10 +1402,9 @@ impl eframe::App for OverlayApp {
 fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) {
     for node in &profile.nodes {
         match node {
-            Node::Tap { pos, .. }
-            | Node::HoldTap { pos, .. }
-            | Node::ToggleTap { pos, .. }
-            | Node::RepeatTap { pos, .. } => draw_button_marker(painter, rect, node, pos),
+            Node::Tap { pos, .. } | Node::ToggleTap { pos, .. } | Node::RepeatTap { pos, .. } => {
+                draw_button_marker(painter, rect, node, pos)
+            }
             Node::Wheel {
                 up_pos, down_pos, ..
             } => draw_wheel_markers(painter, rect, up_pos, down_pos),
@@ -1672,7 +1667,6 @@ fn draw_corner_guide(
 fn compact_label(node: &Node) -> String {
     match node {
         Node::Tap { key, .. }
-        | Node::HoldTap { key, .. }
         | Node::ToggleTap { key, .. }
         | Node::Drag { key, .. }
         | Node::RepeatTap { key, .. } => key.clone(),
@@ -1739,7 +1733,6 @@ fn look_stroke() -> Color32 {
 fn marker_stroke(node: &Node) -> Stroke {
     let color = match node {
         Node::Tap { .. } => Color32::from_rgb(66, 133, 244),
-        Node::HoldTap { .. } => Color32::from_rgb(234, 67, 53),
         Node::ToggleTap { .. } => Color32::from_rgb(0, 172, 193),
         Node::RepeatTap { .. } => Color32::from_rgb(171, 71, 188),
         _ => Color32::WHITE,
