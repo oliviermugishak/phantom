@@ -184,7 +184,10 @@ Fields:
 - `pos`
   Stick anchor. Required for compatibility and fixed mode.
 - `radius`
-  Maximum drag distance.
+  Base drag distance. For keyboard movement, Phantom now prefers a strong
+  full-throw swipe; fixed mode drives from the anchor toward the screen edge,
+  while floating mode uses `radius` to keep the anchor safely inside the
+  movement zone before swiping toward that zone's edge.
 - `mode`
   One of:
   - `fixed`
@@ -196,18 +199,23 @@ Behavior:
 
 - first direction press -> finger down
 - direction changes -> `TouchMove`
-- all directions released -> `TouchUp`
+- all directions released -> immediate neutral recenter, then a very short delayed
+  `TouchUp` so fast re-engage does not require a fresh drag start
+- opposite directions on the same axis prefer the most recently pressed key
+  instead of collapsing to a neutral stall while both keys are briefly held
 
 Modes:
 
 - `fixed`
   - uses `pos` as the exact center
-  - starts with an immediate two-frame drag: `TouchDown` at center, then `TouchMove`
+  - starts with an immediate two-frame drag: `TouchDown` at center, then a
+    long edge-directed `TouchMove`
   - best for visible static sticks
 - `floating`
-  - chooses a runtime origin inside `region`
+  - chooses a stable runtime origin inside `region`, centered from the configured
+    position and clamped safely inside the zone
   - keeps that origin stable until all movement keys are released
-  - starts with an immediate two-frame drag from its runtime origin
+  - starts with an immediate two-frame drag from that origin toward the zone edge
   - best for floating movement zones and football-style drag movement
 
 ### `drag`

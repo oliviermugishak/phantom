@@ -242,6 +242,17 @@ Practical examples:
 - football-style drag movement zone: usually `floating`
 - some MOBAs with loose movement areas: usually `floating`
 
+Engine note:
+
+- keyboard-driven joysticks now re-center briefly before lifting on full release,
+  which helps fast re-engage in games like PUBG and eFootball
+- when opposite directions on the same axis overlap briefly, Phantom follows the
+  most recently pressed direction instead of dropping to neutral first
+- keyboard-driven joystick movement now uses a stronger full-throw swipe model:
+  fixed sticks drag from their center toward the screen edge, and floating
+  sticks drag from a stable anchor toward the movement-zone edge instead of
+  making a short local nudge
+
 ## 8. COD / PUBG Large-Profile Planning
 
 For large shooter profiles, use this order:

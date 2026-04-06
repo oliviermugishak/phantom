@@ -264,7 +264,13 @@ fn full_pubg_move_and_shoot() {
 
     let cmds = engine.process(&InputEvent::KeyRelease(Key::D));
     assert_eq!(cmds.len(), 1);
-    assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
+    if let TouchCommand::TouchMove { slot, x, y } = &cmds[0] {
+        assert_eq!(*slot, 0);
+        assert!((x - 0.18).abs() < 0.001);
+        assert!((y - 0.72).abs() < 0.001);
+    } else {
+        panic!("expected TouchMove");
+    }
 }
 
 #[test]
@@ -282,16 +288,16 @@ fn fixed_joystick_represses_without_stale_diagonal_state() {
     assert!((y - 0.72).abs() < 0.001);
 
     let cmds = engine.process(&InputEvent::KeyRelease(Key::A));
-    assert!(matches!(
-        cmds.as_slice(),
-        [TouchCommand::TouchUp { slot: 0 }]
-    ));
+    let [TouchCommand::TouchMove { slot, x, y }] = cmds.as_slice() else {
+        panic!("expected center move, got {cmds:?}");
+    };
+    assert_eq!(*slot, 0);
+    assert!((x - 0.18).abs() < 0.001);
+    assert!((y - 0.72).abs() < 0.001);
 
     let cmds = engine.process(&InputEvent::KeyPress(Key::W));
-    let [TouchCommand::TouchDown { slot, .. }, TouchCommand::Commit, TouchCommand::TouchMove { x, y, .. }] =
-        cmds.as_slice()
-    else {
-        panic!("expected down+commit+move, got {cmds:?}");
+    let [TouchCommand::TouchMove { slot, x, y, .. }] = cmds.as_slice() else {
+        panic!("expected move, got {cmds:?}");
     };
     assert_eq!(*slot, 0);
     assert!((x - 0.18).abs() < 0.001);
@@ -636,17 +642,16 @@ fn key_from_str_invalid() {
 // ===== Coordinate edge cases =====
 
 #[test]
-fn joystick_opposing_keys_cancel() {
+fn joystick_opposing_keys_follow_last_pressed_direction() {
     let mut engine = KeymapEngine::new(pubg_profile());
 
-    // Press W and S simultaneously
+    // Press W then S; the newer vertical direction should win without a neutral stall.
     engine.process(&InputEvent::KeyPress(Key::W));
     let cmds = engine.process(&InputEvent::KeyPress(Key::S));
-    // Both up and down held — dy should be 0
     if let Some(TouchCommand::TouchMove { x, y, .. }) = cmds.first() {
         let pos = RelPos { x: 0.18, y: 0.72 };
-        assert!((x - pos.x).abs() < 0.001); // no x change
-        assert!((y - pos.y).abs() < 0.001); // no y change (canceled)
+        assert!((x - pos.x).abs() < 0.001);
+        assert!(*y > pos.y);
     }
 }
 

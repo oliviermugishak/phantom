@@ -58,6 +58,12 @@ Compatibility note:
 Important recent additions:
 
 - `joystick` now supports both `fixed` and `floating` modes
+- keyboard joysticks now briefly re-center before lifting on full release and
+  prefer the most recently pressed same-axis direction, which reduces movement
+  hesitation during fast re-engage and direction swaps
+- keyboard joysticks now use a stronger full-throw swipe model, so floating
+  zones drag from a stable anchor toward the zone edge and fixed sticks swipe
+  from their center toward the screen edge
 - `drag` now supports swipe-style games such as Temple Run and Subway Surfers
 - capture-on mouse navigation now defaults to owned menu-touch while gameplay aim is inactive
 - macros now support explicit run modes so a sequence can either cancel on key release or continue as a one-shot
