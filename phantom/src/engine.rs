@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use crate::input::{InputEvent, Key};
 use crate::logging::trace_detail_enabled;
 use crate::profile::{
-    JoystickMode, LayerMode, MacroAction, MacroRunMode, MouseCameraActivationMode, Node, Profile,
-    Region, RelPos,
+    AimCurvePreset, JoystickMode, LayerMode, MacroAction, MacroRunMode, MouseCameraActivationMode,
+    Node, Profile, Region, RelPos,
 };
 
 const AIM_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -79,9 +79,11 @@ pub struct KeymapEngine {
     key_bindings: HashMap<Key, Vec<usize>>,
     joystick_bindings: Vec<Option<JoystickBinding>>,
     states: Vec<NodeState>,
+    pressed_keys: HashSet<Key>,
     sensitivity: f64,
     paused: bool,
     active_layers: HashSet<String>,
+    suspend_base_layers: HashSet<String>,
 }
 
 impl KeymapEngine {
@@ -113,6 +115,18 @@ impl KeymapEngine {
             .iter()
             .map(Self::build_joystick_binding)
             .collect();
+        let suspend_base_layers: HashSet<String> = profile
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::LayerShift {
+                    layer_name,
+                    suspend_base: true,
+                    ..
+                } => Some(layer_name.trim().to_string()),
+                _ => None,
+            })
+            .collect();
 
         let mut key_bindings: HashMap<Key, Vec<usize>> = HashMap::new();
         for (idx, node) in profile.nodes.iter().enumerate() {
@@ -131,8 +145,10 @@ impl KeymapEngine {
             key_bindings,
             joystick_bindings,
             states,
+            pressed_keys: HashSet::new(),
             paused: false,
             active_layers: HashSet::new(),
+            suspend_base_layers,
         }
     }
 
@@ -176,6 +192,7 @@ impl KeymapEngine {
             slot,
             anchor,
             reach,
+            activation_mode,
             ..
         } = &self.profile.nodes[idx]
         else {
@@ -205,7 +222,11 @@ impl KeymapEngine {
         }
 
         self.states[idx] =
-            Self::suspended_mouse_camera_state(anchor, *reach, enabled, current_x, current_y);
+            if !enabled && matches!(activation_mode, MouseCameraActivationMode::WhileHeld) {
+                Self::mouse_camera_state(anchor, *reach, false)
+            } else {
+                Self::suspended_mouse_camera_state(anchor, *reach, enabled, current_x, current_y)
+            };
         cmds
     }
 
@@ -231,7 +252,8 @@ impl KeymapEngine {
             finger_active = true;
         }
 
-        for _ in 0..8 {
+        let mut remaining_segments = 0usize;
+        loop {
             let target_x = current_x + delta_x;
             let target_y = current_y + delta_y;
             let (next_x, next_y) =
@@ -271,9 +293,26 @@ impl KeymapEngine {
             current_y = anchor_y;
             delta_x = leftover_x;
             delta_y = leftover_y;
+
+            remaining_segments += 1;
+            if remaining_segments >= 1024 {
+                tracing::warn!(
+                    slot,
+                    delta_x,
+                    delta_y,
+                    "aim re-segmentation hit safety cap; dropping remaining motion"
+                );
+                break;
+            }
         }
 
         (cmds, finger_active, current_x, current_y)
+    }
+
+    fn is_base_layer_suspended(&self) -> bool {
+        self.active_layers
+            .iter()
+            .any(|layer| self.suspend_base_layers.contains(layer))
     }
 
     fn build_joystick_binding(node: &Node) -> Option<JoystickBinding> {
@@ -398,6 +437,17 @@ impl KeymapEngine {
     pub fn process(&mut self, event: &InputEvent) -> Vec<TouchCommand> {
         if self.paused {
             return vec![];
+        }
+        match event {
+            InputEvent::KeyPress(key) => {
+                self.pressed_keys.insert(*key);
+            }
+            InputEvent::KeyRelease(key) => {
+                self.pressed_keys.remove(key);
+            }
+            InputEvent::MouseMove { .. }
+            | InputEvent::PointerContactStart { .. }
+            | InputEvent::PointerContactEnd { .. } => {}
         }
         let cmds = match event {
             InputEvent::KeyPress(key) => self.handle_key_press(*key),
@@ -644,12 +694,15 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         for idx in indices {
             if let Node::LayerShift {
-                layer_name, mode, ..
+                layer_name,
+                mode,
+                suspend_base,
+                ..
             } = &self.profile.nodes[idx]
             {
                 let layer_name = layer_name.clone();
                 let mode = mode.clone();
-                cmds.extend(self.handle_layer_shift_press(idx, &layer_name, &mode));
+                cmds.extend(self.handle_layer_shift_press(idx, &layer_name, &mode, *suspend_base));
             } else {
                 let node = &self.profile.nodes[idx];
                 if !self.is_node_active(node) {
@@ -670,12 +723,20 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         for idx in indices {
             if let Node::LayerShift {
-                layer_name, mode, ..
+                layer_name,
+                mode,
+                suspend_base,
+                ..
             } = &self.profile.nodes[idx]
             {
                 let layer_name = layer_name.clone();
                 let mode = mode.clone();
-                cmds.extend(self.handle_layer_shift_release(idx, &layer_name, &mode));
+                cmds.extend(self.handle_layer_shift_release(
+                    idx,
+                    &layer_name,
+                    &mode,
+                    *suspend_base,
+                ));
             } else {
                 let node = &self.profile.nodes[idx];
                 if !self.is_node_active(node) {
@@ -1041,6 +1102,7 @@ impl KeymapEngine {
         idx: usize,
         layer_name: &str,
         mode: &LayerMode,
+        suspend_base: bool,
     ) -> Vec<TouchCommand> {
         match mode {
             LayerMode::Hold => {
@@ -1048,6 +1110,9 @@ impl KeymapEngine {
                     if !*held {
                         self.active_layers.insert(layer_name.to_string());
                         self.states[idx] = NodeState::LayerShift { held: true };
+                        if suspend_base {
+                            return self.reconcile_after_layer_change();
+                        }
                     }
                 }
                 vec![]
@@ -1059,6 +1124,9 @@ impl KeymapEngine {
                 } else {
                     self.active_layers.insert(layer_name.to_string());
                 }
+                if suspend_base {
+                    cmds.extend(self.reconcile_after_layer_change());
+                }
                 cmds
             }
         }
@@ -1069,6 +1137,7 @@ impl KeymapEngine {
         idx: usize,
         layer_name: &str,
         mode: &LayerMode,
+        suspend_base: bool,
     ) -> Vec<TouchCommand> {
         match mode {
             LayerMode::Hold => {
@@ -1077,6 +1146,9 @@ impl KeymapEngine {
                         let mut cmds = self.release_layer(layer_name);
                         self.active_layers.remove(layer_name);
                         self.states[idx] = NodeState::LayerShift { held: false };
+                        if suspend_base {
+                            cmds.extend(self.reconcile_after_layer_change());
+                        }
                         return std::mem::take(&mut cmds);
                     }
                 }
@@ -1104,6 +1176,7 @@ impl KeymapEngine {
                 anchor,
                 reach,
                 sensitivity,
+                curve,
                 invert_y,
                 ..
             } = node
@@ -1120,7 +1193,7 @@ impl KeymapEngine {
                         continue;
                     }
 
-                    let (raw_delta_x, raw_delta_y) = shape_aim_delta(dx, dy, source);
+                    let (raw_delta_x, raw_delta_y) = shape_aim_delta(dx, dy, source, curve);
                     let delta_x = raw_delta_x * sensitivity * self.sensitivity;
                     let delta_y = if *invert_y { -raw_delta_y } else { raw_delta_y }
                         * sensitivity
@@ -1231,6 +1304,8 @@ impl KeymapEngine {
     }
 
     pub fn resync_mouse_buttons(&mut self, pressed: &HashSet<Key>) -> Vec<TouchCommand> {
+        self.pressed_keys.retain(|key| !key.is_mouse());
+        self.pressed_keys.extend(pressed.iter().copied());
         let mut cmds = Vec::new();
 
         for idx in 0..self.profile.nodes.len() {
@@ -1347,18 +1422,21 @@ impl KeymapEngine {
     }
 
     pub fn resync_keyboard_keys(&mut self, pressed: &HashSet<Key>) -> Vec<TouchCommand> {
+        self.pressed_keys.retain(|key| key.is_mouse());
+        self.pressed_keys.extend(pressed.iter().copied());
         let mut cmds = Vec::new();
 
         // Hold-style layer shifts must be re-established first so held keys in
         // those layers can be resynced against the correct active-layer state.
         for idx in 0..self.profile.nodes.len() {
-            let (bound_key, layer_name, mode) = match &self.profile.nodes[idx] {
+            let (bound_key, layer_name, mode, suspend_base) = match &self.profile.nodes[idx] {
                 Node::LayerShift {
                     key,
                     layer_name,
                     mode,
+                    suspend_base,
                     ..
-                } => (key.clone(), layer_name.clone(), mode.clone()),
+                } => (key.clone(), layer_name.clone(), mode.clone(), *suspend_base),
                 _ => continue,
             };
 
@@ -1376,12 +1454,18 @@ impl KeymapEngine {
             let held = matches!(&self.states[idx], NodeState::LayerShift { held: true });
             let should_hold = pressed.contains(&bound_key);
             match (held, should_hold) {
-                (false, true) => {
-                    cmds.extend(self.handle_layer_shift_press(idx, &layer_name, &mode))
-                }
-                (true, false) => {
-                    cmds.extend(self.handle_layer_shift_release(idx, &layer_name, &mode))
-                }
+                (false, true) => cmds.extend(self.handle_layer_shift_press(
+                    idx,
+                    &layer_name,
+                    &mode,
+                    suspend_base,
+                )),
+                (true, false) => cmds.extend(self.handle_layer_shift_release(
+                    idx,
+                    &layer_name,
+                    &mode,
+                    suspend_base,
+                )),
                 _ => {}
             }
         }
@@ -1489,6 +1573,37 @@ impl KeymapEngine {
             }
         }
 
+        cmds
+    }
+
+    fn reconcile_after_layer_change(&mut self) -> Vec<TouchCommand> {
+        let mut cmds = Vec::new();
+
+        for idx in 0..self.profile.nodes.len() {
+            if !self.is_node_active(&self.profile.nodes[idx]) {
+                if matches!(&self.profile.nodes[idx], Node::MouseCamera { .. }) {
+                    cmds.extend(self.suspend_mouse_node(idx));
+                } else {
+                    cmds.extend(self.release_node(idx));
+                }
+            }
+        }
+
+        let pressed_keyboard: HashSet<Key> = self
+            .pressed_keys
+            .iter()
+            .copied()
+            .filter(|key| !key.is_mouse())
+            .collect();
+        let pressed_mouse: HashSet<Key> = self
+            .pressed_keys
+            .iter()
+            .copied()
+            .filter(|key| key.is_mouse())
+            .collect();
+
+        cmds.extend(self.resync_keyboard_keys(&pressed_keyboard));
+        cmds.extend(self.resync_mouse_buttons(&pressed_mouse));
         cmds
     }
 
@@ -1633,8 +1748,15 @@ impl KeymapEngine {
     }
 
     fn is_node_active(&self, node: &Node) -> bool {
+        if matches!(node, Node::LayerShift { .. }) {
+            return true;
+        }
         let layer = node.layer().trim();
-        layer.is_empty() || self.active_layers.contains(layer)
+        if layer.is_empty() {
+            !self.is_base_layer_suspended()
+        } else {
+            self.active_layers.contains(layer)
+        }
     }
 
     fn node_uses_mouse_input(&self, node: &Node) -> bool {
@@ -1693,21 +1815,38 @@ fn smoothstep01(t: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn shape_relative_aim_component(delta: i32) -> f64 {
+fn shape_relative_aim_component(delta: i32, curve: &AimCurvePreset) -> f64 {
+    if matches!(curve, AimCurvePreset::Linear) {
+        return delta as f64 * AIM_RELATIVE_BASE_SCALE;
+    }
+
+    let (min_factor, max_factor, curve_end) = match curve {
+        AimCurvePreset::Linear => unreachable!(),
+        AimCurvePreset::Precision => (0.18, 1.10, 14.0),
+        AimCurvePreset::Balanced => (
+            AIM_RELATIVE_MIN_FACTOR,
+            AIM_RELATIVE_MAX_FACTOR,
+            AIM_RELATIVE_CURVE_END,
+        ),
+    };
     let magnitude = (delta.abs()) as f64;
     let curve = smoothstep01(
-        (magnitude - AIM_RELATIVE_CURVE_START)
-            / (AIM_RELATIVE_CURVE_END - AIM_RELATIVE_CURVE_START),
+        (magnitude - AIM_RELATIVE_CURVE_START) / (curve_end - AIM_RELATIVE_CURVE_START),
     );
-    let factor = lerp(AIM_RELATIVE_MIN_FACTOR, AIM_RELATIVE_MAX_FACTOR, curve);
+    let factor = lerp(min_factor, max_factor, curve);
     delta as f64 * AIM_RELATIVE_BASE_SCALE * factor
 }
 
-fn shape_aim_delta(dx: i32, dy: i32, source: crate::input::MouseMotionSource) -> (f64, f64) {
+fn shape_aim_delta(
+    dx: i32,
+    dy: i32,
+    source: crate::input::MouseMotionSource,
+    curve: &AimCurvePreset,
+) -> (f64, f64) {
     match source {
         crate::input::MouseMotionSource::Relative => (
-            shape_relative_aim_component(dx),
-            shape_relative_aim_component(dy),
+            shape_relative_aim_component(dx, curve),
+            shape_relative_aim_component(dy, curve),
         ),
         crate::input::MouseMotionSource::Absolute => (
             dx as f64 * AIM_ABSOLUTE_SCALE,
@@ -1838,6 +1977,7 @@ mod tests {
             anchor: RelPos { x: 0.75, y: 0.5 },
             reach: 0.18,
             sensitivity: 1.0,
+            curve: AimCurvePreset::Balanced,
             activation_mode: mode,
             activation_key: activation_key.map(str::to_string),
             invert_y: false,
@@ -2187,6 +2327,78 @@ mod tests {
     }
 
     #[test]
+    fn mouse_camera_while_held_recenters_on_reengage() {
+        let profile = Profile {
+            name: "Cam Hold".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![aim_node(
+                MouseCameraActivationMode::WhileHeld,
+                Some("MouseRight"),
+            )],
+        };
+        let mut engine = KeymapEngine::new(profile);
+
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::MouseRight))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 50,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        let moved_x = match &cmds[2] {
+            TouchCommand::TouchMove { x, .. } => *x,
+            other => panic!("expected move, got {other:?}"),
+        };
+        assert!(moved_x > 0.75);
+
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::MouseRight));
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchUp { slot: 1 }]
+        ));
+
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::MouseRight))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 1,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        let restarted_x = match &cmds[0] {
+            TouchCommand::TouchDown { x, .. } => *x,
+            other => panic!("expected down, got {other:?}"),
+        };
+        assert!((restarted_x - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn mouse_camera_large_flick_resegments_without_clipping() {
+        let profile = Profile {
+            name: "Cam".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![aim_node(MouseCameraActivationMode::AlwaysOn, None)],
+        };
+        let mut engine = KeymapEngine::new(profile);
+
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 400,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        assert!(cmds.len() > 8);
+        let NodeState::MouseCamera { current_x, .. } = &engine.states[0] else {
+            panic!("expected mouse camera state");
+        };
+        assert!(*current_x > 0.75);
+    }
+
+    #[test]
     fn keyboard_resync_restores_held_standard_button() {
         let mut engine = KeymapEngine::new(test_profile());
         let mut pressed = HashSet::new();
@@ -2313,19 +2525,31 @@ mod tests {
 
     #[test]
     fn relative_aim_curve_damps_small_motion_and_preserves_large_turns() {
-        let (small_dx, small_dy) = shape_aim_delta(1, 0, MouseMotionSource::Relative);
+        let (small_dx, small_dy) =
+            shape_aim_delta(1, 0, MouseMotionSource::Relative, &AimCurvePreset::Balanced);
         assert!(small_dx > 0.0);
         assert_eq!(small_dy, 0.0);
 
-        let (large_dx, _) = shape_aim_delta(30, 0, MouseMotionSource::Relative);
+        let (large_dx, _) = shape_aim_delta(
+            30,
+            0,
+            MouseMotionSource::Relative,
+            &AimCurvePreset::Balanced,
+        );
         assert!(large_dx > small_dx);
         assert!((large_dx / 30.0) > small_dx);
     }
 
     #[test]
     fn relative_aim_curve_does_not_cross_amplify_minor_axis_noise() {
-        let (pure_dx, pure_dy) = shape_aim_delta(1, 0, MouseMotionSource::Relative);
-        let (mixed_dx, mixed_dy) = shape_aim_delta(1, 20, MouseMotionSource::Relative);
+        let (pure_dx, pure_dy) =
+            shape_aim_delta(1, 0, MouseMotionSource::Relative, &AimCurvePreset::Balanced);
+        let (mixed_dx, mixed_dy) = shape_aim_delta(
+            1,
+            20,
+            MouseMotionSource::Relative,
+            &AimCurvePreset::Balanced,
+        );
 
         assert!((mixed_dx - pure_dx).abs() < f64::EPSILON);
         assert_eq!(pure_dy, 0.0);
@@ -2333,8 +2557,21 @@ mod tests {
     }
 
     #[test]
+    fn linear_aim_curve_preserves_raw_scale() {
+        let (dx, dy) =
+            shape_aim_delta(10, -5, MouseMotionSource::Relative, &AimCurvePreset::Linear);
+        assert!((dx - (10.0 * AIM_RELATIVE_BASE_SCALE)).abs() < f64::EPSILON);
+        assert!((dy - (-5.0 * AIM_RELATIVE_BASE_SCALE)).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn absolute_aim_curve_stays_linear() {
-        let (dx, dy) = shape_aim_delta(10, -5, MouseMotionSource::Absolute);
+        let (dx, dy) = shape_aim_delta(
+            10,
+            -5,
+            MouseMotionSource::Absolute,
+            &AimCurvePreset::Balanced,
+        );
         assert!((dx - (10.0 * AIM_ABSOLUTE_SCALE)).abs() < f64::EPSILON);
         assert!((dy - (-5.0 * AIM_ABSOLUTE_SCALE)).abs() < f64::EPSILON);
     }
@@ -2389,6 +2626,7 @@ mod tests {
                     key: "LeftAlt".into(),
                     layer_name: "combat".into(),
                     mode: LayerMode::Hold,
+                    suspend_base: false,
                 },
             ],
         };
@@ -2405,5 +2643,113 @@ mod tests {
         assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 1 }));
         let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn suspend_base_layer_remaps_held_key() {
+        let profile = Profile {
+            name: "Layers".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![
+                Node::Tap {
+                    id: "forward".into(),
+                    layer: String::new(),
+                    slot: 0,
+                    pos: RelPos { x: 0.2, y: 0.2 },
+                    key: "W".into(),
+                },
+                Node::Tap {
+                    id: "vehicle_forward".into(),
+                    layer: "vehicle".into(),
+                    slot: 1,
+                    pos: RelPos { x: 0.8, y: 0.8 },
+                    key: "W".into(),
+                },
+                Node::LayerShift {
+                    id: "vehicle_layer".into(),
+                    key: "LeftAlt".into(),
+                    layer_name: "vehicle".into(),
+                    mode: LayerMode::Hold,
+                    suspend_base: true,
+                },
+            ],
+        };
+        let mut engine = KeymapEngine::new(profile);
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchDown { slot: 0, .. }]
+        ));
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::LeftAlt));
+        assert!(matches!(
+            cmds.as_slice(),
+            [
+                TouchCommand::TouchUp { slot: 0 },
+                TouchCommand::TouchDown { slot: 1, .. }
+            ]
+        ));
+
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
+        assert!(matches!(
+            cmds.as_slice(),
+            [
+                TouchCommand::TouchUp { slot: 1 },
+                TouchCommand::TouchDown { slot: 0, .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn suspend_base_layer_preserves_toggle_camera_state() {
+        let profile = Profile {
+            name: "Cam Toggle".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![
+                aim_node(MouseCameraActivationMode::Toggle, Some("MouseRight")),
+                Node::LayerShift {
+                    id: "vehicle_layer".into(),
+                    key: "LeftAlt".into(),
+                    layer_name: "vehicle".into(),
+                    mode: LayerMode::Hold,
+                    suspend_base: true,
+                },
+            ],
+        };
+        let mut engine = KeymapEngine::new(profile);
+
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::MouseRight))
+            .is_empty());
+        assert!(engine
+            .process(&InputEvent::KeyRelease(Key::MouseRight))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::LeftAlt));
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchUp { slot: 1 }]
+        ));
+
+        assert!(engine
+            .process(&InputEvent::KeyRelease(Key::LeftAlt))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 1,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
     }
 }

@@ -41,6 +41,15 @@ pub enum MouseCameraActivationMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum AimCurvePreset {
+    Linear,
+    Precision,
+    #[default]
+    Balanced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum JoystickMode {
     #[default]
     Fixed,
@@ -115,6 +124,8 @@ pub enum Node {
         )]
         reach: f64,
         sensitivity: f64,
+        #[serde(default, skip_serializing_if = "is_default_aim_curve_preset")]
+        curve: AimCurvePreset,
         #[serde(
             default,
             skip_serializing_if = "is_default_mouse_camera_activation_mode"
@@ -160,6 +171,8 @@ pub enum Node {
         layer_name: String,
         #[serde(default)]
         mode: LayerMode,
+        #[serde(default)]
+        suspend_base: bool,
     },
 }
 
@@ -245,6 +258,10 @@ fn default_aim_anchor() -> RelPos {
 
 fn default_aim_reach() -> f64 {
     0.18
+}
+
+fn is_default_aim_curve_preset(curve: &AimCurvePreset) -> bool {
+    matches!(curve, AimCurvePreset::Balanced)
 }
 
 fn is_default_layer(layer: &str) -> bool {
@@ -416,16 +433,22 @@ impl Node {
                 anchor,
                 reach,
                 sensitivity,
+                curve,
                 activation_mode,
                 activation_key,
                 invert_y,
                 ..
             } => Some(format!(
-                "anchor=({:.3},{:.3}) configured_reach={:.3} operational_cap=0.080 sensitivity={:.3} mode={} key={} invert_y={}",
+                "anchor=({:.3},{:.3}) configured_reach={:.3} operational_cap=0.080 sensitivity={:.3} curve={} mode={} key={} invert_y={}",
                 anchor.x,
                 anchor.y,
                 reach,
                 sensitivity,
+                match curve {
+                    AimCurvePreset::Linear => "linear",
+                    AimCurvePreset::Precision => "precision",
+                    AimCurvePreset::Balanced => "balanced",
+                },
                 match activation_mode {
                     MouseCameraActivationMode::AlwaysOn => "always_on",
                     MouseCameraActivationMode::WhileHeld => "while_held",
@@ -453,14 +476,18 @@ impl Node {
                 }
             )),
             Node::LayerShift {
-                layer_name, mode, ..
+                layer_name,
+                mode,
+                suspend_base,
+                ..
             } => Some(format!(
-                "target={} mode={}",
+                "target={} mode={} suspend_base={}",
                 layer_name,
                 match mode {
                     LayerMode::Hold => "hold",
                     LayerMode::Toggle => "toggle",
-                }
+                },
+                suspend_base
             )),
             _ => None,
         }
@@ -546,6 +573,7 @@ impl Profile {
         let mut slots = HashSet::new();
         let mut keys_by_name: HashMap<String, HashSet<String>> = HashMap::new();
         let mut layer_switch_keys = HashSet::new();
+        let mut layer_switch_modes_by_layer: HashMap<String, Vec<bool>> = HashMap::new();
 
         for node in &self.nodes {
             if !ids.insert(node.id()) {
@@ -584,7 +612,13 @@ impl Profile {
 
             validate_node(node)?;
 
-            if let Node::LayerShift { key, .. } = node {
+            if let Node::LayerShift {
+                key,
+                layer_name,
+                suspend_base,
+                ..
+            } = node
+            {
                 let normalized = normalize_key_name(key);
                 if !layer_switch_keys.insert(normalized.clone()) {
                     return Err(PhantomError::ProfileValidation {
@@ -592,6 +626,10 @@ impl Profile {
                         message: format!("key '{}' bound by multiple layer switches", key),
                     });
                 }
+                layer_switch_modes_by_layer
+                    .entry(layer_name.trim().to_string())
+                    .or_default()
+                    .push(*suspend_base);
             } else {
                 let layer = node.layer().trim().to_string();
                 for key in node.bound_keys() {
@@ -615,10 +653,21 @@ impl Profile {
 
         for (key, layers) in keys_by_name {
             if layers.len() > 1 && layers.contains("") {
+                let non_base_layers: Vec<&str> = layers
+                    .iter()
+                    .filter_map(|layer| (!layer.is_empty()).then_some(layer.as_str()))
+                    .collect();
+                if non_base_layers.iter().all(|layer| {
+                    layer_switch_modes_by_layer
+                        .get(*layer)
+                        .is_some_and(|modes| modes.iter().all(|mode| *mode))
+                }) {
+                    continue;
+                }
                 return Err(PhantomError::ProfileValidation {
                     field: "nodes.key".into(),
                     message: format!(
-                        "key '{}' is bound in the base layer and in a mode layer, which is ambiguous",
+                        "key '{}' is bound in the base layer and in a mode layer without suspend_base protection",
                         key
                     ),
                 });
@@ -799,6 +848,7 @@ fn validate_node(node: &Node) -> Result<()> {
             anchor,
             reach,
             sensitivity,
+            curve: _,
             activation_mode,
             activation_key,
             legacy_region,
@@ -871,7 +921,10 @@ fn validate_node(node: &Node) -> Result<()> {
             }
         }
         Node::LayerShift {
-            key, layer_name, ..
+            key,
+            layer_name,
+            suspend_base: _,
+            ..
         } => {
             validate_key_name(key, &format!("nodes.{id}.key"))?;
             validate_layer_name(layer_name, &format!("nodes.{id}.layer_name"))?;
@@ -1008,6 +1061,7 @@ mod tests {
             key: "LeftAlt".into(),
             layer_name: "combat".into(),
             mode: LayerMode::Toggle,
+            suspend_base: false,
         });
         profile.nodes.push(Node::Tap {
             id: "fire".into(),
@@ -1108,6 +1162,54 @@ mod tests {
     }
 
     #[test]
+    fn allows_duplicate_keys_between_base_and_suspend_base_layer() {
+        let mut p = valid_profile();
+        p.nodes.push(Node::Tap {
+            id: "vehicle_jump".into(),
+            layer: "vehicle".into(),
+            slot: 1,
+            pos: RelPos { x: 0.6, y: 0.6 },
+            key: "Space".into(),
+        });
+        p.nodes.push(Node::LayerShift {
+            id: "vehicle_layer".into(),
+            key: "V".into(),
+            layer_name: "vehicle".into(),
+            mode: LayerMode::Toggle,
+            suspend_base: true,
+        });
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_keys_when_any_layer_switch_skips_suspend_base() {
+        let mut p = valid_profile();
+        p.nodes.push(Node::Tap {
+            id: "vehicle_jump".into(),
+            layer: "vehicle".into(),
+            slot: 1,
+            pos: RelPos { x: 0.6, y: 0.6 },
+            key: "Space".into(),
+        });
+        p.nodes.push(Node::LayerShift {
+            id: "vehicle_hold".into(),
+            key: "V".into(),
+            layer_name: "vehicle".into(),
+            mode: LayerMode::Hold,
+            suspend_base: true,
+        });
+        p.nodes.push(Node::LayerShift {
+            id: "vehicle_toggle".into(),
+            key: "B".into(),
+            layer_name: "vehicle".into(),
+            mode: LayerMode::Toggle,
+            suspend_base: false,
+        });
+
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
     fn allows_duplicate_keys_in_distinct_layers() {
         let mut p = valid_profile();
         p.nodes.clear();
@@ -1145,6 +1247,7 @@ mod tests {
             anchor: default_aim_anchor(),
             reach: 0.0,
             sensitivity: 1.0,
+            curve: AimCurvePreset::Balanced,
             activation_mode: MouseCameraActivationMode::AlwaysOn,
             activation_key: None,
             invert_y: false,
@@ -1163,6 +1266,7 @@ mod tests {
             anchor: default_aim_anchor(),
             reach: default_aim_reach(),
             sensitivity: 1.0,
+            curve: AimCurvePreset::Balanced,
             activation_mode: MouseCameraActivationMode::Toggle,
             activation_key: None,
             invert_y: false,
@@ -1181,6 +1285,7 @@ mod tests {
             anchor: default_aim_anchor(),
             reach: default_aim_reach(),
             sensitivity: 1.0,
+            curve: AimCurvePreset::Balanced,
             activation_mode: MouseCameraActivationMode::AlwaysOn,
             activation_key: Some("MouseRight".into()),
             invert_y: false,

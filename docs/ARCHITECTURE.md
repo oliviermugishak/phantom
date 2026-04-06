@@ -312,9 +312,13 @@ Runtime note:
   cleanly instead of inheriting stale edge position
 - when aim has to re-center or start a fresh drag segment, the engine emits
   explicit transport boundaries so the backend sees a real drag lifecycle
+- the old fixed eight-step re-segmentation cap is gone; large mouse sweeps now
+  keep re-centering until the motion is consumed or a high safety cap is hit
 - the engine also keeps aim travel tighter around its anchor than the raw
   profile reach alone would suggest, so the hidden touch is less likely to roam
   into nearby controls
+- `while_held` re-engage now starts from a fresh center point instead of
+  inheriting the last edge position from the previous hold cycle
 
 When capture is active and gameplay aim is inactive, the daemon runs a separate owned menu-touch path for menu navigation. That path is runtime-only and is not expressed as a profile node. When Phantom enters that mode it seeds its internal cursor from host cursor position if possible, then continues from Phantom-owned cursor state while the mouse remains captured. A tiny always-on-top cursor overlay is launched for that mode so the operator can see where the owned cursor is even though the desktop cursor itself is no longer moving.
 

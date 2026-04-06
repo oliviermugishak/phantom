@@ -35,6 +35,7 @@ fn pubg_profile() -> Profile {
                 anchor: RelPos { x: 0.75, y: 0.5 },
                 reach: 0.18,
                 sensitivity: 1.2,
+                curve: AimCurvePreset::Balanced,
                 activation_mode: MouseCameraActivationMode::AlwaysOn,
                 activation_key: None,
                 invert_y: false,

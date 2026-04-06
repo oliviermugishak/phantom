@@ -110,6 +110,9 @@ Use a `layer_shift` that activates the `vehicle` layer:
 
 - `hold` if vehicle mode should only exist while a key is held
 - `toggle` if it should stay active until explicitly turned off
+- enable `suspend_base` if the vehicle layer reuses the same movement or camera
+  keys as base combat and should temporarily replace them instead of stacking on
+  top of them
 
 For PUBG-style vehicles, `toggle` is usually easier because entering a vehicle is a durable state.
 
@@ -171,6 +174,11 @@ Good for:
 - temporary free-look
 
 This is the best default for shooter profiles.
+
+Engine note:
+
+- `while_held` now re-centers the hidden look touch on release, so quick
+  release/re-engage cycles do not resume from a stale edge position
 
 ## 5.5 Turbo Fire Patterns
 

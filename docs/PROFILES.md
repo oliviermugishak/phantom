@@ -110,7 +110,8 @@ Rules:
 
 - empty layer means base layer
 - `layer_shift` activates named layers
-- a base-layer key may not also be reused in a non-base layer
+- a base-layer key may not also be reused in a non-base layer unless every
+  `layer_shift` that can activate that non-base layer uses `suspend_base: true`
 - the same key may be reused across different non-base layers
 
 For practical large-profile design, especially shooters with vehicles and parachutes, see [GAME_PATTERNS.md](GAME_PATTERNS.md).
@@ -247,6 +248,7 @@ Use cases:
   "anchor": { "x": 0.75, "y": 0.5 },
   "reach": 0.18,
   "sensitivity": 1.2,
+  "curve": "balanced",
   "activation_mode": "while_held",
   "activation_key": "MouseRight",
   "invert_y": false
@@ -263,6 +265,11 @@ Fields:
   have diminishing returns and should not be treated like a visible region size.
 - `sensitivity`
   Node-local multiplier.
+- `curve`
+  Mouse response preset for relative camera input:
+  - `balanced`
+  - `precision`
+  - `linear`
 - `activation_mode`
   One of:
   - `always_on`
@@ -289,8 +296,13 @@ Important:
   touchpad jumps into smaller motion steps before they reach the engine
 - touchpad contact start and end now explicitly re-arm aim between swipes, so
   fast repeated swipe contacts do not inherit stale hidden-touch edge state
+- large relative-mouse sweeps are no longer limited by the old fixed
+  re-segmentation loop; Phantom keeps re-centering the hidden look touch until
+  the movement is consumed or a high safety cap is reached
 - toggled aim state survives `F1` mouse routing changes
 - `while_held` mouse activation keys are resynced when mouse routing is re-enabled
+- `while_held` aim now re-centers on release before the next re-engage, so a
+  quick RMB release and re-press does not restart from a stale edge position
 - older profiles using `type = "mouse_camera"` and `region` still load; Phantom normalizes them to `aim` semantics internally
 - for high-paced shooter play, a real mouse is still the recommended hardware path; touchpad aim remains best-effort
 
@@ -372,7 +384,8 @@ Behavior:
   "type": "layer_shift",
   "key": "LeftAlt",
   "layer_name": "combat",
-  "mode": "hold"
+  "mode": "hold",
+  "suspend_base": true
 }
 ```
 
@@ -380,6 +393,9 @@ Behavior:
 
 - `hold` -> layer active while the key is held
 - `toggle` -> layer active until pressed again
+- `suspend_base = true` -> base-layer action and camera nodes are temporarily
+  disabled while the target layer is active, which lets the target layer reuse
+  the same keys without firing both contexts at once
 
 ## 8. Validation Rules
 
@@ -397,6 +413,8 @@ Important rules:
 - `aim.sensitivity > 0`
 - `aim.activation_key` required for `while_held` and `toggle`
 - `aim.activation_key` omitted for `always_on`
+- if a non-base layer reuses a base-layer key, every `layer_shift` that can
+  activate that layer must use `suspend_base = true`
 - all key names must be known to Phantom
 
 ## 9. Common Key Names

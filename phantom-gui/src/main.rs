@@ -14,7 +14,7 @@ use phantom::config;
 use phantom::input::Key;
 use phantom::ipc::{self, IpcRequest, IpcResponse};
 use phantom::profile::{
-    JoystickKeys, JoystickMode, LayerMode, MacroAction, MacroRunMode, MacroStep,
+    AimCurvePreset, JoystickKeys, JoystickMode, LayerMode, MacroAction, MacroRunMode, MacroStep,
     MouseCameraActivationMode, Node, Profile, Region, RelPos, ScreenOverride,
 };
 
@@ -1606,6 +1606,7 @@ impl PhantomGui {
                     anchor,
                     reach: 0.18,
                     sensitivity: 1.0,
+                    curve: AimCurvePreset::Balanced,
                     activation_mode: if preserved_key.is_some() {
                         MouseCameraActivationMode::WhileHeld
                     } else {
@@ -1691,6 +1692,7 @@ impl PhantomGui {
                     layer.clone()
                 },
                 mode: LayerMode::Hold,
+                suspend_base: false,
             },
         };
 
@@ -1942,6 +1944,7 @@ impl PhantomGui {
                 key: "LeftAlt".into(),
                 layer_name: "combat".into(),
                 mode: LayerMode::Hold,
+                suspend_base: false,
             },
             _ => return,
         };
@@ -2026,6 +2029,7 @@ impl PhantomGui {
                 anchor: rel,
                 reach: 0.18,
                 sensitivity: 1.0,
+                curve: AimCurvePreset::Balanced,
                 activation_mode: MouseCameraActivationMode::AlwaysOn,
                 activation_key: None,
                 invert_y: false,
@@ -3198,8 +3202,8 @@ impl PhantomGui {
                                 RichText::new(
                                     "Configured reach is an upper envelope. Phantom keeps live aim travel tighter internally, so large values mostly affect how aggressively it can re-segment rather than turning Aim into a giant screen wrapper.",
                                 )
-                                .small()
-                                .color(Color32::from_gray(160)),
+                                    .small()
+                                    .color(Color32::from_gray(160)),
                             );
                         });
                     }
@@ -3353,6 +3357,7 @@ impl PhantomGui {
                     }
                     Node::MouseCamera {
                         sensitivity,
+                        curve,
                         activation_mode,
                         activation_key,
                         invert_y,
@@ -3372,6 +3377,47 @@ impl PhantomGui {
                                 *sensitivity = (value * 100.0).round() / 100.0;
                                 dirty = true;
                             }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Curve");
+                            egui::ComboBox::from_id_salt(("mouse_curve_quick", idx))
+                                .selected_text(match curve {
+                                    AimCurvePreset::Balanced => "Balanced",
+                                    AimCurvePreset::Precision => "Precision",
+                                    AimCurvePreset::Linear => "Linear",
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(curve, AimCurvePreset::Balanced),
+                                            "Balanced",
+                                        )
+                                        .clicked()
+                                    {
+                                        *curve = AimCurvePreset::Balanced;
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(curve, AimCurvePreset::Precision),
+                                            "Precision",
+                                        )
+                                        .clicked()
+                                    {
+                                        *curve = AimCurvePreset::Precision;
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(curve, AimCurvePreset::Linear),
+                                            "Linear",
+                                        )
+                                        .clicked()
+                                    {
+                                        *curve = AimCurvePreset::Linear;
+                                        dirty = true;
+                                    }
+                                });
                         });
                         ui.horizontal(|ui| {
                             ui.label("Activation");
@@ -3577,7 +3623,10 @@ impl PhantomGui {
                     }
 
                     if let Node::LayerShift {
-                        layer_name, mode, ..
+                        layer_name,
+                        mode,
+                        suspend_base,
+                        ..
                     } = node
                     {
                         ui.separator();
@@ -3608,6 +3657,22 @@ impl PhantomGui {
                                     dirty = true;
                                 }
                             });
+                        if ui
+                            .checkbox(
+                                suspend_base,
+                                "Suspend base-layer controls while this layer is active",
+                            )
+                            .changed()
+                        {
+                            dirty = true;
+                        }
+                        ui.label(
+                            RichText::new(
+                                "Enable this when the target layer reuses the same movement or camera keys as base, such as vehicle or parachute remaps.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(160)),
+                        );
                     }
 
                     ui.separator();
@@ -5727,11 +5792,20 @@ fn draw_hover_card(
             activation_mode,
             activation_key,
             sensitivity,
+            curve,
             ..
         } => {
             lines.push(format!("Anchor: {:.3}, {:.3}", anchor.x, anchor.y));
             lines.push(format!("Travel Envelope: {:.3}", reach));
             lines.push(format!("Sensitivity: {:.2}", sensitivity));
+            lines.push(format!(
+                "Curve: {}",
+                match curve {
+                    AimCurvePreset::Balanced => "balanced",
+                    AimCurvePreset::Precision => "precision",
+                    AimCurvePreset::Linear => "linear",
+                }
+            ));
             lines.push(format!(
                 "Mode: {}",
                 match activation_mode {
@@ -5755,14 +5829,18 @@ fn draw_hover_card(
             ));
         }
         Node::LayerShift {
-            layer_name, mode, ..
+            layer_name,
+            mode,
+            suspend_base,
+            ..
         } => lines.push(format!(
-            "Target: {} ({})",
+            "Target: {} ({}{})",
             layer_name,
             match mode {
                 LayerMode::Hold => "hold",
                 LayerMode::Toggle => "toggle",
-            }
+            },
+            if *suspend_base { ", suspend_base" } else { "" }
         )),
     }
 
