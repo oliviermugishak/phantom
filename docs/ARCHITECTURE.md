@@ -253,9 +253,11 @@ During runtime, Phantom now applies gameplay touch commands per translated input
 
 For `aim`, Phantom now keeps the transport immediate but shapes real relative-mouse
 motion with a source-specific response curve. Small mouse reports are damped for
-precision, while larger reports preserve fast turn speed. This is a per-report
-spatial transform, not time-based smoothing, so it does not intentionally add
-latency to the mouse path.
+precision, while larger reports preserve fast turn speed. Relative-mouse
+shaping is applied per axis so a strong vertical recoil pull does not
+cross-amplify tiny horizontal noise. This is a per-report spatial transform,
+not time-based smoothing, so it does not intentionally add latency to the
+mouse path.
 
 That abstraction is the key boundary in the codebase.
 

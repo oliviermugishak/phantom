@@ -196,6 +196,8 @@ Note:
 - the current mouse path also damps tiny relative reports instead of applying the
   same full scale to every movement, which improves precision without turning
   large camera sweeps into a slow drag
+- that shaping is now per axis, so a fast vertical recoil pull should not
+  magnify tiny accidental left/right noise into a sideways camera snap
 
 ## Aim Stops After `F1` Mouse Toggle
 

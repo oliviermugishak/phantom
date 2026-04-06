@@ -1693,26 +1693,26 @@ fn smoothstep01(t: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn shape_aim_delta(dx: i32, dy: i32, source: crate::input::MouseMotionSource) -> (f64, f64) {
-    let dx = dx as f64;
-    let dy = dy as f64;
+fn shape_relative_aim_component(delta: i32) -> f64 {
+    let magnitude = (delta.abs()) as f64;
+    let curve = smoothstep01(
+        (magnitude - AIM_RELATIVE_CURVE_START)
+            / (AIM_RELATIVE_CURVE_END - AIM_RELATIVE_CURVE_START),
+    );
+    let factor = lerp(AIM_RELATIVE_MIN_FACTOR, AIM_RELATIVE_MAX_FACTOR, curve);
+    delta as f64 * AIM_RELATIVE_BASE_SCALE * factor
+}
 
+fn shape_aim_delta(dx: i32, dy: i32, source: crate::input::MouseMotionSource) -> (f64, f64) {
     match source {
-        crate::input::MouseMotionSource::Relative => {
-            let magnitude = dx.hypot(dy);
-            let curve = smoothstep01(
-                (magnitude - AIM_RELATIVE_CURVE_START)
-                    / (AIM_RELATIVE_CURVE_END - AIM_RELATIVE_CURVE_START),
-            );
-            let factor = lerp(AIM_RELATIVE_MIN_FACTOR, AIM_RELATIVE_MAX_FACTOR, curve);
-            (
-                dx * AIM_RELATIVE_BASE_SCALE * factor,
-                dy * AIM_RELATIVE_BASE_SCALE * factor,
-            )
-        }
-        crate::input::MouseMotionSource::Absolute => {
-            (dx * AIM_ABSOLUTE_SCALE, dy * AIM_ABSOLUTE_SCALE)
-        }
+        crate::input::MouseMotionSource::Relative => (
+            shape_relative_aim_component(dx),
+            shape_relative_aim_component(dy),
+        ),
+        crate::input::MouseMotionSource::Absolute => (
+            dx as f64 * AIM_ABSOLUTE_SCALE,
+            dy as f64 * AIM_ABSOLUTE_SCALE,
+        ),
     }
 }
 
@@ -2320,6 +2320,16 @@ mod tests {
         let (large_dx, _) = shape_aim_delta(30, 0, MouseMotionSource::Relative);
         assert!(large_dx > small_dx);
         assert!((large_dx / 30.0) > small_dx);
+    }
+
+    #[test]
+    fn relative_aim_curve_does_not_cross_amplify_minor_axis_noise() {
+        let (pure_dx, pure_dy) = shape_aim_delta(1, 0, MouseMotionSource::Relative);
+        let (mixed_dx, mixed_dy) = shape_aim_delta(1, 20, MouseMotionSource::Relative);
+
+        assert!((mixed_dx - pure_dx).abs() < f64::EPSILON);
+        assert_eq!(pure_dy, 0.0);
+        assert!(mixed_dy > pure_dy);
     }
 
     #[test]
