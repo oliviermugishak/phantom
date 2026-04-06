@@ -50,14 +50,6 @@ pub enum AimCurvePreset {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum JoystickMode {
-    #[default]
-    Fixed,
-    Floating,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum MacroRunMode {
     #[default]
     CancelOnRelease,
@@ -91,10 +83,6 @@ pub enum Node {
         slot: u8,
         pos: RelPos,
         radius: f64,
-        #[serde(default, skip_serializing_if = "is_default_joystick_mode")]
-        mode: JoystickMode,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        region: Option<Region>,
         keys: JoystickKeys,
     },
     Drag {
@@ -272,10 +260,6 @@ fn is_default_mouse_camera_activation_mode(mode: &MouseCameraActivationMode) -> 
     matches!(mode, MouseCameraActivationMode::AlwaysOn)
 }
 
-fn is_default_joystick_mode(mode: &JoystickMode) -> bool {
-    matches!(mode, JoystickMode::Fixed)
-}
-
 fn is_default_macro_run_mode(mode: &MacroRunMode) -> bool {
     matches!(mode, MacroRunMode::CancelOnRelease)
 }
@@ -405,21 +389,7 @@ impl Node {
 
     pub fn audit_detail(&self) -> Option<String> {
         match self {
-            Node::Joystick {
-                radius,
-                mode,
-                region,
-                ..
-            } => Some(match (mode, region) {
-                (JoystickMode::Fixed, _) => format!("mode=fixed radius={:.3}", radius),
-                (JoystickMode::Floating, Some(region)) => format!(
-                    "mode=floating radius={:.3} region=({:.3},{:.3},{:.3},{:.3})",
-                    radius, region.x, region.y, region.w, region.h
-                ),
-                (JoystickMode::Floating, None) => {
-                    format!("mode=floating radius={:.3} region=<missing>", radius)
-                }
-            }),
+            Node::Joystick { radius, .. } => Some(format!("radius={:.3}", radius)),
             Node::Drag {
                 start,
                 end,
@@ -789,12 +759,7 @@ fn validate_node(node: &Node) -> Result<()> {
             }
         }
         Node::Joystick {
-            pos,
-            radius,
-            mode,
-            region,
-            keys,
-            ..
+            pos, radius, keys, ..
         } => {
             validate_pos(pos, &format!("nodes.{id}.pos"))?;
             if *radius <= 0.0 || *radius > 1.0 {
@@ -802,25 +767,6 @@ fn validate_node(node: &Node) -> Result<()> {
                     field: format!("nodes.{id}.radius"),
                     message: format!("radius {} must be in (0, 1]", radius),
                 });
-            }
-            match mode {
-                JoystickMode::Fixed => {
-                    if region.is_some() {
-                        return Err(PhantomError::ProfileValidation {
-                            field: format!("nodes.{id}.region"),
-                            message: "region must be omitted when joystick mode is fixed".into(),
-                        });
-                    }
-                }
-                JoystickMode::Floating => {
-                    let Some(region) = region.as_ref() else {
-                        return Err(PhantomError::ProfileValidation {
-                            field: format!("nodes.{id}.region"),
-                            message: "region is required when joystick mode is floating".into(),
-                        });
-                    };
-                    validate_region(region, &format!("nodes.{id}.region"))?;
-                }
             }
             validate_key_name(&keys.up, &format!("nodes.{id}.keys.up"))?;
             validate_key_name(&keys.down, &format!("nodes.{id}.keys.down"))?;
@@ -1408,53 +1354,6 @@ mod tests {
             slot: 0,
             pos: RelPos { x: 0.5, y: 0.5 },
             key: "Nope".into(),
-        }];
-        assert!(p.validate().is_err());
-    }
-
-    #[test]
-    fn floating_joystick_requires_region() {
-        let mut p = valid_profile();
-        p.nodes = vec![Node::Joystick {
-            id: "move".into(),
-            layer: default_layer(),
-            slot: 0,
-            pos: RelPos { x: 0.2, y: 0.7 },
-            radius: 0.08,
-            mode: JoystickMode::Floating,
-            region: None,
-            keys: JoystickKeys {
-                up: "W".into(),
-                down: "S".into(),
-                left: "A".into(),
-                right: "D".into(),
-            },
-        }];
-        assert!(p.validate().is_err());
-    }
-
-    #[test]
-    fn fixed_joystick_rejects_region() {
-        let mut p = valid_profile();
-        p.nodes = vec![Node::Joystick {
-            id: "move".into(),
-            layer: default_layer(),
-            slot: 0,
-            pos: RelPos { x: 0.2, y: 0.7 },
-            radius: 0.08,
-            mode: JoystickMode::Fixed,
-            region: Some(Region {
-                x: 0.0,
-                y: 0.4,
-                w: 0.4,
-                h: 0.5,
-            }),
-            keys: JoystickKeys {
-                up: "W".into(),
-                down: "S".into(),
-                left: "A".into(),
-                right: "D".into(),
-            },
         }];
         assert!(p.validate().is_err());
     }

@@ -4,7 +4,7 @@ This guide explains how to structure Phantom profiles for real games, especially
 
 - fast-paced shooters such as PUBG Mobile and Call of Duty Mobile
 - games with multiple contexts like vehicles, parachutes, loot, and menus
-- swipe games and floating-stick games
+- swipe games and movement-stick games
 
 The goal is not just to list node types. The goal is to show how to combine them into profiles that are understandable, testable, and maintainable.
 
@@ -224,23 +224,7 @@ Recommended setup:
 
 This keeps sprint lock separate from the movement stick itself.
 
-## 7. Fixed vs Floating Joystick
-
-Use `fixed` when:
-
-- the game shows a visible static stick
-- the movement origin should always be the same
-
-Use `floating` when:
-
-- the game accepts movement from a touch zone
-- the origin can be chosen dynamically within a region
-
-Practical examples:
-
-- PUBG left stick: usually `fixed`
-- football-style drag movement zone: usually `floating`
-- some MOBAs with loose movement areas: usually `floating`
+## 7. Joystick Movement
 
 Engine note:
 
@@ -249,9 +233,14 @@ Engine note:
 - when opposite directions on the same axis overlap briefly, Phantom follows the
   most recently pressed direction instead of dropping to neutral first
 - keyboard-driven joystick movement now uses a stronger full-throw swipe model:
-  fixed sticks drag from their center toward the screen edge, and floating
-  sticks drag from a stable anchor toward the movement-zone edge instead of
+  sticks drag from their configured center toward the screen edge instead of
   making a short local nudge
+
+Practical examples:
+
+- PUBG left stick: `joystick`
+- eFootball left stick: `joystick`
+- sprint-lock or one-shot movement gestures: `drag`
 
 ## 8. COD / PUBG Large-Profile Planning
 

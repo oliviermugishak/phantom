@@ -57,13 +57,12 @@ Compatibility note:
 
 Important recent additions:
 
-- `joystick` now supports both `fixed` and `floating` modes
 - keyboard joysticks now briefly re-center before lifting on full release and
   prefer the most recently pressed same-axis direction, which reduces movement
   hesitation during fast re-engage and direction swaps
-- keyboard joysticks now use a stronger full-throw swipe model, so floating
-  zones drag from a stable anchor toward the zone edge and fixed sticks swipe
-  from their center toward the screen edge
+- keyboard joysticks now use a stronger full-throw swipe model, swiping from
+  their configured center toward the screen edge instead of making a short local
+  nudge
 - `drag` now supports swipe-style games such as Temple Run and Subway Surfers
 - capture-on mouse navigation now defaults to owned menu-touch while gameplay aim is inactive
 - macros now support explicit run modes so a sequence can either cancel on key release or continue as a one-shot
@@ -187,7 +186,7 @@ Press `F10` while the daemon is running to show or hide the experimental debug c
 What it shows:
 
 - button controls as soft circles with their bound key labels
-- joysticks as fixed centers or floating zones
+- joysticks as fixed movement centers
 - drag gestures as subtle swipe arrows
 - aim anchors as lightweight debug markers
 
@@ -279,19 +278,17 @@ Typical use:
 - `while_held` for ADS-style aim workflows
 - `toggle` for explicit look-mode switching
 
-## Swipe And Floating-Stick Games
+## Swipe Games And Movement Sticks
 
 Phantom now supports:
 
-- floating movement zones through `joystick` with `mode = "floating"`
-- visible fixed sticks through immediate two-frame `joystick` drag engage in `mode = "fixed"`
+- visible movement sticks through immediate `joystick` drag engage
 - one-shot swipes and drags through `drag`
 
 That makes it viable for:
 
 - Temple Run
 - Subway Surfers
-- football-style floating movement zones
 - sprint-lock drags in games like PUBG Mobile
 
 ## What Phantom Does Not Support

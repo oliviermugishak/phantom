@@ -25,7 +25,7 @@ use wayland_client::{
 };
 
 use phantom::overlay::{OverlayFrame, OverlayPreviewSnapshot};
-use phantom::profile::{JoystickMode, MouseCameraActivationMode, Node, Profile, Region, RelPos};
+use phantom::profile::{MouseCameraActivationMode, Node, Profile, RelPos};
 
 const OVERLAY_BG: Color32 = Color32::from_rgb(11, 13, 18);
 const MARKER_RADIUS: f32 = 14.0;
@@ -79,18 +79,9 @@ struct FixedJoystickSpec {
 }
 
 #[derive(Clone)]
-struct FloatingJoystickSpec {
-    rect: PixelRect,
-    radius: f32,
-    color: Rgba,
-    label: String,
-}
-
-#[derive(Clone)]
 enum PreviewSpec {
     Marker(MarkerSpec),
     FixedJoystick(FixedJoystickSpec),
-    FloatingJoystick(FloatingJoystickSpec),
 }
 
 impl PreviewSpec {
@@ -98,7 +89,6 @@ impl PreviewSpec {
         match self {
             Self::Marker(spec) => spec.rect,
             Self::FixedJoystick(spec) => spec.rect,
-            Self::FloatingJoystick(spec) => spec.rect,
         }
     }
 }
@@ -491,23 +481,11 @@ fn build_preview_specs(profile: &Profile, frame: OverlayFrame) -> Vec<PreviewSpe
                 )));
             }
             Node::Joystick {
-                mode: JoystickMode::Fixed,
-                pos,
-                radius,
-                keys,
-                ..
+                pos, radius, keys, ..
             } => {
                 specs.push(PreviewSpec::FixedJoystick(fixed_joystick_spec(
                     frame, pos, *radius, keys,
                 )));
-            }
-            Node::Joystick {
-                mode: JoystickMode::Floating,
-                region: Some(region),
-                ..
-            } => {
-                let zone = frame_region(frame, region);
-                specs.push(PreviewSpec::FloatingJoystick(floating_joystick_spec(zone)));
             }
             Node::Drag { .. } => {}
             Node::MouseCamera {
@@ -523,11 +501,6 @@ fn build_preview_specs(profile: &Profile, frame: OverlayFrame) -> Vec<PreviewSpe
                 )));
             }
             Node::Macro { .. } | Node::LayerShift { .. } => {}
-            Node::Joystick {
-                mode: JoystickMode::Floating,
-                region: None,
-                ..
-            } => {}
         }
     }
     specs
@@ -584,35 +557,11 @@ fn fixed_joystick_spec(
     }
 }
 
-fn floating_joystick_spec(zone: PixelRect) -> FloatingJoystickSpec {
-    let color = joystick_color();
-    FloatingJoystickSpec {
-        rect: PixelRect {
-            left: zone.left + zone.width as i32 / 2 - 38,
-            top: zone.top + zone.height as i32 / 2 - 38,
-            width: 76,
-            height: 76,
-        },
-        radius: 17.0,
-        color,
-        label: "Move".into(),
-    }
-}
-
 fn frame_point(frame: OverlayFrame, pos: &RelPos) -> (f32, f32) {
     (
         frame.left + frame.width * pos.x as f32,
         frame.top + frame.height * pos.y as f32,
     )
-}
-
-fn frame_region(frame: OverlayFrame, region: &Region) -> PixelRect {
-    PixelRect {
-        left: (frame.left + frame.width * region.x as f32).round() as i32,
-        top: (frame.top + frame.height * region.y as f32).round() as i32,
-        width: (frame.width * region.w as f32).max(1.0).round() as u32,
-        height: (frame.height * region.h as f32).max(1.0).round() as u32,
-    }
 }
 
 fn select_output_for_rect(
@@ -656,9 +605,6 @@ fn draw_preview_spec(canvas: &mut [u8], width: u32, height: u32, spec: &PreviewS
     match spec {
         PreviewSpec::Marker(spec) => draw_marker(canvas, width, height, spec),
         PreviewSpec::FixedJoystick(spec) => draw_fixed_joystick(canvas, width, height, spec),
-        PreviewSpec::FloatingJoystick(spec) => {
-            draw_floating_joystick_bitmap(canvas, width, height, spec)
-        }
     }
 }
 
@@ -749,29 +695,6 @@ fn draw_fixed_joystick(canvas: &mut [u8], width: u32, height: u32, spec: &FixedJ
         (center.0, center.1 + label_radius),
         &spec.keys[3],
         spec.color,
-    );
-}
-
-fn draw_floating_joystick_bitmap(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
-    spec: &FloatingJoystickSpec,
-) {
-    let center = (width as f32 * 0.5, height as f32 * 0.5 - 6.0);
-    draw_joystick_pad(canvas, width, height, center, spec.radius, spec.color);
-    draw_text_centered(
-        canvas,
-        width,
-        height,
-        (center.0, center.1 + spec.radius + 13.0),
-        &spec.label,
-        Rgba {
-            r: 240,
-            g: 243,
-            b: 246,
-            a: 228,
-        },
     );
 }
 
@@ -1299,17 +1222,9 @@ fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) 
             Node::Wheel {
                 up_pos, down_pos, ..
             } => draw_wheel_markers(painter, rect, up_pos, down_pos),
-            Node::Joystick {
-                mode: JoystickMode::Fixed,
-                pos,
-                radius,
-                ..
-            } => draw_fixed_joystick_legacy(painter, rect, node, pos, *radius),
-            Node::Joystick {
-                mode: JoystickMode::Floating,
-                region: Some(region),
-                ..
-            } => draw_floating_joystick(painter, rect, node, region),
+            Node::Joystick { pos, radius, .. } => {
+                draw_fixed_joystick_legacy(painter, rect, node, pos, *radius)
+            }
             Node::Drag { start, end, .. } => draw_drag_gesture(painter, rect, node, start, end),
             Node::MouseCamera {
                 anchor,
@@ -1317,11 +1232,6 @@ fn draw_profile_overlay(painter: &egui::Painter, rect: Rect, profile: &Profile) 
                 ..
             } => draw_aim_marker(painter, rect, anchor, activation_mode),
             Node::Macro { .. } | Node::LayerShift { .. } => {}
-            Node::Joystick {
-                mode: JoystickMode::Floating,
-                region: None,
-                ..
-            } => {}
         }
     }
 }
@@ -1402,19 +1312,6 @@ fn draw_fixed_joystick_legacy(
             &keys.down,
         );
     }
-}
-
-fn draw_floating_joystick(painter: &egui::Painter, rect: Rect, node: &Node, region: &Region) {
-    let zone = region_rect(rect, region);
-    let center = zone.center();
-    draw_joystick_pad_legacy(painter, center, 16.0, joystick_stroke());
-    painter.text(
-        center + Vec2::new(0.0, 22.0),
-        Align2::CENTER_TOP,
-        compact_label(node),
-        egui::FontId::proportional(11.0),
-        Color32::from_rgba_unmultiplied(240, 243, 246, 220),
-    );
 }
 
 fn draw_drag_gesture(
@@ -1564,22 +1461,6 @@ fn to_canvas_pos(rect: Rect, pos: &RelPos) -> Pos2 {
     Pos2::new(
         rect.left() + rect.width() * pos.x as f32,
         rect.top() + rect.height() * pos.y as f32,
-    )
-}
-
-fn region_rect(content: Rect, region: &Region) -> Rect {
-    Rect::from_min_size(
-        to_canvas_pos(
-            content,
-            &RelPos {
-                x: region.x,
-                y: region.y,
-            },
-        ),
-        Vec2::new(
-            content.width() * region.w as f32,
-            content.height() * region.h as f32,
-        ),
     )
 }
 

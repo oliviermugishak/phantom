@@ -226,17 +226,13 @@ Use for:
 
 - continuous movement
 - visible sticks
-- floating movement zones
 
-Modes:
+Behavior:
 
-- `fixed`
-- `floating`
-
-Practical difference:
-
-- `fixed` is for visible static sticks and engages as an immediate center-down then move drag
-- `floating` is for drag zones and starts from a runtime origin using the same two-frame drag shape
+- joystick movement starts from the configured center and immediately drags
+  outward with a long full-throw swipe
+- use `drag` instead when the game expects a one-shot gesture instead of
+  sustained movement
 
 ### `drag`
 

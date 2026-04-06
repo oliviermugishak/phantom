@@ -169,7 +169,6 @@ Behavior:
   "slot": 0,
   "pos": { "x": 0.18, "y": 0.72 },
   "radius": 0.07,
-  "mode": "fixed",
   "keys": {
     "up": "W",
     "down": "S",
@@ -182,18 +181,11 @@ Behavior:
 Fields:
 
 - `pos`
-  Stick anchor. Required for compatibility and fixed mode.
+  Stick anchor.
 - `radius`
   Base drag distance. For keyboard movement, Phantom now prefers a strong
-  full-throw swipe; fixed mode drives from the anchor toward the screen edge,
-  while floating mode uses `radius` to keep the anchor safely inside the
-  movement zone before swiping toward that zone's edge.
-- `mode`
-  One of:
-  - `fixed`
-  - `floating`
-- `region`
-  Required for `floating`, omitted for `fixed`.
+  full-throw swipe, driving from the anchor toward the screen edge instead of
+  making a short local nudge.
 
 Behavior:
 
@@ -203,20 +195,9 @@ Behavior:
   `TouchUp` so fast re-engage does not require a fresh drag start
 - opposite directions on the same axis prefer the most recently pressed key
   instead of collapsing to a neutral stall while both keys are briefly held
-
-Modes:
-
-- `fixed`
-  - uses `pos` as the exact center
-  - starts with an immediate two-frame drag: `TouchDown` at center, then a
-    long edge-directed `TouchMove`
-  - best for visible static sticks
-- `floating`
-  - chooses a stable runtime origin inside `region`, centered from the configured
-    position and clamped safely inside the zone
-  - keeps that origin stable until all movement keys are released
-  - starts with an immediate two-frame drag from that origin toward the zone edge
-  - best for floating movement zones and football-style drag movement
+- joystick movement now uses a long edge-directed swipe from the configured
+  center, which is better for games that expect a stronger drag to start
+  running or sprinting
 
 ### `drag`
 
@@ -472,8 +453,7 @@ Good practice:
 - prefer one gameplay concept per node
 - use `phantom audit` after every meaningful edit
 - use `drag` for deliberate swipe gestures
-- use `fixed` joystick for visible sticks
-- use `floating` joystick for floating movement zones
+- use `joystick` for continuous movement from a fixed stick center
 
 ## 12. Notes On Unsupported Inputs
 

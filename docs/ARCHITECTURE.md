@@ -268,7 +268,7 @@ Backends then decide how to realize those commands:
 
 Two important recent consequences of that abstraction:
 
-- `joystick` can now support both fixed-center and floating-zone behavior without changing backend semantics
+- `joystick` now uses one fixed-center movement model without changing backend semantics
 - `drag` can model swipe games and sprint-lock style gestures without introducing a new transport contract
 
 The engine stays responsible for gesture meaning. The backend stays responsible for touch realization.
@@ -406,7 +406,6 @@ If you need to change:
 
 The architecture explicitly does not solve:
 
-- automatic floating joystick discovery
 - UI recognition
 - sensor injection such as accelerometer tilt
 - monitor transforms

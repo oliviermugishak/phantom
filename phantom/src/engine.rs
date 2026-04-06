@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use crate::input::{InputEvent, Key};
 use crate::logging::trace_detail_enabled;
 use crate::profile::{
-    AimCurvePreset, JoystickMode, LayerMode, MacroAction, MacroRunMode, MouseCameraActivationMode,
-    Node, Profile, Region, RelPos,
+    AimCurvePreset, LayerMode, MacroAction, MacroRunMode, MouseCameraActivationMode, Node, Profile,
+    Region, RelPos,
 };
 
 const AIM_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -872,12 +872,7 @@ impl KeymapEngine {
                 }
             }
             Node::Joystick {
-                slot,
-                pos,
-                radius,
-                mode,
-                region,
-                ..
+                slot, pos, radius, ..
             } => {
                 if let Some(d) = self.joystick_direction(idx, key) {
                     if let NodeState::Joystick {
@@ -927,14 +922,12 @@ impl KeymapEngine {
                         }
 
                         if !fa {
-                            let (start_x, start_y) =
-                                joystick_origin(mode, pos, region.as_ref(), *radius);
-                            ox = start_x;
-                            oy = start_y;
+                            ox = pos.x;
+                            oy = pos.y;
                             cmds.push(TouchCommand::TouchDown {
                                 slot: *slot,
-                                x: start_x,
-                                y: start_y,
+                                x: ox,
+                                y: oy,
                             });
                             cmds.push(TouchCommand::Commit);
                             fa = true;
@@ -942,8 +935,7 @@ impl KeymapEngine {
 
                         let (dir_x, dir_y) =
                             joystick_direction_vector(u, dn, l, r, horizontal, vertical);
-                        let (move_x, move_y) =
-                            joystick_target(mode, *radius, ox, oy, dir_x, dir_y, region.as_ref());
+                        let (move_x, move_y) = fixed_joystick_target(ox, oy, dir_x, dir_y, *radius);
 
                         cmds.push(TouchCommand::TouchMove {
                             slot: *slot,
@@ -1082,13 +1074,7 @@ impl KeymapEngine {
                 }
             }
             Node::ToggleTap { .. } => {}
-            Node::Joystick {
-                slot,
-                radius,
-                mode,
-                region,
-                ..
-            } => {
+            Node::Joystick { slot, radius, .. } => {
                 if let Some(d) = self.joystick_direction(idx, key) {
                     if let NodeState::Joystick {
                         up,
@@ -1149,15 +1135,8 @@ impl KeymapEngine {
                         } else if fa {
                             let (dir_x, dir_y) =
                                 joystick_direction_vector(u, dn, l, r, horizontal, vertical);
-                            let (move_x, move_y) = joystick_target(
-                                mode,
-                                *radius,
-                                *origin_x,
-                                *origin_y,
-                                dir_x,
-                                dir_y,
-                                region.as_ref(),
-                            );
+                            let (move_x, move_y) =
+                                fixed_joystick_target(*origin_x, *origin_y, dir_x, dir_y, *radius);
                             cmds.push(TouchCommand::TouchMove {
                                 slot: *slot,
                                 x: move_x,
@@ -2022,70 +2001,6 @@ fn resolve_joystick_axis(negative: bool, positive: bool, bias: Option<AxisBias>)
     }
 }
 
-fn joystick_origin(
-    mode: &JoystickMode,
-    pos: &crate::profile::RelPos,
-    region: Option<&Region>,
-    radius: f64,
-) -> (f64, f64) {
-    match mode {
-        JoystickMode::Fixed => (pos.x, pos.y),
-        JoystickMode::Floating => match region {
-            Some(region) => floating_joystick_origin(pos, region, radius),
-            None => {
-                tracing::warn!(
-                    "floating joystick missing region at runtime; falling back to fixed origin"
-                );
-                (pos.x, pos.y)
-            }
-        },
-    }
-}
-
-fn joystick_target(
-    mode: &JoystickMode,
-    radius: f64,
-    origin_x: f64,
-    origin_y: f64,
-    dir_x: f64,
-    dir_y: f64,
-    region: Option<&Region>,
-) -> (f64, f64) {
-    match mode {
-        JoystickMode::Fixed => fixed_joystick_target(origin_x, origin_y, dir_x, dir_y, radius),
-        JoystickMode::Floating => match region {
-            Some(region) => floating_joystick_target(origin_x, origin_y, region, dir_x, dir_y),
-            None => fixed_joystick_target(origin_x, origin_y, dir_x, dir_y, radius),
-        },
-    }
-}
-
-fn floating_joystick_origin(pos: &RelPos, region: &Region, radius: f64) -> (f64, f64) {
-    // Floating sticks behave better when the synthetic finger starts from a
-    // stable anchor inside the zone, then swipes outward toward the edge.
-    let center_x = (pos.x.clamp(region.x, region.x + region.w)).clamp(0.0, 1.0);
-    let center_y = (pos.y.clamp(region.y, region.y + region.h)).clamp(0.0, 1.0);
-    let margin_x = radius.min(region.w / 2.0);
-    let margin_y = radius.min(region.h / 2.0);
-    let min_x = region.x + margin_x;
-    let max_x = region.x + region.w - margin_x;
-    let min_y = region.y + margin_y;
-    let max_y = region.y + region.h - margin_y;
-
-    let origin_x = if min_x <= max_x {
-        center_x.clamp(min_x, max_x)
-    } else {
-        region.x + region.w / 2.0
-    };
-    let origin_y = if min_y <= max_y {
-        center_y.clamp(min_y, max_y)
-    } else {
-        region.y + region.h / 2.0
-    };
-
-    (origin_x, origin_y)
-}
-
 fn fixed_joystick_target(
     origin_x: f64,
     origin_y: f64,
@@ -2099,32 +2014,6 @@ fn fixed_joystick_target(
         w: 1.0 - JOYSTICK_EDGE_GUARD * 2.0,
         h: 1.0 - JOYSTICK_EDGE_GUARD * 2.0,
     };
-    edge_directed_target((origin_x, origin_y), &bounds, (dir_x, dir_y))
-}
-
-fn floating_joystick_target(
-    origin_x: f64,
-    origin_y: f64,
-    region: &Region,
-    dir_x: f64,
-    dir_y: f64,
-) -> (f64, f64) {
-    if dir_x.abs() <= f64::EPSILON && dir_y.abs() <= f64::EPSILON {
-        return (origin_x, origin_y);
-    }
-
-    let min_x = region.x + JOYSTICK_EDGE_GUARD.min(region.w / 4.0);
-    let max_x = region.x + region.w - JOYSTICK_EDGE_GUARD.min(region.w / 4.0);
-    let min_y = region.y + JOYSTICK_EDGE_GUARD.min(region.h / 4.0);
-    let max_y = region.y + region.h - JOYSTICK_EDGE_GUARD.min(region.h / 4.0);
-
-    let bounds = Region {
-        x: min_x,
-        y: min_y,
-        w: max_x - min_x,
-        h: max_y - min_y,
-    };
-
     edge_directed_target((origin_x, origin_y), &bounds, (dir_x, dir_y))
 }
 
@@ -2216,8 +2105,6 @@ mod tests {
                     slot: 1,
                     pos: RelPos { x: 0.2, y: 0.7 },
                     radius: 0.07,
-                    mode: JoystickMode::Fixed,
-                    region: None,
                     keys: JoystickKeys {
                         up: "W".into(),
                         down: "S".into(),
@@ -2337,8 +2224,6 @@ mod tests {
                 slot: 1,
                 pos: RelPos { x: 0.5, y: 0.5 },
                 radius: 0.03,
-                mode: JoystickMode::Fixed,
-                region: None,
                 keys: JoystickKeys {
                     up: "W".into(),
                     down: "S".into(),
@@ -2357,68 +2242,6 @@ mod tests {
         };
         assert!((*x - 0.5).abs() < f64::EPSILON);
         assert!((*y - JOYSTICK_EDGE_GUARD).abs() < 0.002);
-    }
-
-    #[test]
-    fn floating_joystick_starts_inside_zone_and_keeps_origin() {
-        let profile = Profile {
-            name: "Float".into(),
-            version: 1,
-            screen: screen(),
-            global_sensitivity: 1.0,
-            nodes: vec![Node::Joystick {
-                id: "move".into(),
-                layer: String::new(),
-                slot: 1,
-                pos: RelPos { x: 0.2, y: 0.7 },
-                radius: 0.08,
-                mode: JoystickMode::Floating,
-                region: Some(Region {
-                    x: 0.0,
-                    y: 0.4,
-                    w: 0.45,
-                    h: 0.45,
-                }),
-                keys: JoystickKeys {
-                    up: "W".into(),
-                    down: "S".into(),
-                    left: "A".into(),
-                    right: "D".into(),
-                },
-            }],
-        };
-
-        let mut engine = KeymapEngine::new(profile);
-        let cmds = engine.process(&InputEvent::KeyPress(Key::D));
-        let [TouchCommand::TouchDown {
-            x: down_x,
-            y: down_y,
-            ..
-        }, TouchCommand::Commit, TouchCommand::TouchMove {
-            x: move_x,
-            y: move_y,
-            ..
-        }] = cmds.as_slice()
-        else {
-            panic!("expected down+commit+move, got {cmds:?}");
-        };
-        assert!((*down_x - 0.2).abs() < 0.001);
-        assert!((*down_y - 0.7).abs() < 0.001);
-        assert!(*move_x > *down_x);
-        assert!((*move_y - *down_y).abs() < 0.001);
-        assert!((*move_x - (0.45 - JOYSTICK_EDGE_GUARD)).abs() < 0.002);
-
-        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
-        let [TouchCommand::TouchMove {
-            x: next_x,
-            y: next_y,
-            ..
-        }] = cmds.as_slice()
-        else {
-            panic!("expected single move, got {cmds:?}");
-        };
-        assert!((*next_x - *move_x).abs() < 0.002);
-        assert!(*next_y <= *move_y);
     }
 
     #[test]

@@ -145,7 +145,7 @@ Run these in order:
 5. double-tap style action
 6. joystick plus button
 7. aim plus button
-8. floating joystick movement
+8. joystick re-engage and direction swaps
 9. one-shot drag gesture
 10. layer shift or macro, if used
 

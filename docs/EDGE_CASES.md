@@ -58,7 +58,6 @@ For UI navigation while capture is active and the mouse is released, Phantom now
 Phantom currently supports:
 
 - fixed joystick
-- floating joystick
 - drag gestures
 - tap/hold/toggle style buttons
 

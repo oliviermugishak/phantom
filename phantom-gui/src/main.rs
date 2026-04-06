@@ -14,8 +14,8 @@ use phantom::config;
 use phantom::input::Key;
 use phantom::ipc::{self, IpcRequest, IpcResponse};
 use phantom::profile::{
-    AimCurvePreset, JoystickKeys, JoystickMode, LayerMode, MacroAction, MacroRunMode, MacroStep,
-    MouseCameraActivationMode, Node, Profile, Region, RelPos, ScreenOverride,
+    AimCurvePreset, JoystickKeys, LayerMode, MacroAction, MacroRunMode, MacroStep,
+    MouseCameraActivationMode, Node, Profile, RelPos, ScreenOverride,
 };
 
 const COLOR_TAP: Color32 = Color32::from_rgb(66, 133, 244);
@@ -29,11 +29,6 @@ const COLOR_MACRO: Color32 = Color32::from_rgb(255, 112, 67);
 const COLOR_LAYER: Color32 = Color32::from_rgb(158, 158, 158);
 const CANVAS_BG: Color32 = Color32::from_rgb(19, 21, 26);
 const CONTENT_BG: Color32 = Color32::from_rgb(26, 29, 36);
-const HANDLE_SIZE: f32 = 12.0;
-const REGION_PICK_MARGIN: f32 = 6.0;
-const REGION_BORDER_PICK_WIDTH: f32 = 14.0;
-const DASH_LENGTH: f32 = 10.0;
-const DASH_GAP: f32 = 6.0;
 const LEFT_PANEL_WIDTH: f32 = 290.0;
 const LEFT_PANEL_RUNTIME_RESERVE: f32 = 200.0;
 const RIGHT_PANEL_WIDTH: f32 = 390.0;
@@ -167,40 +162,10 @@ enum BindingTarget {
     MouseLookActivation(usize),
 }
 
-#[derive(Clone, Copy)]
-enum RegionHandle {
-    TopLeft,
-    Top,
-    TopRight,
-    Right,
-    BottomLeft,
-    Bottom,
-    BottomRight,
-    Left,
-}
-
 enum DragState {
-    Point {
-        idx: usize,
-    },
-    DragEnd {
-        idx: usize,
-    },
-    Pan {
-        origin_pan: Vec2,
-        start_mouse: Pos2,
-    },
-    RegionMove {
-        idx: usize,
-        origin: Region,
-        start_mouse: Pos2,
-    },
-    RegionResize {
-        idx: usize,
-        handle: RegionHandle,
-        origin: Region,
-        start_mouse: Pos2,
-    },
+    Point { idx: usize },
+    DragEnd { idx: usize },
+    Pan { origin_pan: Vec2, start_mouse: Pos2 },
 }
 
 #[derive(Clone, Copy)]
@@ -1561,8 +1526,6 @@ impl PhantomGui {
                 },
                 pos: anchor,
                 radius: 0.08,
-                mode: JoystickMode::Fixed,
-                region: None,
                 keys: match &source {
                     Node::Joystick { keys, .. } => keys.clone(),
                     _ => JoystickKeys {
@@ -1753,21 +1716,9 @@ impl PhantomGui {
                 *start = offset_rel_pos(*start);
                 *end = offset_rel_pos(*end);
             }
-            Node::Joystick {
-                slot,
-                pos,
-                mode,
-                region,
-                ..
-            } => {
+            Node::Joystick { slot, pos, .. } => {
                 *slot = self.next_slot()?;
                 *pos = offset_rel_pos(*pos);
-                if matches!(mode, JoystickMode::Floating) {
-                    if let Some(zone) = region.as_mut() {
-                        *zone = offset_region(*zone);
-                        *pos = region_center(zone);
-                    }
-                }
             }
             Node::MouseCamera { slot, anchor, .. } => {
                 *slot = self.next_slot()?;
@@ -2001,8 +1952,6 @@ impl PhantomGui {
                 slot,
                 pos: rel,
                 radius: 0.08,
-                mode: JoystickMode::Fixed,
-                region: None,
                 keys: JoystickKeys {
                     up: "W".into(),
                     down: "S".into(),
@@ -3028,8 +2977,6 @@ impl PhantomGui {
                         layer,
                         pos,
                         radius,
-                        mode,
-                        region,
                         ..
                     } => {
                         layer_row(
@@ -3040,54 +2987,7 @@ impl PhantomGui {
                             suggested_layer,
                             &mut dirty,
                         );
-                        ui.horizontal(|ui| {
-                            ui.label("Mode");
-                            egui::ComboBox::from_id_salt(("joystick_mode", idx))
-                                .selected_text(match mode {
-                                    JoystickMode::Fixed => "Fixed Center",
-                                    JoystickMode::Floating => "Floating Zone",
-                                })
-                                .show_ui(ui, |ui| {
-                                    if ui
-                                        .selectable_label(
-                                            matches!(mode, JoystickMode::Fixed),
-                                            "Fixed Center",
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(zone) = region.as_ref() {
-                                            *pos = region_center(zone);
-                                        }
-                                        *mode = JoystickMode::Fixed;
-                                        *region = None;
-                                        dirty = true;
-                                    }
-                                    if ui
-                                        .selectable_label(
-                                            matches!(mode, JoystickMode::Floating),
-                                            "Floating Zone",
-                                        )
-                                        .clicked()
-                                    {
-                                        *mode = JoystickMode::Floating;
-                                        if region.is_none() {
-                                            *region = Some(default_joystick_region(*pos));
-                                        }
-                                        dirty = true;
-                                    }
-                                });
-                        });
-                        match mode {
-                            JoystickMode::Fixed => {
-                                position_editor(ui, pos, screen.as_ref(), &mut dirty);
-                            }
-                            JoystickMode::Floating => {
-                                let zone =
-                                    region.get_or_insert_with(|| default_joystick_region(*pos));
-                                region_editor(ui, zone, screen.as_ref(), &mut dirty);
-                                *pos = region_center(zone);
-                            }
-                        }
+                        position_editor(ui, pos, screen.as_ref(), &mut dirty);
                         ui.horizontal(|ui| {
                             ui.label("Radius");
                             let mut value = *radius;
@@ -3103,16 +3003,10 @@ impl PhantomGui {
                                 dirty = true;
                             }
                         });
-                        let mode_hint = match mode {
-                            JoystickMode::Fixed => {
-                                "Fixed Center: always drag from one exact center point. Best for games with a visible static stick."
-                            }
-                            JoystickMode::Floating => {
-                                "Floating Zone: touch starts inside the zone when movement begins, then drags from that runtime origin. Best for floating sticks and football-style movement zones."
-                            }
-                        };
                         ui.label(
-                            RichText::new(mode_hint)
+                            RichText::new(
+                                "Joystick: always drags from the configured center using the fixed full-swipe model.",
+                            )
                                 .small()
                                 .color(Color32::from_gray(170)),
                         );
@@ -3750,10 +3644,6 @@ impl PhantomGui {
 
             if let Some(hit) = hovered_hit {
                 match hit {
-                    HitTarget::RegionHandle(_, handle) => {
-                        ctx.set_cursor_icon(region_handle_cursor(handle));
-                    }
-                    HitTarget::Region(_) => ctx.set_cursor_icon(egui::CursorIcon::Grab),
                     HitTarget::Point(_) | HitTarget::DragEnd(_) => {
                         ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
@@ -3789,13 +3679,6 @@ impl PhantomGui {
                         content,
                         node,
                         self.selected == Some(idx),
-                        hovered_hit.is_some_and(|hit| {
-                            hit.idx() == idx
-                                && matches!(
-                                    hit,
-                                    HitTarget::Region(_) | HitTarget::RegionHandle(_, _)
-                                )
-                        }),
                         !node.layer().trim().is_empty()
                             && self
                                 .runtime
@@ -4010,36 +3893,16 @@ impl PhantomGui {
                         });
                     } else {
                         self.overlap_picker = None;
-                        self.drag_state = hit_test(profile, content, mouse, self.selected)
-                            .and_then(|hit| match hit {
-                                HitTarget::Point(idx) => Some(DragState::Point { idx }),
-                                HitTarget::DragEnd(idx) => Some(DragState::DragEnd { idx }),
-                                HitTarget::Region(idx) => profile.nodes.get(idx).and_then(|node| {
-                                    let region = node_region(node)?;
-                                    Some(DragState::RegionMove {
-                                        idx,
-                                        origin: *region,
-                                        start_mouse: mouse,
-                                    })
-                                }),
-                                HitTarget::RegionHandle(idx, handle) => {
-                                    profile.nodes.get(idx).and_then(|node| {
-                                        let region = node_region(node)?;
-                                        Some(DragState::RegionResize {
-                                            idx,
-                                            handle,
-                                            origin: *region,
-                                            start_mouse: mouse,
-                                        })
-                                    })
-                                }
+                        self.drag_state =
+                            hit_test(profile, content, mouse, self.selected).map(|hit| match hit {
+                                HitTarget::Point(idx) => DragState::Point { idx },
+                                HitTarget::DragEnd(idx) => DragState::DragEnd { idx },
                             });
                     }
                     let dragged_idx = match self.drag_state.as_ref() {
-                        Some(DragState::Point { idx })
-                        | Some(DragState::DragEnd { idx })
-                        | Some(DragState::RegionMove { idx, .. })
-                        | Some(DragState::RegionResize { idx, .. }) => Some(*idx),
+                        Some(DragState::Point { idx }) | Some(DragState::DragEnd { idx }) => {
+                            Some(*idx)
+                        }
                         _ => None,
                     };
                     if let Some(idx) = dragged_idx {
@@ -4094,91 +3957,6 @@ impl PhantomGui {
                                 {
                                     *end = rel;
                                     self.mark_dirty();
-                                }
-                            }
-                            DragState::RegionMove {
-                                idx,
-                                origin,
-                                start_mouse,
-                            } => {
-                                if let Some(node) = self
-                                    .profile
-                                    .as_mut()
-                                    .and_then(|profile| profile.nodes.get_mut(*idx))
-                                {
-                                    if let Some(region) = node_region_mut(node) {
-                                        let delta = (mouse - *start_mouse)
-                                            / Vec2::new(content.width(), content.height());
-                                        let next = Region {
-                                            x: (origin.x + delta.x as f64)
-                                                .clamp(0.0, 1.0 - origin.w),
-                                            y: (origin.y + delta.y as f64)
-                                                .clamp(0.0, 1.0 - origin.h),
-                                            w: origin.w,
-                                            h: origin.h,
-                                        };
-                                        *region = snap_region(next, self.snap_to_grid);
-                                        sync_node_pos_from_region(node);
-                                        self.mark_dirty();
-                                    }
-                                }
-                            }
-                            DragState::RegionResize {
-                                idx,
-                                handle,
-                                origin,
-                                start_mouse,
-                            } => {
-                                if let Some(node) = self
-                                    .profile
-                                    .as_mut()
-                                    .and_then(|profile| profile.nodes.get_mut(*idx))
-                                {
-                                    if let Some(region) = node_region_mut(node) {
-                                        let delta = (mouse - *start_mouse)
-                                            / Vec2::new(content.width(), content.height());
-                                        let mut next = *origin;
-                                        match handle {
-                                            RegionHandle::TopLeft => {
-                                                next.x = origin.x + delta.x as f64;
-                                                next.y = origin.y + delta.y as f64;
-                                                next.w = origin.w - delta.x as f64;
-                                                next.h = origin.h - delta.y as f64;
-                                            }
-                                            RegionHandle::Top => {
-                                                next.y = origin.y + delta.y as f64;
-                                                next.h = origin.h - delta.y as f64;
-                                            }
-                                            RegionHandle::TopRight => {
-                                                next.y = origin.y + delta.y as f64;
-                                                next.w = origin.w + delta.x as f64;
-                                                next.h = origin.h - delta.y as f64;
-                                            }
-                                            RegionHandle::Right => {
-                                                next.w = origin.w + delta.x as f64;
-                                            }
-                                            RegionHandle::BottomLeft => {
-                                                next.x = origin.x + delta.x as f64;
-                                                next.w = origin.w - delta.x as f64;
-                                                next.h = origin.h + delta.y as f64;
-                                            }
-                                            RegionHandle::Bottom => {
-                                                next.h = origin.h + delta.y as f64;
-                                            }
-                                            RegionHandle::BottomRight => {
-                                                next.w = origin.w + delta.x as f64;
-                                                next.h = origin.h + delta.y as f64;
-                                            }
-                                            RegionHandle::Left => {
-                                                next.x = origin.x + delta.x as f64;
-                                                next.w = origin.w - delta.x as f64;
-                                            }
-                                        }
-                                        *region =
-                                            snap_region(clamp_region(next), self.snap_to_grid);
-                                        sync_node_pos_from_region(node);
-                                        self.mark_dirty();
-                                    }
                                 }
                             }
                         }
@@ -4326,17 +4104,12 @@ fn find_phantom_binary() -> Option<PathBuf> {
 enum HitTarget {
     Point(usize),
     DragEnd(usize),
-    Region(usize),
-    RegionHandle(usize, RegionHandle),
 }
 
 impl HitTarget {
     fn idx(self) -> usize {
         match self {
-            HitTarget::Point(idx)
-            | HitTarget::DragEnd(idx)
-            | HitTarget::Region(idx)
-            | HitTarget::RegionHandle(idx, _) => idx,
+            HitTarget::Point(idx) | HitTarget::DragEnd(idx) => idx,
         }
     }
 }
@@ -4352,31 +4125,6 @@ fn hit_test(
             let end_point = to_canvas_pos(content, end);
             if (end_point - mouse).length() <= 14.0 {
                 return Some(HitTarget::DragEnd(idx));
-            }
-        }
-        if let Some(region) = profile.nodes.get(idx).and_then(node_region) {
-            let rect = region_rect(content, region);
-            for (handle, handle_rect) in region_handles(rect) {
-                if handle_rect.contains(mouse) {
-                    return Some(HitTarget::RegionHandle(idx, handle));
-                }
-            }
-            if region_border_contains(rect, mouse) {
-                return Some(HitTarget::Region(idx));
-            }
-        }
-    }
-
-    for (idx, node) in profile.nodes.iter().enumerate().rev() {
-        if Some(idx) == selected {
-            continue;
-        }
-        if let Some(region) = node_region(node) {
-            let rect = region_rect(content, region);
-            for (handle, handle_rect) in region_handles(rect) {
-                if handle_rect.contains(mouse) {
-                    return Some(HitTarget::RegionHandle(idx, handle));
-                }
             }
         }
     }
@@ -4395,14 +4143,6 @@ fn hit_test(
     }
     if let Some((idx, _)) = best_point {
         return Some(HitTarget::Point(idx));
-    }
-
-    for (idx, node) in profile.nodes.iter().enumerate() {
-        if let Some(region) = node_region(node) {
-            if region_border_contains(region_rect(content, region), mouse) {
-                return Some(HitTarget::Region(idx));
-            }
-        }
     }
 
     None
@@ -4444,7 +4184,6 @@ fn draw_node(
     content: Rect,
     node: &Node,
     selected: bool,
-    hovered_region: bool,
     layer_active: bool,
     show_labels: bool,
 ) {
@@ -4454,50 +4193,6 @@ fn draw_node(
     } else {
         Color32::WHITE
     };
-    if let Some(region) = node_region(node) {
-        let rect = region_rect(content, region);
-        if let Node::Joystick { radius, .. } = node {
-            let center = to_canvas_pos(content, &region_center(region));
-            let radius_px = (*radius as f32 * content.width()).max(16.0);
-            if selected || hovered_region {
-                draw_dashed_rect(painter, rect, Stroke::new(2.5, accent.gamma_multiply(0.92)));
-            }
-            draw_canvas_joystick(painter, center, radius_px, color, selected, layer_active);
-            if show_labels {
-                draw_joystick_compass_labels(
-                    painter,
-                    center,
-                    radius_px,
-                    node,
-                    accent,
-                    layer_active,
-                );
-            }
-        }
-        if selected || hovered_region {
-            for (_, handle_rect) in region_handles(rect) {
-                painter.rect_filled(
-                    handle_rect,
-                    2.0,
-                    if selected {
-                        accent
-                    } else {
-                        accent.gamma_multiply(0.72)
-                    },
-                );
-            }
-        }
-        if show_labels && (selected || hovered_region || layer_active) {
-            draw_region_badge(
-                painter,
-                rect,
-                region_badge_text(node),
-                if layer_active { accent } else { color },
-            );
-        }
-        return;
-    }
-
     let Some(pos) = node_pos(node) else {
         return;
     };
@@ -4576,13 +4271,6 @@ fn display_binding(node: &Node) -> String {
                 format!("Aim: toggle {}", activation_key.as_deref().unwrap_or("?"))
             }
         },
-    }
-}
-
-fn region_badge_text(node: &Node) -> String {
-    match node {
-        Node::Joystick { .. } => display_type(node).into(),
-        _ => display_binding(node),
     }
 }
 
@@ -4730,40 +4418,6 @@ fn node_color(node: &Node) -> Color32 {
     }
 }
 
-fn node_region(node: &Node) -> Option<&Region> {
-    match node {
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            region: Some(region),
-            ..
-        } => Some(region),
-        _ => None,
-    }
-}
-
-fn node_region_mut(node: &mut Node) -> Option<&mut Region> {
-    match node {
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            region: Some(region),
-            ..
-        } => Some(region),
-        _ => None,
-    }
-}
-
-fn sync_node_pos_from_region(node: &mut Node) {
-    if let Node::Joystick {
-        mode: JoystickMode::Floating,
-        pos,
-        region: Some(region),
-        ..
-    } = node
-    {
-        *pos = region_center(region);
-    }
-}
-
 fn node_marker_label(node: &Node) -> String {
     match node {
         Node::Tap { key, .. }
@@ -4797,18 +4451,8 @@ fn node_pos(node: &Node) -> Option<&RelPos> {
         | Node::Drag { start: pos, .. }
         | Node::RepeatTap { pos, .. }
         | Node::Wheel { up_pos: pos, .. } => Some(pos),
-        Node::Joystick {
-            mode: JoystickMode::Fixed,
-            pos,
-            ..
-        }
-        | Node::MouseCamera { anchor: pos, .. } => Some(pos),
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            ..
-        }
-        | Node::Macro { .. }
-        | Node::LayerShift { .. } => None,
+        Node::Joystick { pos, .. } | Node::MouseCamera { anchor: pos, .. } => Some(pos),
+        Node::Macro { .. } | Node::LayerShift { .. } => None,
     }
 }
 
@@ -4819,18 +4463,8 @@ fn node_pos_mut(node: &mut Node) -> Option<&mut RelPos> {
         | Node::Drag { start: pos, .. }
         | Node::RepeatTap { pos, .. }
         | Node::Wheel { up_pos: pos, .. } => Some(pos),
-        Node::Joystick {
-            mode: JoystickMode::Fixed,
-            pos,
-            ..
-        }
-        | Node::MouseCamera { anchor: pos, .. } => Some(pos),
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            ..
-        }
-        | Node::Macro { .. }
-        | Node::LayerShift { .. } => None,
+        Node::Joystick { pos, .. } | Node::MouseCamera { anchor: pos, .. } => Some(pos),
+        Node::Macro { .. } | Node::LayerShift { .. } => None,
     }
 }
 
@@ -4973,50 +4607,6 @@ fn position_editor(
             RichText::new(format!("Pixels: {}, {}", px, py))
                 .small()
                 .color(Color32::from_gray(170)),
-        );
-    }
-}
-
-fn region_editor(
-    ui: &mut egui::Ui,
-    region: &mut Region,
-    screen: Option<&ScreenOverride>,
-    dirty: &mut bool,
-) {
-    for (label, value) in [
-        ("X", &mut region.x),
-        ("Y", &mut region.y),
-        ("W", &mut region.w),
-        ("H", &mut region.h),
-    ] {
-        ui.horizontal(|ui| {
-            ui.label(label);
-            if ui
-                .add(egui::DragValue::new(value).speed(0.001).range(0.0..=1.0))
-                .changed()
-            {
-                *dirty = true;
-            }
-        });
-    }
-    *region = clamp_region(*region);
-    if let Some(screen) = screen {
-        let origin = RelPos {
-            x: region.x,
-            y: region.y,
-        };
-        let size = (
-            (region.w * screen.width as f64).round() as i32,
-            (region.h * screen.height as f64).round() as i32,
-        );
-        let (px, py) = rel_to_pixels(&origin, screen);
-        ui.label(
-            RichText::new(format!(
-                "Pixels: origin {}, {} • size {}x{}",
-                px, py, size.0, size.1
-            ))
-            .small()
-            .color(Color32::from_gray(170)),
         );
     }
 }
@@ -5176,148 +4766,6 @@ fn rel_to_pixels(pos: &RelPos, screen: &ScreenOverride) -> (i32, i32) {
         (pos.x * screen.width as f64).round() as i32,
         (pos.y * screen.height as f64).round() as i32,
     )
-}
-
-fn region_center(region: &Region) -> RelPos {
-    RelPos {
-        x: round3(region.x + region.w / 2.0),
-        y: round3(region.y + region.h / 2.0),
-    }
-}
-
-fn default_joystick_region(center: RelPos) -> Region {
-    clamp_region(Region {
-        x: center.x - 0.18,
-        y: center.y - 0.18,
-        w: 0.36,
-        h: 0.36,
-    })
-}
-
-fn region_rect(content: Rect, region: &Region) -> Rect {
-    Rect::from_min_size(
-        to_canvas_pos(
-            content,
-            &RelPos {
-                x: region.x,
-                y: region.y,
-            },
-        ),
-        Vec2::new(
-            content.width() * region.w as f32,
-            content.height() * region.h as f32,
-        ),
-    )
-}
-
-fn region_border_contains(rect: Rect, mouse: Pos2) -> bool {
-    let outer = rect.expand(REGION_PICK_MARGIN);
-    if !outer.contains(mouse) {
-        return false;
-    }
-
-    let inset = REGION_BORDER_PICK_WIDTH.min((rect.width().min(rect.height()) / 2.0) - 2.0);
-    if inset <= 0.0 {
-        return rect.contains(mouse);
-    }
-
-    !rect.shrink(inset).contains(mouse)
-}
-
-fn region_handles(rect: Rect) -> [(RegionHandle, Rect); 8] {
-    let mid_top = Pos2::new(rect.center().x, rect.top());
-    let mid_right = Pos2::new(rect.right(), rect.center().y);
-    let mid_bottom = Pos2::new(rect.center().x, rect.bottom());
-    let mid_left = Pos2::new(rect.left(), rect.center().y);
-    [
-        (
-            RegionHandle::TopLeft,
-            Rect::from_center_size(rect.left_top(), Vec2::splat(HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::Top,
-            Rect::from_center_size(mid_top, Vec2::new(HANDLE_SIZE * 1.35, HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::TopRight,
-            Rect::from_center_size(rect.right_top(), Vec2::splat(HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::Right,
-            Rect::from_center_size(mid_right, Vec2::new(HANDLE_SIZE, HANDLE_SIZE * 1.35)),
-        ),
-        (
-            RegionHandle::BottomLeft,
-            Rect::from_center_size(rect.left_bottom(), Vec2::splat(HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::Bottom,
-            Rect::from_center_size(mid_bottom, Vec2::new(HANDLE_SIZE * 1.35, HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::BottomRight,
-            Rect::from_center_size(rect.right_bottom(), Vec2::splat(HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::Left,
-            Rect::from_center_size(mid_left, Vec2::new(HANDLE_SIZE, HANDLE_SIZE * 1.35)),
-        ),
-    ]
-}
-
-fn region_handle_cursor(handle: RegionHandle) -> egui::CursorIcon {
-    match handle {
-        RegionHandle::TopLeft | RegionHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
-        RegionHandle::TopRight | RegionHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
-        RegionHandle::Top | RegionHandle::Bottom => egui::CursorIcon::ResizeVertical,
-        RegionHandle::Left | RegionHandle::Right => egui::CursorIcon::ResizeHorizontal,
-    }
-}
-
-fn draw_dashed_rect(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    draw_dashed_line(painter, rect.left_top(), rect.right_top(), stroke);
-    draw_dashed_line(painter, rect.right_top(), rect.right_bottom(), stroke);
-    draw_dashed_line(painter, rect.right_bottom(), rect.left_bottom(), stroke);
-    draw_dashed_line(painter, rect.left_bottom(), rect.left_top(), stroke);
-}
-
-fn draw_dashed_line(painter: &egui::Painter, start: Pos2, end: Pos2, stroke: Stroke) {
-    let delta = end - start;
-    let length = delta.length();
-    if length <= 0.0 {
-        return;
-    }
-    let direction = delta / length;
-    let mut traveled = 0.0;
-    while traveled < length {
-        let dash_end = (traveled + DASH_LENGTH).min(length);
-        let from = start + direction * traveled;
-        let to = start + direction * dash_end;
-        painter.line_segment([from, to], stroke);
-        traveled += DASH_LENGTH + DASH_GAP;
-    }
-}
-
-fn draw_region_badge(painter: &egui::Painter, rect: Rect, text: String, color: Color32) {
-    let width = (text.len() as f32 * 7.2).clamp(52.0, 180.0);
-    let badge = Rect::from_min_size(
-        rect.left_top() + Vec2::new(10.0, 10.0),
-        Vec2::new(width, 22.0),
-    );
-    painter.rect_filled(badge, 999.0, Color32::from_black_alpha(168));
-    painter.rect_stroke(
-        badge,
-        999.0,
-        Stroke::new(1.5, color.gamma_multiply(0.95)),
-        StrokeKind::Outside,
-    );
-    painter.text(
-        badge.center(),
-        Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(11.0),
-        color,
-    );
 }
 
 fn draw_canvas_marker(
@@ -5485,18 +4933,6 @@ fn display_key_label(key: &str) -> String {
     }
 }
 
-fn clamp_region(mut region: Region) -> Region {
-    region.w = region.w.clamp(0.05, 1.0);
-    region.h = region.h.clamp(0.05, 1.0);
-    region.x = region.x.clamp(0.0, 1.0 - region.w);
-    region.y = region.y.clamp(0.0, 1.0 - region.h);
-    region.x = round3(region.x);
-    region.y = round3(region.y);
-    region.w = round3(region.w);
-    region.h = round3(region.h);
-    region
-}
-
 fn snap_rel_pos(
     profile: Option<&Profile>,
     current_idx: usize,
@@ -5533,18 +4969,6 @@ fn snap_rel_pos(
     pos
 }
 
-fn snap_region(region: Region, enabled: bool) -> Region {
-    if !enabled {
-        return clamp_region(region);
-    }
-    clamp_region(Region {
-        x: snap_scalar(region.x),
-        y: snap_scalar(region.y),
-        w: snap_scalar(region.w),
-        h: snap_scalar(region.h),
-    })
-}
-
 fn snap_scalar(value: f64) -> f64 {
     let snapped = (value / SNAP_GRID_STEP).round() * SNAP_GRID_STEP;
     if (value - snapped).abs() <= SNAP_THRESHOLD {
@@ -5559,15 +4983,6 @@ fn offset_rel_pos(pos: RelPos) -> RelPos {
         x: round3((pos.x + 0.02).clamp(0.0, 1.0)),
         y: round3((pos.y + 0.02).clamp(0.0, 1.0)),
     }
-}
-
-fn offset_region(region: Region) -> Region {
-    clamp_region(Region {
-        x: region.x + 0.02,
-        y: region.y + 0.02,
-        w: region.w,
-        h: region.h,
-    })
 }
 
 fn template_label(template: NodeTemplate) -> &'static str {
@@ -5603,17 +5018,7 @@ fn node_conversion_anchor(node: &Node) -> RelPos {
         Node::Tap { pos, .. } | Node::ToggleTap { pos, .. } | Node::RepeatTap { pos, .. } => *pos,
         Node::Drag { start, .. } => *start,
         Node::MouseCamera { anchor, .. } => *anchor,
-        Node::Joystick {
-            mode: JoystickMode::Fixed,
-            pos,
-            ..
-        } => *pos,
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            region,
-            pos,
-            ..
-        } => region.as_ref().map(region_center).unwrap_or(*pos),
+        Node::Joystick { pos, .. } => *pos,
         Node::Wheel {
             up_pos, down_pos, ..
         } => RelPos {
@@ -5734,38 +5139,12 @@ fn draw_hover_card(
                 lines.push(format!("Down Pixels: {}, {}", down_px, down_py));
             }
         }
-        Node::Joystick {
-            pos,
-            radius,
-            mode,
-            region,
-            ..
-        } => {
-            lines.push(format!(
-                "Mode: {}",
-                match mode {
-                    JoystickMode::Fixed => "fixed",
-                    JoystickMode::Floating => "floating",
-                }
-            ));
+        Node::Joystick { pos, radius, .. } => {
             lines.push(format!("Radius: {:.3}", radius));
-            match (mode, region) {
-                (JoystickMode::Fixed, _) => {
-                    lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
-                    if let Some(screen) = screen {
-                        let (px, py) = rel_to_pixels(pos, screen);
-                        lines.push(format!("Pixels: {}, {}", px, py));
-                    }
-                }
-                (JoystickMode::Floating, Some(region)) => {
-                    lines.push(format!(
-                        "Zone: {:.3}, {:.3}, {:.3}, {:.3}",
-                        region.x, region.y, region.w, region.h
-                    ));
-                }
-                (JoystickMode::Floating, None) => {
-                    lines.push("Zone: missing".into());
-                }
+            lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
+            if let Some(screen) = screen {
+                let (px, py) = rel_to_pixels(pos, screen);
+                lines.push(format!("Pixels: {}, {}", px, py));
             }
         }
         Node::Drag {
