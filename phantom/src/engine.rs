@@ -9,8 +9,13 @@ use crate::profile::{
 };
 
 const AIM_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
-const AIM_SCALE: f64 = 1.0 / 500.0;
+const AIM_RELATIVE_BASE_SCALE: f64 = 1.0 / 650.0;
+const AIM_ABSOLUTE_SCALE: f64 = 1.0 / 500.0;
 const AIM_OPERATIONAL_REACH_CAP: f64 = 0.08;
+const AIM_RELATIVE_MIN_FACTOR: f64 = 0.28;
+const AIM_RELATIVE_MAX_FACTOR: f64 = 1.35;
+const AIM_RELATIVE_CURVE_START: f64 = 1.0;
+const AIM_RELATIVE_CURVE_END: f64 = 18.0;
 const STANDARD_TAP_MIN_PULSE: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1115,12 +1120,11 @@ impl KeymapEngine {
                         continue;
                     }
 
-                    let delta_x =
-                        dx as f64 * sensitivity * self.sensitivity * aim_scale_for_source(source);
-                    let delta_y = if *invert_y { -(dy as f64) } else { dy as f64 }
+                    let (raw_delta_x, raw_delta_y) = shape_aim_delta(dx, dy, source);
+                    let delta_x = raw_delta_x * sensitivity * self.sensitivity;
+                    let delta_y = if *invert_y { -raw_delta_y } else { raw_delta_y }
                         * sensitivity
-                        * self.sensitivity
-                        * aim_scale_for_source(source);
+                        * self.sensitivity;
 
                     let (mut move_cmds, next_active, next_x, next_y) =
                         Self::move_mouse_camera_segmented(
@@ -1684,10 +1688,31 @@ fn joystick_offset(up: bool, down: bool, left: bool, right: bool, radius: f64) -
     (dir_x * radius, dir_y * radius)
 }
 
-fn aim_scale_for_source(source: crate::input::MouseMotionSource) -> f64 {
+fn smoothstep01(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn shape_aim_delta(dx: i32, dy: i32, source: crate::input::MouseMotionSource) -> (f64, f64) {
+    let dx = dx as f64;
+    let dy = dy as f64;
+
     match source {
-        crate::input::MouseMotionSource::Relative => AIM_SCALE,
-        crate::input::MouseMotionSource::Absolute => AIM_SCALE,
+        crate::input::MouseMotionSource::Relative => {
+            let magnitude = dx.hypot(dy);
+            let curve = smoothstep01(
+                (magnitude - AIM_RELATIVE_CURVE_START)
+                    / (AIM_RELATIVE_CURVE_END - AIM_RELATIVE_CURVE_START),
+            );
+            let factor = lerp(AIM_RELATIVE_MIN_FACTOR, AIM_RELATIVE_MAX_FACTOR, curve);
+            (
+                dx * AIM_RELATIVE_BASE_SCALE * factor,
+                dy * AIM_RELATIVE_BASE_SCALE * factor,
+            )
+        }
+        crate::input::MouseMotionSource::Absolute => {
+            (dx * AIM_ABSOLUTE_SCALE, dy * AIM_ABSOLUTE_SCALE)
+        }
     }
 }
 
@@ -2284,6 +2309,24 @@ mod tests {
         };
         assert!((*x - 0.2).abs() < 0.001);
         assert!(*y < 0.7);
+    }
+
+    #[test]
+    fn relative_aim_curve_damps_small_motion_and_preserves_large_turns() {
+        let (small_dx, small_dy) = shape_aim_delta(1, 0, MouseMotionSource::Relative);
+        assert!(small_dx > 0.0);
+        assert_eq!(small_dy, 0.0);
+
+        let (large_dx, _) = shape_aim_delta(30, 0, MouseMotionSource::Relative);
+        assert!(large_dx > small_dx);
+        assert!((large_dx / 30.0) > small_dx);
+    }
+
+    #[test]
+    fn absolute_aim_curve_stays_linear() {
+        let (dx, dy) = shape_aim_delta(10, -5, MouseMotionSource::Absolute);
+        assert!((dx - (10.0 * AIM_ABSOLUTE_SCALE)).abs() < f64::EPSILON);
+        assert!((dy - (-5.0 * AIM_ABSOLUTE_SCALE)).abs() < f64::EPSILON);
     }
 
     #[test]

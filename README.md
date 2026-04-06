@@ -245,6 +245,8 @@ Important:
 - touchpads are supported, but a real mouse will usually feel smoother for camera movement
 - real mouse deltas are fed to aim one evdev report at a time, with X/Y from the
   same report handled together instead of as separate jumps
+- the real-mouse aim path now uses an immediate mouse-first response curve:
+  tiny motions are damped for precision while larger sweeps still turn fast
 - `F1` now preserves toggle-look state and resyncs `while_held` mouse buttons when routing is restored
 - entering capture also resyncs currently held keyboard controls for hold-style nodes such as `tap`, `repeat_tap`, `joystick`, and hold-mode `layer_shift`
 - `phantom status` shows whether menu touch is active, which backend seeded the owned cursor, and which runtime mouse mode is active

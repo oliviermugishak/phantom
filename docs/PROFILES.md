@@ -283,6 +283,8 @@ Important:
 - real mouse movement keeps per-report relative-event cadence; Phantom combines
   X/Y from the same evdev report, but does not merge separate reports into
   larger aim steps
+- real mouse aim now uses a source-specific response curve: tiny relative
+  movements are damped for precision while larger sweeps keep strong turn speed
 - touchpad roughness is reduced in input translation by splitting large absolute
   touchpad jumps into smaller motion steps before they reach the engine
 - touchpad contact start and end now explicitly re-arm aim between swipes, so

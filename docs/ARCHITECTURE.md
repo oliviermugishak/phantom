@@ -251,6 +251,12 @@ It emits:
 
 During runtime, Phantom now applies gameplay touch commands per translated input event instead of coalescing unrelated key transitions into one larger backend batch. That keeps release and re-engage boundaries explicit for controls like fixed joysticks. Joystick startup also uses an explicit commit boundary between `TouchDown` and the first `TouchMove` so visible sticks behave like a real drag rather than a teleported touch.
 
+For `aim`, Phantom now keeps the transport immediate but shapes real relative-mouse
+motion with a source-specific response curve. Small mouse reports are damped for
+precision, while larger reports preserve fast turn speed. This is a per-report
+spatial transform, not time-based smoothing, so it does not intentionally add
+latency to the mouse path.
+
 That abstraction is the key boundary in the codebase.
 
 Backends then decide how to realize those commands:

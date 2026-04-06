@@ -193,6 +193,9 @@ Note:
 - if real-mouse aim feels jumpy, verify you are on the current build; Phantom
   now handles relative mouse motion one evdev report at a time, with X/Y from
   the same report kept together instead of being emitted as separate aim jumps
+- the current mouse path also damps tiny relative reports instead of applying the
+  same full scale to every movement, which improves precision without turning
+  large camera sweeps into a slow drag
 
 ## Aim Stops After `F1` Mouse Toggle
 
