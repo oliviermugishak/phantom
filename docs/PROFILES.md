@@ -260,9 +260,10 @@ Fields:
 - `anchor`
   Normalized internal recenter point for the hidden look touch.
 - `reach`
-  Advanced travel envelope for the hidden look touch. Phantom re-segments aim
-  internally before the raw configured value is fully used, so larger values
-  have diminishing returns and should not be treated like a visible region size.
+  Advanced travel envelope for the hidden look touch. Real mouse aim is allowed
+  to use a wider internal envelope than touchpad aim so high-speed camera turns
+  re-center less often, but this still should not be treated like a visible
+  region size.
 - `sensitivity`
   Node-local multiplier.
 - `curve`

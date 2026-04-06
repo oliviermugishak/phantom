@@ -11,7 +11,8 @@ use crate::profile::{
 const AIM_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
 const AIM_RELATIVE_BASE_SCALE: f64 = 1.0 / 650.0;
 const AIM_ABSOLUTE_SCALE: f64 = 1.0 / 500.0;
-const AIM_OPERATIONAL_REACH_CAP: f64 = 0.08;
+const AIM_OPERATIONAL_REACH_CAP_RELATIVE: f64 = 0.18;
+const AIM_OPERATIONAL_REACH_CAP_ABSOLUTE: f64 = 0.08;
 const AIM_RELATIVE_MIN_FACTOR: f64 = 0.28;
 const AIM_RELATIVE_MAX_FACTOR: f64 = 1.35;
 const AIM_RELATIVE_CURVE_START: f64 = 1.0;
@@ -88,22 +89,53 @@ pub struct KeymapEngine {
 
 impl KeymapEngine {
     fn mouse_camera_effective_reach(reach: f64) -> f64 {
-        reach.clamp(0.01, 0.45).min(AIM_OPERATIONAL_REACH_CAP)
+        reach
+            .clamp(0.01, 0.45)
+            .min(AIM_OPERATIONAL_REACH_CAP_RELATIVE)
+    }
+
+    fn mouse_camera_effective_reach_for_source(
+        reach: f64,
+        source: crate::input::MouseMotionSource,
+    ) -> f64 {
+        let cap = match source {
+            crate::input::MouseMotionSource::Relative => AIM_OPERATIONAL_REACH_CAP_RELATIVE,
+            crate::input::MouseMotionSource::Absolute => AIM_OPERATIONAL_REACH_CAP_ABSOLUTE,
+        };
+        reach.clamp(0.01, 0.45).min(cap)
+    }
+
+    fn mouse_camera_center_for_effective_reach(
+        anchor: &RelPos,
+        effective_reach: f64,
+    ) -> (f64, f64) {
+        (
+            anchor.x.clamp(effective_reach, 1.0 - effective_reach),
+            anchor.y.clamp(effective_reach, 1.0 - effective_reach),
+        )
     }
 
     fn mouse_camera_center(anchor: &RelPos, reach: f64) -> (f64, f64) {
         let reach = Self::mouse_camera_effective_reach(reach);
-        (
-            anchor.x.clamp(reach, 1.0 - reach),
-            anchor.y.clamp(reach, 1.0 - reach),
-        )
+        Self::mouse_camera_center_for_effective_reach(anchor, reach)
     }
 
     fn clamp_mouse_camera_point(anchor: &RelPos, reach: f64, x: f64, y: f64) -> (f64, f64) {
-        let (center_x, center_y) = Self::mouse_camera_center(anchor, reach);
+        let reach = Self::mouse_camera_effective_reach(reach);
+        Self::clamp_mouse_camera_point_for_effective_reach(anchor, reach, x, y)
+    }
+
+    fn clamp_mouse_camera_point_for_effective_reach(
+        anchor: &RelPos,
+        effective_reach: f64,
+        x: f64,
+        y: f64,
+    ) -> (f64, f64) {
+        let (center_x, center_y) =
+            Self::mouse_camera_center_for_effective_reach(anchor, effective_reach);
         (
-            x.clamp(center_x - reach, center_x + reach),
-            y.clamp(center_y - reach, center_y + reach),
+            x.clamp(center_x - effective_reach, center_x + effective_reach),
+            y.clamp(center_y - effective_reach, center_y + effective_reach),
         )
     }
 
@@ -236,13 +268,18 @@ impl KeymapEngine {
         reach: f64,
         state: (bool, f64, f64),
         delta: (f64, f64),
+        source: crate::input::MouseMotionSource,
     ) -> (Vec<TouchCommand>, bool, f64, f64) {
         let (mut finger_active, mut current_x, mut current_y) = state;
         let (mut delta_x, mut delta_y) = delta;
         let mut cmds = Vec::new();
-        let (anchor_x, anchor_y) = Self::mouse_camera_center(anchor, reach);
+        let effective_reach = Self::mouse_camera_effective_reach_for_source(reach, source);
+        let (anchor_x, anchor_y) =
+            Self::mouse_camera_center_for_effective_reach(anchor, effective_reach);
 
         if !finger_active {
+            current_x = anchor_x;
+            current_y = anchor_y;
             cmds.push(TouchCommand::TouchDown {
                 slot,
                 x: current_x,
@@ -256,8 +293,12 @@ impl KeymapEngine {
         loop {
             let target_x = current_x + delta_x;
             let target_y = current_y + delta_y;
-            let (next_x, next_y) =
-                Self::clamp_mouse_camera_point(anchor, reach, target_x, target_y);
+            let (next_x, next_y) = Self::clamp_mouse_camera_point_for_effective_reach(
+                anchor,
+                effective_reach,
+                target_x,
+                target_y,
+            );
 
             if (next_x - current_x).abs() > f64::EPSILON
                 || (next_y - current_y).abs() > f64::EPSILON
@@ -1206,6 +1247,7 @@ impl KeymapEngine {
                             *reach,
                             (*finger_active, *current_x, *current_y),
                             (delta_x, delta_y),
+                            source,
                         );
 
                     cmds.append(&mut move_cmds);
@@ -2396,6 +2438,38 @@ mod tests {
             panic!("expected mouse camera state");
         };
         assert!(*current_x > 0.75);
+    }
+
+    #[test]
+    fn relative_mouse_uses_wider_operational_reach_than_absolute_touch() {
+        let anchor = RelPos { x: 0.75, y: 0.5 };
+        let delta = (0.12, 0.0);
+
+        let (relative_cmds, _, relative_x, _) = KeymapEngine::move_mouse_camera_segmented(
+            1,
+            &anchor,
+            0.18,
+            (false, 0.0, 0.0),
+            delta,
+            MouseMotionSource::Relative,
+        );
+        assert!(!relative_cmds
+            .iter()
+            .any(|cmd| matches!(cmd, TouchCommand::TouchUp { .. })));
+        assert!((relative_x - 0.87).abs() < 1e-6);
+
+        let (absolute_cmds, _, absolute_x, _) = KeymapEngine::move_mouse_camera_segmented(
+            1,
+            &anchor,
+            0.18,
+            (false, 0.0, 0.0),
+            delta,
+            MouseMotionSource::Absolute,
+        );
+        assert!(absolute_cmds
+            .iter()
+            .any(|cmd| matches!(cmd, TouchCommand::TouchUp { .. })));
+        assert!((absolute_x - 0.79).abs() < 1e-6);
     }
 
     #[test]

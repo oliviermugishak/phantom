@@ -439,7 +439,7 @@ impl Node {
                 invert_y,
                 ..
             } => Some(format!(
-                "anchor=({:.3},{:.3}) configured_reach={:.3} operational_cap=0.080 sensitivity={:.3} curve={} mode={} key={} invert_y={}",
+                "anchor=({:.3},{:.3}) configured_reach={:.3} operational_cap_relative=0.180 operational_cap_absolute=0.080 sensitivity={:.3} curve={} mode={} key={} invert_y={}",
                 anchor.x,
                 anchor.y,
                 reach,

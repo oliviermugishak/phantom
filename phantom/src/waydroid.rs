@@ -1,6 +1,7 @@
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::error::{PhantomError, Result};
 use crate::inject::{PHANTOM_DEVICE_NAME, PHANTOM_PRODUCT_ID, PHANTOM_VENDOR_ID};
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -357,20 +358,7 @@ fn read_mount_overlays(path: &Path) -> Option<bool> {
 }
 
 fn stage_android_server(config: &Config) -> Result<PathBuf> {
-    let source = config.android.server_jar.clone().ok_or_else(|| {
-        PhantomError::TouchBackend(
-            "android auto-launch requires [android].server_jar to point to a built phantom-server.jar".into(),
-        )
-    })?;
-
-    if !source.exists() {
-        return Err(PhantomError::TouchBackend(format!(
-            "android server jar not found at {}",
-            source.display()
-        )));
-    }
-
-    validate_android_server_jar(&source)?;
+    let source = resolve_android_server_jar(config)?;
 
     let bytes = std::fs::read(&source).map_err(|e| {
         PhantomError::TouchBackend(format!(
@@ -420,6 +408,154 @@ fn stage_android_server(config: &Config) -> Result<PathBuf> {
     }
 
     Ok(source)
+}
+
+fn resolve_android_server_jar(config: &Config) -> Result<PathBuf> {
+    let configured = config.android.server_jar.clone();
+    let mut checked = Vec::new();
+
+    if let Some(path) = configured.as_ref() {
+        if let Some(resolved) = usable_android_server_jar_candidate(path, &mut checked) {
+            return Ok(resolved);
+        }
+    }
+
+    for candidate in android_server_jar_fallback_candidates() {
+        if let Some(resolved) = usable_android_server_jar_candidate(&candidate, &mut checked) {
+            if let Some(configured) = configured.as_ref() {
+                if configured != &resolved {
+                    tracing::warn!(
+                        configured = %configured.display(),
+                        resolved = %resolved.display(),
+                        "configured android server jar is unavailable, using fallback"
+                    );
+                }
+            } else {
+                tracing::info!(
+                    resolved = %resolved.display(),
+                    "resolved android server jar automatically"
+                );
+            }
+            return Ok(resolved);
+        }
+    }
+
+    let mut message = if let Some(configured) = configured {
+        format!(
+            "android server jar not found at {} and no usable fallback phantom-server.jar was found",
+            configured.display()
+        )
+    } else {
+        "android auto-launch could not find a usable phantom-server.jar".into()
+    };
+
+    if !checked.is_empty() {
+        message.push_str("\nchecked:");
+        for path in checked {
+            message.push_str("\n- ");
+            message.push_str(&path.display().to_string());
+        }
+    }
+
+    Err(PhantomError::TouchBackend(message))
+}
+
+fn usable_android_server_jar_candidate(path: &Path, checked: &mut Vec<PathBuf>) -> Option<PathBuf> {
+    if !checked.iter().any(|existing| existing == path) {
+        checked.push(path.to_path_buf());
+    }
+
+    if !path.exists() {
+        return None;
+    }
+
+    match validate_android_server_jar(path) {
+        Ok(()) => Some(path.to_path_buf()),
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "ignoring unusable android server jar candidate");
+            None
+        }
+    }
+}
+
+fn android_server_jar_fallback_candidates() -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+
+    if let Some(installed) = installed_android_server_jar_path() {
+        if seen.insert(installed.clone()) {
+            candidates.push(installed);
+        }
+    }
+
+    for candidate in source_tree_android_server_jar_candidates() {
+        if seen.insert(candidate.clone()) {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates
+}
+
+fn installed_android_server_jar_path() -> Option<PathBuf> {
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| config::invoking_home_dir().map(|home| home.join(".local").join("share")));
+
+    data_home
+        .as_deref()
+        .map(android_server_jar_path_under_data_home)
+}
+
+fn source_tree_android_server_jar_candidates() -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+
+    for start in source_tree_search_roots() {
+        for candidate in source_tree_android_server_jar_candidates_from(&start) {
+            if seen.insert(candidate.clone()) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn source_tree_search_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+
+    roots
+}
+
+fn android_server_jar_path_under_data_home(data_home: &Path) -> PathBuf {
+    data_home
+        .join("phantom")
+        .join("android")
+        .join("phantom-server.jar")
+}
+
+fn source_tree_android_server_jar_candidates_from(start: &Path) -> Vec<PathBuf> {
+    start
+        .ancestors()
+        .map(|ancestor| {
+            ancestor
+                .join("contrib")
+                .join("android-server")
+                .join("build")
+                .join("phantom-server.jar")
+        })
+        .collect()
 }
 
 fn ensure_waydroid_session_running() -> Result<()> {
@@ -656,5 +792,24 @@ mod tests {
         assert!(!waydroid_container_is_frozen(
             "Session:\tRUNNING\nContainer:\tRUNNING\n"
         ));
+    }
+
+    #[test]
+    fn installed_android_server_path_is_under_data_home() {
+        assert_eq!(
+            android_server_jar_path_under_data_home(Path::new("/tmp/data-home")),
+            PathBuf::from("/tmp/data-home/phantom/android/phantom-server.jar")
+        );
+    }
+
+    #[test]
+    fn source_tree_candidates_walk_up_to_repo_root() {
+        let repo_root = Path::new("/workspace/phantom");
+        let candidates =
+            source_tree_android_server_jar_candidates_from(&repo_root.join("target/release"));
+
+        assert!(
+            candidates.contains(&repo_root.join("contrib/android-server/build/phantom-server.jar"))
+        );
     }
 }

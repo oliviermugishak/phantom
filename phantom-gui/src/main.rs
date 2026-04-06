@@ -3200,7 +3200,7 @@ impl PhantomGui {
                             });
                             ui.label(
                                 RichText::new(
-                                    "Configured reach is an upper envelope. Phantom keeps live aim travel tighter internally, so large values mostly affect how aggressively it can re-segment rather than turning Aim into a giant screen wrapper.",
+                                    "Configured reach is the hidden camera envelope. Real mouse aim can use more of it for smoother high-speed turns, while touchpad aim stays tighter for stability.",
                                 )
                                     .small()
                                     .color(Color32::from_gray(160)),

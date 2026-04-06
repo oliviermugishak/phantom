@@ -39,6 +39,11 @@ sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
 
 If `sudo phantom` is not found after install, rerun `./install.sh`. The installer now places a sudo-visible `phantom` launcher in `/usr/local/bin` when possible.
 
+If android auto-launch fails because `android.server_jar` points to an old
+source path, Phantom now falls back to the installed jar in
+`~/.local/share/phantom/android/` and then to a built jar in the current source
+tree before failing.
+
 Required Waydroid state:
 
 - `Session: RUNNING`

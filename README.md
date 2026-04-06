@@ -93,6 +93,7 @@ The GUI loads profiles from the user library, not directly from the repository.
 - it does not overwrite profiles you already edited
 - `./install.sh -o` can prompt to overwrite the current config and/or the currently shipped profile filenames
 - rerunning `./install.sh` is the supported way to seed newly added shipped profiles into an existing setup
+- rerunning `./install.sh` also rewrites `android.server_jar` to the installed jar if the existing config still points at a source-tree `contrib/android-server/build/phantom-server.jar`
 
 That means:
 
@@ -108,6 +109,9 @@ That means:
 ```
 
 2. Edit `~/.config/phantom/config.toml` and set the real Waydroid screen size.
+   If `android.server_jar` is stale or omitted, Phantom now falls back to the
+   installed jar in `~/.local/share/phantom/android/` or a built jar in the
+   current source tree.
 
 3. Start Waydroid and make sure the container is not frozen:
 
@@ -248,6 +252,8 @@ Important:
 - the real-mouse aim path now uses an immediate mouse-first response curve:
   tiny motions are damped for precision while larger sweeps still turn fast,
   without letting a fast vertical pull inflate tiny sideways noise
+- real mouse aim is now allowed a wider hidden-touch envelope than absolute
+  touchpad aim, which reduces re-centering during fast camera turns
 - large camera sweeps are no longer clipped by the old fixed aim
   re-segmentation loop, and `while_held` re-engage starts from a fresh center
   instead of resuming from a stale edge
@@ -353,10 +359,10 @@ phantom-gui --version
 
 ## Install Notes
 
-- `./install.sh` builds the workspace, installs `phantom` and `phantom-gui` into `~/.local/bin`, installs a sudo-visible `phantom` launcher into `/usr/local/bin` when possible, installs the Android server jar into `~/.local/share/phantom/android/`, creates `~/.config/phantom/config.toml` if missing, and seeds missing shipped profiles into `~/.config/phantom/profiles/`.
+- `./install.sh` builds the workspace, installs `phantom` and `phantom-gui` into `~/.local/bin`, installs a sudo-visible `phantom` launcher into `/usr/local/bin` when possible, installs the Android server jar into `~/.local/share/phantom/android/`, creates `~/.config/phantom/config.toml` if missing, refreshes `android.server_jar` in the existing config when it still points at a source-tree jar, and seeds missing shipped profiles into `~/.config/phantom/profiles/`.
 - `./install.sh -o` interactively asks whether to overwrite `~/.config/phantom/config.toml` and whether to overwrite the currently shipped profile filenames in `~/.config/phantom/profiles/`.
 - `./install.sh -u` removes the installed binaries, the sudo-visible `phantom` launcher, and the Android server jar, but leaves your config and user profiles untouched.
-- rerunning `./install.sh` is safe for profile seeding because it only copies missing shipped profiles
+- rerunning `./install.sh` is safe for profile seeding because it only copies missing shipped profiles, and it only updates `android.server_jar` automatically when that field still points at a source-tree jar
 
 ## Current Direction
 

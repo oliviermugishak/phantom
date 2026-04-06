@@ -315,8 +315,8 @@ Runtime note:
 - the old fixed eight-step re-segmentation cap is gone; large mouse sweeps now
   keep re-centering until the motion is consumed or a high safety cap is hit
 - the engine also keeps aim travel tighter around its anchor than the raw
-  profile reach alone would suggest, so the hidden touch is less likely to roam
-  into nearby controls
+  profile reach alone would suggest, but real mouse input is allowed a wider
+  envelope than absolute-touchpad input so fast flicks re-center less often
 - `while_held` re-engage now starts from a fresh center point instead of
   inheriting the last edge position from the previous hold cycle
 
