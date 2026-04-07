@@ -48,7 +48,7 @@ KEYS (while daemon running, configurable in config.toml [runtime_hotkeys]):
     F1   Toggle mouse grab (default)
     F8   Toggle capture mode (default)
     F9   Toggle pause (default)
-    F10  Toggle experimental debug overlay preview (default)
+    F10  Toggle experimental debug control preview (default)
 
 FLAGS:
     --daemon      Run as daemon (requires root)
@@ -424,22 +424,21 @@ async fn run_daemon() -> Result<()> {
                         if !gameplay_events.is_empty() {
                             tracing::trace!(events = ?gameplay_events, "forwarding gameplay events to engine");
                             let mut engine = state.engine.write().await;
-                            let mut pending = Vec::new();
+                            let mut dev = match ipc::lock_touch_device(&state) {
+                                Ok(dev) => dev,
+                                Err(e) => {
+                                    tracing::warn!("touch backend lock error: {}", e);
+                                    continue;
+                                }
+                            };
                             for event in &gameplay_events {
-                                pending.extend(engine.process(event));
-                            }
-                            drop(engine);
-
-                            if !pending.is_empty() {
-                                let mut dev = match ipc::lock_touch_device(&state) {
-                                    Ok(dev) => dev,
-                                    Err(e) => {
-                                        tracing::warn!("touch backend lock error: {}", e);
-                                        continue;
-                                    }
-                                };
-                                if let Err(e) = dev.apply_commands(&pending) {
+                                let cmds = engine.process(event);
+                                if cmds.is_empty() {
+                                    continue;
+                                }
+                                if let Err(e) = dev.apply_commands(&cmds) {
                                     tracing::warn!("inject error: {}", e);
+                                    break;
                                 }
                             }
                         }
@@ -567,9 +566,16 @@ async fn handle_runtime_shortcut(
                 let engine = state.engine.read().await;
                 engine.profile_clone()
             };
+            let preview_frame = {
+                let mut mouse_touch = ipc::lock_mouse_touch(state)?;
+                if mouse_touch.overlay_frame().is_none() {
+                    mouse_touch.seed_from_host_cursor();
+                }
+                mouse_touch.overlay_frame()
+            };
             let visible = {
                 let mut overlay = ipc::lock_overlay(state)?;
-                overlay.toggle(&profile)?
+                overlay.toggle(&profile, preview_frame)?
             };
             tracing::info!(
                 "{}",

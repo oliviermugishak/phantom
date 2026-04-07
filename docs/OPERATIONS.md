@@ -39,6 +39,11 @@ sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
 
 If `sudo phantom` is not found after install, rerun `./install.sh`. The installer now places a sudo-visible `phantom` launcher in `/usr/local/bin` when possible.
 
+If android auto-launch fails because `android.server_jar` points to an old
+source path, Phantom now falls back to the installed jar in
+`~/.local/share/phantom/android/` and then to a built jar in the current source
+tree before failing.
+
 Required Waydroid state:
 
 - `Session: RUNNING`
@@ -132,7 +137,7 @@ Defaults:
 - `F1` -> toggle mouse routing
 - `F8` -> toggle capture
 - `F9` -> toggle pause
-- `F10` -> toggle the experimental debug overlay preview
+- `F10` -> toggle the experimental debug control preview
 - `F2` -> shutdown daemon
 
 Fn row warning:
@@ -142,9 +147,10 @@ Fn row warning:
 
 Overlay notes:
 
-- `F10` shows or hides an experimental host-side debug preview of the current profile
+- `F10` shows or hides an experimental debug preview of the current profile
+- on Wayland, Phantom prefers a compact passthrough HUD built from layer-shell marker surfaces
+- if that path is unavailable, Phantom falls back to the older fullscreen preview window
 - it is not intended for normal gameplay
-- it may behave differently across compositors and sessions
 - overlay launcher output is written to `~/.config/phantom/overlay.log`
 
 ## Tracing Levels
@@ -167,6 +173,8 @@ Runtime note:
 - `F1` switches between gameplay aim and owned menu-touch
 - it no longer destroys toggle-look state
 - `while_held` mouse buttons are resynced when mouse routing is turned back on
+- entering capture also re-establishes currently held keyboard-driven hold controls such as `tap`, `repeat_tap`, `joystick`, and hold-mode `layer_shift`
+- capture transitions release any stale desktop-relay keys before mode ownership changes, so toggling capture should not leave desktop keys logically stuck
 - status output now includes:
   - the active menu-touch backend
   - the current runtime mouse mode
@@ -218,17 +226,13 @@ Use for:
 
 - continuous movement
 - visible sticks
-- floating movement zones
 
-Modes:
+Behavior:
 
-- `fixed`
-- `floating`
-
-Practical difference:
-
-- `fixed` is for visible static sticks and now uses a staged engage path
-- `floating` is for drag zones and starts moving immediately from a runtime origin
+- joystick movement starts from the configured center and immediately drags
+  outward with a long full-throw swipe
+- use `drag` instead when the game expects a one-shot gesture instead of
+  sustained movement
 
 ### `drag`
 

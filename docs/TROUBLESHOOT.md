@@ -42,6 +42,26 @@ Fix:
 
 - enable Fn Lock so the top row emits real `F1`, `F8`, `F9`, and `F10` function keys
 
+## Capture Toggle Leaves Keys Stuck Or Keyboard Input Feels Broken
+
+Symptoms:
+
+- after `F8` or `phantom enter-capture` / `phantom exit-capture`, some keys appear stuck
+- desktop input feels wrong until you restart the daemon
+- held movement keys do not rebuild cleanly when capture is turned on
+
+Current behavior:
+
+- capture transitions now flush Phantom's desktop keyboard relay before ownership changes
+- entering capture rebuilds currently held keyboard-driven hold controls from the real pressed-key state
+- edge-trigger controls such as `toggle_tap`, `drag`, and `macro` are not replayed automatically on capture entry
+
+If it still feels wrong:
+
+- confirm you are running a current build
+- use `phantom status` to verify `capture` and `mouse mode`
+- if a problem happens right after a dropped-event warning, retest with `PHANTOM_TRACE_DETAIL=1` and inspect whether the affected device is producing repeated `SYN_DROPPED`
+
 ## `F10` Works But No Overlay Appears
 
 Symptom:
@@ -51,7 +71,9 @@ Symptom:
 
 Important:
 
-- the current `F10` overlay is an experimental host-side debug window
+- the current `F10` preview is experimental
+- on Wayland, Phantom first tries a compact passthrough HUD
+- if that path cannot be used, it falls back to the older fullscreen preview window
 - it is not an Android in-surface overlay
 
 Checks:
@@ -167,6 +189,15 @@ Note:
 - touchpads now work, but they may still feel less smooth than a real mouse because Phantom must derive relative motion from absolute touchpad coordinates
 - Phantom now suppresses fresh-contact touchpad jumps before motion reaches aim and keeps tiny single-step movement available for held drags and careful cursor movement
 - a real mouse is still the best path for the highest-end fast aim-heavy play, but touchpad behavior should now be less jumpy without adding tick-latency to aim
+- this is intentional: Phantom does not add extra smoothing to the real relative-mouse path, because that would trade aim feel for latency
+- if real-mouse aim feels jumpy, verify you are on the current build; Phantom
+  now handles relative mouse motion one evdev report at a time, with X/Y from
+  the same report kept together instead of being emitted as separate aim jumps
+- the current mouse path also damps tiny relative reports instead of applying the
+  same full scale to every movement, which improves precision without turning
+  large camera sweeps into a slow drag
+- that shaping is now per axis, so a fast vertical recoil pull should not
+  magnify tiny accidental left/right noise into a sideways camera snap
 
 ## Aim Stops After `F1` Mouse Toggle
 

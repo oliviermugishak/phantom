@@ -917,6 +917,7 @@ impl InputCapture {
 
     pub fn process_events(&mut self, raw: &[(RawFd, RawInputEvent)]) -> Vec<InputEvent> {
         let mut result = self.flush_pending_touchpad_taps();
+        let mut pending_relative: HashMap<RawFd, (i32, i32)> = HashMap::new();
 
         for (fd, event) in raw {
             if trace_detail_enabled() {
@@ -939,10 +940,12 @@ impl InputCapture {
                         "SYN_DROPPED on fd {}, dropping buffered events until next SYN_REPORT and resyncing key state",
                         fd
                     );
+                    pending_relative.remove(fd);
                     device.desynced = true;
                     continue;
                 }
                 if event.code == SYN_REPORT && device.desynced {
+                    pending_relative.remove(fd);
                     device.desynced = false;
                     match Self::resync_key_state(device) {
                         Ok(events) => result.extend(events),
@@ -952,6 +955,23 @@ impl InputCapture {
                     }
                 }
                 if event.code == SYN_REPORT {
+                    if let Some((dx, dy)) = pending_relative.remove(fd) {
+                        if dx != 0 || dy != 0 {
+                            if trace_detail_enabled() {
+                                tracing::trace!(
+                                    device = %device.path,
+                                    dx = dx,
+                                    dy = dy,
+                                    "translated mouse report"
+                                );
+                            }
+                            result.push(InputEvent::MouseMove {
+                                dx,
+                                dy,
+                                source: MouseMotionSource::Relative,
+                            });
+                        }
+                    }
                     result.extend(Self::flush_absolute_pointer_motion(device));
                 }
                 continue;
@@ -1037,35 +1057,11 @@ impl InputCapture {
                 }
             } else if event.type_ == EV_REL {
                 if event.code == REL_X && matches!(device.pointer_kind, PointerKind::Relative) {
-                    if trace_detail_enabled() {
-                        tracing::trace!(
-                            device = %device.path,
-                            dx = event.value,
-                            dy = 0,
-                            "translated mouse move"
-                        );
-                    }
-                    result.push(InputEvent::MouseMove {
-                        dx: event.value,
-                        dy: 0,
-                        source: MouseMotionSource::Relative,
-                    });
+                    pending_relative.entry(*fd).or_default().0 += event.value;
                 } else if event.code == REL_Y
                     && matches!(device.pointer_kind, PointerKind::Relative)
                 {
-                    if trace_detail_enabled() {
-                        tracing::trace!(
-                            device = %device.path,
-                            dx = 0,
-                            dy = event.value,
-                            "translated mouse move"
-                        );
-                    }
-                    result.push(InputEvent::MouseMove {
-                        dx: 0,
-                        dy: event.value,
-                        source: MouseMotionSource::Relative,
-                    });
+                    pending_relative.entry(*fd).or_default().1 += event.value;
                 } else if event.code == REL_WHEEL {
                     // Map scroll wheel to key press+release
                     if event.value != 0 {
@@ -1090,7 +1086,6 @@ impl InputCapture {
             }
         }
 
-        Self::merge_mouse_moves(&mut result);
         result
     }
 
@@ -1131,32 +1126,6 @@ impl InputCapture {
         }
         device.pressed_keys = pressed_now;
         Ok(events)
-    }
-
-    fn merge_mouse_moves(events: &mut Vec<InputEvent>) {
-        let original = std::mem::take(events);
-        let mut merged = Vec::with_capacity(original.len());
-        for event in original {
-            match (merged.last_mut(), event) {
-                (
-                    Some(InputEvent::MouseMove {
-                        dx,
-                        dy,
-                        source: MouseMotionSource::Relative,
-                    }),
-                    InputEvent::MouseMove {
-                        dx: next_dx,
-                        dy: next_dy,
-                        source: MouseMotionSource::Relative,
-                    },
-                ) => {
-                    *dx += next_dx;
-                    *dy += next_dy;
-                }
-                (_, event) => merged.push(event),
-            }
-        }
-        *events = merged;
     }
 
     fn flush_absolute_pointer_motion(device: &mut DeviceInfo) -> Vec<InputEvent> {
@@ -1292,6 +1261,21 @@ impl InputCapture {
             }
             for key in &device.pressed_keys {
                 if key.is_mouse() {
+                    pressed.insert(*key);
+                }
+            }
+        }
+        pressed
+    }
+
+    pub fn current_pressed_keyboard_keys(&self) -> HashSet<Key> {
+        let mut pressed = HashSet::new();
+        for device in &self.devices {
+            if !device.is_keyboard {
+                continue;
+            }
+            for key in &device.pressed_keys {
+                if !key.is_mouse() {
                     pressed.insert(*key);
                 }
             }
@@ -1542,28 +1526,74 @@ mod tests {
     }
 
     #[test]
-    fn merge_mouse_moves_only_merges_adjacent_moves() {
-        let mut events = vec![
-            InputEvent::MouseMove {
-                dx: 1,
-                dy: 0,
-                source: MouseMotionSource::Relative,
-            },
-            InputEvent::MouseMove {
-                dx: 0,
-                dy: 2,
-                source: MouseMotionSource::Relative,
-            },
-            InputEvent::KeyPress(Key::A),
-            InputEvent::MouseMove {
-                dx: 3,
-                dy: 4,
-                source: MouseMotionSource::Relative,
-            },
-        ];
-        InputCapture::merge_mouse_moves(&mut events);
+    fn relative_mouse_motion_preserves_per_report_cadence() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Mouse".into(),
+                file,
+                is_keyboard: false,
+                is_mouse: true,
+                pointer_kind: PointerKind::Relative,
+                abs_x: None,
+                abs_y: None,
+                abs_range_x: None,
+                abs_range_y: None,
+                last_abs_position: None,
+                abs_dirty: false,
+                abs_contact_known: false,
+                abs_touching: false,
+                touch_contact_started_at: None,
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: None,
+                pending_touchpad_tap_deadline: None,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
 
-        assert_eq!(events.len(), 3);
+        let events = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_REL,
+                    code: REL_X,
+                    value: 1,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_REL,
+                    code: REL_Y,
+                    value: 2,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+        ]);
+
+        assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0],
             InputEvent::MouseMove {
@@ -1572,12 +1602,100 @@ mod tests {
                 source: MouseMotionSource::Relative
             }
         ));
-        assert!(matches!(events[1], InputEvent::KeyPress(Key::A)));
+    }
+
+    #[test]
+    fn relative_mouse_motion_does_not_merge_across_reports() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Mouse".into(),
+                file,
+                is_keyboard: false,
+                is_mouse: true,
+                pointer_kind: PointerKind::Relative,
+                abs_x: None,
+                abs_y: None,
+                abs_range_x: None,
+                abs_range_y: None,
+                last_abs_position: None,
+                abs_dirty: false,
+                abs_contact_known: false,
+                abs_touching: false,
+                touch_contact_started_at: None,
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: None,
+                pending_touchpad_tap_deadline: None,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        let events = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_REL,
+                    code: REL_X,
+                    value: 1,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_REL,
+                    code: REL_Y,
+                    value: 2,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+        ]);
+
+        assert_eq!(events.len(), 2);
         assert!(matches!(
-            events[2],
+            events[0],
             InputEvent::MouseMove {
-                dx: 3,
-                dy: 4,
+                dx: 1,
+                dy: 0,
+                source: MouseMotionSource::Relative
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            InputEvent::MouseMove {
+                dx: 0,
+                dy: 2,
                 source: MouseMotionSource::Relative
             }
         ));

@@ -79,6 +79,9 @@ pixel_x = rel_x * screen_width
 pixel_y = rel_y * screen_height
 ```
 
+Phantom rounds normalized coordinates to the nearest target pixel at injection
+time instead of always biasing toward the upper-left corner.
+
 ## 5. Slot Rules
 
 Touch-bearing nodes use unique logical touch slots.
@@ -107,7 +110,8 @@ Rules:
 
 - empty layer means base layer
 - `layer_shift` activates named layers
-- a base-layer key may not also be reused in a non-base layer
+- a base-layer key may not also be reused in a non-base layer unless every
+  `layer_shift` that can activate that non-base layer uses `suspend_base: true`
 - the same key may be reused across different non-base layers
 
 For practical large-profile design, especially shooters with vehicles and parachutes, see [GAME_PATTERNS.md](GAME_PATTERNS.md).
@@ -130,24 +134,13 @@ Behavior:
 
 - key press -> `TouchDown`
 - key release -> `TouchUp`
+- very short keyboard taps are kept down for a tiny minimum runtime pulse so
+  Android buttons still register reliably without removing hold behavior
 
-### `hold_tap`
+Compatibility:
 
-```json
-{
-  "id": "fire",
-  "type": "hold_tap",
-  "slot": 2,
-  "pos": { "x": 0.88, "y": 0.62 },
-  "key": "MouseLeft"
-}
-```
-
-Behavior:
-
-- key press -> `TouchDown`
-- key held -> finger remains down
-- key release -> `TouchUp`
+- legacy `"type": "hold_tap"` entries still load
+- Phantom normalizes them to standard `tap` behavior on load
 
 ### `toggle_tap`
 
@@ -176,7 +169,6 @@ Behavior:
   "slot": 0,
   "pos": { "x": 0.18, "y": 0.72 },
   "radius": 0.07,
-  "mode": "fixed",
   "keys": {
     "up": "W",
     "down": "S",
@@ -189,33 +181,23 @@ Behavior:
 Fields:
 
 - `pos`
-  Stick anchor. Required for compatibility and fixed mode.
+  Stick anchor.
 - `radius`
-  Maximum drag distance.
-- `mode`
-  One of:
-  - `fixed`
-  - `floating`
-- `region`
-  Required for `floating`, omitted for `fixed`.
+  Base drag distance. For keyboard movement, Phantom now prefers a strong
+  full-throw swipe, driving from the anchor toward the screen edge instead of
+  making a short local nudge.
 
 Behavior:
 
 - first direction press -> finger down
 - direction changes -> `TouchMove`
-- all directions released -> `TouchUp`
-
-Modes:
-
-- `fixed`
-  - uses `pos` as the exact center
-  - engages in two stages: `TouchDown` first, then the first `TouchMove` on the next engine tick
-  - best for visible static sticks
-- `floating`
-  - chooses a runtime origin inside `region`
-  - keeps that origin stable until all movement keys are released
-  - starts with immediate `TouchDown` + `TouchMove`
-  - best for floating movement zones and football-style drag movement
+- all directions released -> immediate neutral recenter, then a very short delayed
+  `TouchUp` so fast re-engage does not require a fresh drag start
+- opposite directions on the same axis prefer the most recently pressed key
+  instead of collapsing to a neutral stall while both keys are briefly held
+- joystick movement now uses a long edge-directed swipe from the configured
+  center, which is better for games that expect a stronger drag to start
+  running or sprinting
 
 ### `drag`
 
@@ -255,6 +237,7 @@ Use cases:
   "anchor": { "x": 0.75, "y": 0.5 },
   "reach": 0.18,
   "sensitivity": 1.2,
+  "curve": "balanced",
   "activation_mode": "while_held",
   "activation_key": "MouseRight",
   "invert_y": false
@@ -266,11 +249,17 @@ Fields:
 - `anchor`
   Normalized internal recenter point for the hidden look touch.
 - `reach`
-  Advanced travel envelope for the hidden look touch. Phantom re-segments aim
-  internally before the raw configured value is fully used, so larger values
-  have diminishing returns and should not be treated like a visible region size.
+  Advanced travel envelope for the hidden look touch. Real mouse aim is allowed
+  to use a wider internal envelope than touchpad aim so high-speed camera turns
+  re-center less often, but this still should not be treated like a visible
+  region size.
 - `sensitivity`
   Node-local multiplier.
+- `curve`
+  Mouse response preset for relative camera input:
+  - `balanced`
+  - `precision`
+  - `linear`
 - `activation_mode`
   One of:
   - `always_on`
@@ -288,13 +277,24 @@ Important:
 - menu-touch navigation is runtime behavior, not a profile node
 - runtime mouse grab or `F1` alone does not enable camera movement; the loaded profile must contain an `aim` node
 - aim motion is still emitted immediately from input movement
+- real mouse movement keeps per-report relative-event cadence; Phantom combines
+  X/Y from the same evdev report, but does not merge separate reports into
+  larger aim steps
+- real mouse aim now uses a source-specific response curve: tiny relative
+  movements are damped for precision while larger sweeps keep strong turn speed
 - touchpad roughness is reduced in input translation by splitting large absolute
   touchpad jumps into smaller motion steps before they reach the engine
 - touchpad contact start and end now explicitly re-arm aim between swipes, so
   fast repeated swipe contacts do not inherit stale hidden-touch edge state
+- large relative-mouse sweeps are no longer limited by the old fixed
+  re-segmentation loop; Phantom keeps re-centering the hidden look touch until
+  the movement is consumed or a high safety cap is reached
 - toggled aim state survives `F1` mouse routing changes
 - `while_held` mouse activation keys are resynced when mouse routing is re-enabled
+- `while_held` aim now re-centers on release before the next re-engage, so a
+  quick RMB release and re-press does not restart from a stale edge position
 - older profiles using `type = "mouse_camera"` and `region` still load; Phantom normalizes them to `aim` semantics internally
+- for high-paced shooter play, a real mouse is still the recommended hardware path; touchpad aim remains best-effort
 
 For recommended shooter setups such as ADS-driven look, layered contexts, and sprint-lock drag patterns, see [GAME_PATTERNS.md](GAME_PATTERNS.md).
 
@@ -351,6 +351,7 @@ context actions.
   "id": "combo",
   "type": "macro",
   "key": "G",
+  "mode": "one_shot",
   "sequence": [
     { "action": "down", "pos": { "x": 0.50, "y": 0.30 }, "slot": 6 },
     { "action": "up", "slot": 6, "delay_ms": 50 }
@@ -362,7 +363,8 @@ Behavior:
 
 - key press starts the sequence
 - each step waits for its `delay_ms`
-- key release stops the macro and releases active slots
+- `mode = "cancel_on_release"` keeps the old behavior: key release stops the macro and releases active slots immediately
+- `mode = "one_shot"` lets the macro continue to completion after the key is released
 
 ### `layer_shift`
 
@@ -372,7 +374,8 @@ Behavior:
   "type": "layer_shift",
   "key": "LeftAlt",
   "layer_name": "combat",
-  "mode": "hold"
+  "mode": "hold",
+  "suspend_base": true
 }
 ```
 
@@ -380,6 +383,9 @@ Behavior:
 
 - `hold` -> layer active while the key is held
 - `toggle` -> layer active until pressed again
+- `suspend_base = true` -> base-layer action and camera nodes are temporarily
+  disabled while the target layer is active, which lets the target layer reuse
+  the same keys without firing both contexts at once
 
 ## 8. Validation Rules
 
@@ -397,6 +403,8 @@ Important rules:
 - `aim.sensitivity > 0`
 - `aim.activation_key` required for `while_held` and `toggle`
 - `aim.activation_key` omitted for `always_on`
+- if a non-base layer reuses a base-layer key, every `layer_shift` that can
+  activate that layer must use `suspend_base = true`
 - all key names must be known to Phantom
 
 ## 9. Common Key Names
@@ -445,8 +453,7 @@ Good practice:
 - prefer one gameplay concept per node
 - use `phantom audit` after every meaningful edit
 - use `drag` for deliberate swipe gestures
-- use `fixed` joystick for visible sticks
-- use `floating` joystick for floating movement zones
+- use `joystick` for continuous movement from a fixed stick center
 
 ## 12. Notes On Unsupported Inputs
 

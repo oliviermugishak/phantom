@@ -127,6 +127,7 @@ install_profile() {
 
 install_config() {
     if [[ -e "$CONFIG_PATH" ]] && (( !OVERWRITE_CONFIG )); then
+        sync_installed_server_jar_in_config
         printf 'keeping existing config: %s\n' "$CONFIG_PATH"
         return
     fi
@@ -135,13 +136,40 @@ install_config() {
     local escaped_jar
     escaped_jar="$(escape_sed_replacement "$INSTALLED_JAR")"
     sed \
-        "s|/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar|$escaped_jar|g" \
+        "s|/absolute/path/to/phantom-server.jar|$escaped_jar|g" \
         "$REPO_ROOT/config.example.toml" >"$CONFIG_PATH"
     if ((OVERWRITE_CONFIG)); then
         printf 'overwrote config: %s\n' "$CONFIG_PATH"
     else
         printf 'created config: %s\n' "$CONFIG_PATH"
     fi
+}
+
+config_server_jar_value() {
+    sed -nE 's/^[[:space:]]*server_jar[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$1" | head -n1
+}
+
+sync_installed_server_jar_in_config() {
+    [[ -e "$CONFIG_PATH" ]] || return
+
+    local current_jar
+    current_jar="$(config_server_jar_value "$CONFIG_PATH")"
+
+    case "$current_jar" in
+        "$INSTALLED_JAR"|"")
+            return
+            ;;
+        "/absolute/path/to/phantom-server.jar"|*/contrib/android-server/build/phantom-server.jar)
+            local escaped_jar tmp_config
+            escaped_jar="$(escape_sed_replacement "$INSTALLED_JAR")"
+            tmp_config="$(mktemp)"
+            sed -E \
+                "s|^([[:space:]]*server_jar[[:space:]]*=[[:space:]]*\").*(\".*)$|\1$escaped_jar\2|" \
+                "$CONFIG_PATH" >"$tmp_config"
+            mv "$tmp_config" "$CONFIG_PATH"
+            printf 'updated android server jar in existing config: %s\n' "$CONFIG_PATH"
+            ;;
+    esac
 }
 
 prompt_override_choices() {

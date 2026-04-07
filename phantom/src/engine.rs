@@ -4,27 +4,37 @@ use std::time::{Duration, Instant};
 use crate::input::{InputEvent, Key};
 use crate::logging::trace_detail_enabled;
 use crate::profile::{
-    JoystickMode, LayerMode, MacroAction, MouseCameraActivationMode, Node, Profile, Region, RelPos,
+    AimCurvePreset, LayerMode, MacroAction, MacroRunMode, MouseCameraActivationMode, Node, Profile,
+    Region, RelPos,
 };
 
 const AIM_IDLE_TIMEOUT: Duration = Duration::from_millis(500);
-const AIM_SCALE: f64 = 1.0 / 500.0;
-const AIM_OPERATIONAL_REACH_CAP: f64 = 0.08;
+const AIM_RELATIVE_BASE_SCALE: f64 = 1.0 / 650.0;
+const AIM_ABSOLUTE_SCALE: f64 = 1.0 / 500.0;
+const AIM_OPERATIONAL_REACH_CAP_RELATIVE: f64 = 0.18;
+const AIM_OPERATIONAL_REACH_CAP_ABSOLUTE: f64 = 0.08;
+const AIM_RELATIVE_MIN_FACTOR: f64 = 0.28;
+const AIM_RELATIVE_MAX_FACTOR: f64 = 1.35;
+const AIM_RELATIVE_CURVE_START: f64 = 1.0;
+const AIM_RELATIVE_CURVE_END: f64 = 18.0;
+const STANDARD_TAP_MIN_PULSE: Duration = Duration::from_millis(20);
+const JOYSTICK_RELEASE_GRACE: Duration = Duration::from_millis(30);
+const JOYSTICK_EDGE_GUARD: f64 = 0.002;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TouchCommand {
     TouchDown { slot: u8, x: f64, y: f64 },
     TouchMove { slot: u8, x: f64, y: f64 },
     TouchUp { slot: u8 },
+    Commit,
 }
 
 #[derive(Debug)]
 enum NodeState {
     Tap {
         active: bool,
-    },
-    HoldTap {
-        held: bool,
+        pressed_at: Option<Instant>,
+        pending_release_at: Option<Instant>,
     },
     ToggleTap {
         active: bool,
@@ -34,10 +44,12 @@ enum NodeState {
         down: bool,
         left: bool,
         right: bool,
+        horizontal_bias: Option<AxisBias>,
+        vertical_bias: Option<AxisBias>,
         finger_active: bool,
-        pending_move: bool,
         origin_x: f64,
         origin_y: f64,
+        pending_release_at: Option<Instant>,
     },
     Drag {
         running: bool,
@@ -73,29 +85,62 @@ pub struct KeymapEngine {
     key_bindings: HashMap<Key, Vec<usize>>,
     joystick_bindings: Vec<Option<JoystickBinding>>,
     states: Vec<NodeState>,
+    pressed_keys: HashSet<Key>,
     sensitivity: f64,
     paused: bool,
     active_layers: HashSet<String>,
+    suspend_base_layers: HashSet<String>,
 }
 
 impl KeymapEngine {
     fn mouse_camera_effective_reach(reach: f64) -> f64 {
-        reach.clamp(0.01, 0.45).min(AIM_OPERATIONAL_REACH_CAP)
+        reach
+            .clamp(0.01, 0.45)
+            .min(AIM_OPERATIONAL_REACH_CAP_RELATIVE)
+    }
+
+    fn mouse_camera_effective_reach_for_source(
+        reach: f64,
+        source: crate::input::MouseMotionSource,
+    ) -> f64 {
+        let cap = match source {
+            crate::input::MouseMotionSource::Relative => AIM_OPERATIONAL_REACH_CAP_RELATIVE,
+            crate::input::MouseMotionSource::Absolute => AIM_OPERATIONAL_REACH_CAP_ABSOLUTE,
+        };
+        reach.clamp(0.01, 0.45).min(cap)
+    }
+
+    fn mouse_camera_center_for_effective_reach(
+        anchor: &RelPos,
+        effective_reach: f64,
+    ) -> (f64, f64) {
+        (
+            anchor.x.clamp(effective_reach, 1.0 - effective_reach),
+            anchor.y.clamp(effective_reach, 1.0 - effective_reach),
+        )
     }
 
     fn mouse_camera_center(anchor: &RelPos, reach: f64) -> (f64, f64) {
         let reach = Self::mouse_camera_effective_reach(reach);
-        (
-            anchor.x.clamp(reach, 1.0 - reach),
-            anchor.y.clamp(reach, 1.0 - reach),
-        )
+        Self::mouse_camera_center_for_effective_reach(anchor, reach)
     }
 
     fn clamp_mouse_camera_point(anchor: &RelPos, reach: f64, x: f64, y: f64) -> (f64, f64) {
-        let (center_x, center_y) = Self::mouse_camera_center(anchor, reach);
+        let reach = Self::mouse_camera_effective_reach(reach);
+        Self::clamp_mouse_camera_point_for_effective_reach(anchor, reach, x, y)
+    }
+
+    fn clamp_mouse_camera_point_for_effective_reach(
+        anchor: &RelPos,
+        effective_reach: f64,
+        x: f64,
+        y: f64,
+    ) -> (f64, f64) {
+        let (center_x, center_y) =
+            Self::mouse_camera_center_for_effective_reach(anchor, effective_reach);
         (
-            x.clamp(center_x - reach, center_x + reach),
-            y.clamp(center_y - reach, center_y + reach),
+            x.clamp(center_x - effective_reach, center_x + effective_reach),
+            y.clamp(center_y - effective_reach, center_y + effective_reach),
         )
     }
 
@@ -106,6 +151,18 @@ impl KeymapEngine {
             .nodes
             .iter()
             .map(Self::build_joystick_binding)
+            .collect();
+        let suspend_base_layers: HashSet<String> = profile
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::LayerShift {
+                    layer_name,
+                    suspend_base: true,
+                    ..
+                } => Some(layer_name.trim().to_string()),
+                _ => None,
+            })
             .collect();
 
         let mut key_bindings: HashMap<Key, Vec<usize>> = HashMap::new();
@@ -125,8 +182,10 @@ impl KeymapEngine {
             key_bindings,
             joystick_bindings,
             states,
+            pressed_keys: HashSet::new(),
             paused: false,
             active_layers: HashSet::new(),
+            suspend_base_layers,
         }
     }
 
@@ -170,6 +229,7 @@ impl KeymapEngine {
             slot,
             anchor,
             reach,
+            activation_mode,
             ..
         } = &self.profile.nodes[idx]
         else {
@@ -199,7 +259,11 @@ impl KeymapEngine {
         }
 
         self.states[idx] =
-            Self::suspended_mouse_camera_state(anchor, *reach, enabled, current_x, current_y);
+            if !enabled && matches!(activation_mode, MouseCameraActivationMode::WhileHeld) {
+                Self::mouse_camera_state(anchor, *reach, false)
+            } else {
+                Self::suspended_mouse_camera_state(anchor, *reach, enabled, current_x, current_y)
+            };
         cmds
     }
 
@@ -209,26 +273,37 @@ impl KeymapEngine {
         reach: f64,
         state: (bool, f64, f64),
         delta: (f64, f64),
+        source: crate::input::MouseMotionSource,
     ) -> (Vec<TouchCommand>, bool, f64, f64) {
         let (mut finger_active, mut current_x, mut current_y) = state;
         let (mut delta_x, mut delta_y) = delta;
         let mut cmds = Vec::new();
-        let (anchor_x, anchor_y) = Self::mouse_camera_center(anchor, reach);
+        let effective_reach = Self::mouse_camera_effective_reach_for_source(reach, source);
+        let (anchor_x, anchor_y) =
+            Self::mouse_camera_center_for_effective_reach(anchor, effective_reach);
 
         if !finger_active {
+            current_x = anchor_x;
+            current_y = anchor_y;
             cmds.push(TouchCommand::TouchDown {
                 slot,
                 x: current_x,
                 y: current_y,
             });
+            cmds.push(TouchCommand::Commit);
             finger_active = true;
         }
 
-        for _ in 0..8 {
+        let mut remaining_segments = 0usize;
+        loop {
             let target_x = current_x + delta_x;
             let target_y = current_y + delta_y;
-            let (next_x, next_y) =
-                Self::clamp_mouse_camera_point(anchor, reach, target_x, target_y);
+            let (next_x, next_y) = Self::clamp_mouse_camera_point_for_effective_reach(
+                anchor,
+                effective_reach,
+                target_x,
+                target_y,
+            );
 
             if (next_x - current_x).abs() > f64::EPSILON
                 || (next_y - current_y).abs() > f64::EPSILON
@@ -249,19 +324,41 @@ impl KeymapEngine {
                 break;
             }
 
+            if matches!(cmds.last(), Some(TouchCommand::TouchMove { .. })) {
+                cmds.push(TouchCommand::Commit);
+            }
             cmds.push(TouchCommand::TouchUp { slot });
+            cmds.push(TouchCommand::Commit);
             cmds.push(TouchCommand::TouchDown {
                 slot,
                 x: anchor_x,
                 y: anchor_y,
             });
+            cmds.push(TouchCommand::Commit);
             current_x = anchor_x;
             current_y = anchor_y;
             delta_x = leftover_x;
             delta_y = leftover_y;
+
+            remaining_segments += 1;
+            if remaining_segments >= 1024 {
+                tracing::warn!(
+                    slot,
+                    delta_x,
+                    delta_y,
+                    "aim re-segmentation hit safety cap; dropping remaining motion"
+                );
+                break;
+            }
         }
 
         (cmds, finger_active, current_x, current_y)
+    }
+
+    fn is_base_layer_suspended(&self) -> bool {
+        self.active_layers
+            .iter()
+            .any(|layer| self.suspend_base_layers.contains(layer))
     }
 
     fn build_joystick_binding(node: &Node) -> Option<JoystickBinding> {
@@ -291,18 +388,23 @@ impl KeymapEngine {
 
     fn init_state(node: &Node) -> NodeState {
         match node {
-            Node::Tap { .. } => NodeState::Tap { active: false },
-            Node::HoldTap { .. } => NodeState::HoldTap { held: false },
+            Node::Tap { .. } => NodeState::Tap {
+                active: false,
+                pressed_at: None,
+                pending_release_at: None,
+            },
             Node::ToggleTap { .. } => NodeState::ToggleTap { active: false },
             Node::Joystick { .. } => NodeState::Joystick {
                 up: false,
                 down: false,
                 left: false,
                 right: false,
+                horizontal_bias: None,
+                vertical_bias: None,
                 finger_active: false,
-                pending_move: false,
                 origin_x: 0.0,
                 origin_y: 0.0,
+                pending_release_at: None,
             },
             Node::Drag { .. } => NodeState::Drag {
                 running: false,
@@ -385,10 +487,21 @@ impl KeymapEngine {
         if self.paused {
             return vec![];
         }
+        match event {
+            InputEvent::KeyPress(key) => {
+                self.pressed_keys.insert(*key);
+            }
+            InputEvent::KeyRelease(key) => {
+                self.pressed_keys.remove(key);
+            }
+            InputEvent::MouseMove { .. }
+            | InputEvent::PointerContactStart { .. }
+            | InputEvent::PointerContactEnd { .. } => {}
+        }
         let cmds = match event {
             InputEvent::KeyPress(key) => self.handle_key_press(*key),
             InputEvent::KeyRelease(key) => self.handle_key_release(*key),
-            InputEvent::MouseMove { dx, dy, .. } => self.handle_mouse_move(*dx, *dy),
+            InputEvent::MouseMove { dx, dy, source } => self.handle_mouse_move(*dx, *dy, *source),
             InputEvent::PointerContactStart { source } => {
                 self.handle_pointer_contact_start(*source)
             }
@@ -420,6 +533,53 @@ impl KeymapEngine {
                 continue;
             }
 
+            if let Node::Tap { slot, .. } = node {
+                if let NodeState::Tap {
+                    active: true,
+                    pending_release_at: Some(deadline),
+                    ..
+                } = &self.states[idx]
+                {
+                    if now >= *deadline {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                        self.states[idx] = NodeState::Tap {
+                            active: false,
+                            pressed_at: None,
+                            pending_release_at: None,
+                        };
+                    }
+                }
+            }
+
+            if let Node::Joystick { slot, .. } = node {
+                if let NodeState::Joystick {
+                    up: false,
+                    down: false,
+                    left: false,
+                    right: false,
+                    finger_active: true,
+                    pending_release_at: Some(deadline),
+                    ..
+                } = &self.states[idx]
+                {
+                    if now >= *deadline {
+                        cmds.push(TouchCommand::TouchUp { slot: *slot });
+                        self.states[idx] = NodeState::Joystick {
+                            up: false,
+                            down: false,
+                            left: false,
+                            right: false,
+                            horizontal_bias: None,
+                            vertical_bias: None,
+                            finger_active: false,
+                            origin_x: 0.0,
+                            origin_y: 0.0,
+                            pending_release_at: None,
+                        };
+                    }
+                }
+            }
+
             if let Node::MouseCamera {
                 slot,
                 anchor,
@@ -440,53 +600,6 @@ impl KeymapEngine {
                     {
                         cmds.push(TouchCommand::TouchUp { slot: *slot });
                         self.states[idx] = Self::mouse_camera_state(anchor, *reach, *enabled);
-                    }
-                }
-            }
-
-            if let Node::Joystick {
-                slot,
-                radius,
-                region,
-                ..
-            } = node
-            {
-                if let NodeState::Joystick {
-                    up,
-                    down,
-                    left,
-                    right,
-                    finger_active,
-                    pending_move,
-                    origin_x,
-                    origin_y,
-                } = &self.states[idx]
-                {
-                    if *finger_active && *pending_move {
-                        let (offset_x, offset_y) =
-                            joystick_offset(*up, *down, *left, *right, *radius);
-                        let (move_x, move_y) = joystick_target(
-                            *origin_x,
-                            *origin_y,
-                            offset_x,
-                            offset_y,
-                            region.as_ref(),
-                        );
-                        cmds.push(TouchCommand::TouchMove {
-                            slot: *slot,
-                            x: move_x,
-                            y: move_y,
-                        });
-                        self.states[idx] = NodeState::Joystick {
-                            up: *up,
-                            down: *down,
-                            left: *left,
-                            right: *right,
-                            finger_active: true,
-                            pending_move: false,
-                            origin_x: *origin_x,
-                            origin_y: *origin_y,
-                        };
                     }
                 }
             }
@@ -584,7 +697,7 @@ impl KeymapEngine {
                     running,
                     step_index,
                     step_start,
-                    ..
+                    active_slots,
                 } = state
                 {
                     if *running && *step_index < sequence.len() {
@@ -593,6 +706,7 @@ impl KeymapEngine {
                         if now.duration_since(*step_start) >= delay {
                             let si = *step_index;
                             let step = step.clone();
+                            let mut next_active_slots = active_slots.clone();
 
                             match &step.action {
                                 MacroAction::Down => {
@@ -603,21 +717,19 @@ impl KeymapEngine {
                                             y: pos.y,
                                         });
                                     }
+                                    if !next_active_slots.contains(&step.slot) {
+                                        next_active_slots.push(step.slot);
+                                    }
                                 }
                                 MacroAction::Up => {
                                     cmds.push(TouchCommand::TouchUp { slot: step.slot });
+                                    next_active_slots.retain(|slot| *slot != step.slot);
                                 }
                             }
 
                             let next_idx = si + 1;
                             if next_idx >= sequence.len() {
-                                let mut slots_to_release = Vec::new();
-                                for s in sequence {
-                                    if !slots_to_release.contains(&s.slot) {
-                                        slots_to_release.push(s.slot);
-                                    }
-                                }
-                                for s in slots_to_release {
+                                for s in next_active_slots {
                                     cmds.push(TouchCommand::TouchUp { slot: s });
                                 }
                                 self.states[idx] = NodeState::Macro {
@@ -627,17 +739,11 @@ impl KeymapEngine {
                                     active_slots: Vec::new(),
                                 };
                             } else {
-                                let mut slots = Vec::new();
-                                for s in sequence {
-                                    if !slots.contains(&s.slot) {
-                                        slots.push(s.slot);
-                                    }
-                                }
                                 self.states[idx] = NodeState::Macro {
                                     running: true,
                                     step_index: next_idx,
                                     step_start: now,
-                                    active_slots: slots,
+                                    active_slots: next_active_slots,
                                 };
                             }
                         }
@@ -666,12 +772,15 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         for idx in indices {
             if let Node::LayerShift {
-                layer_name, mode, ..
+                layer_name,
+                mode,
+                suspend_base,
+                ..
             } = &self.profile.nodes[idx]
             {
                 let layer_name = layer_name.clone();
                 let mode = mode.clone();
-                cmds.extend(self.handle_layer_shift_press(idx, &layer_name, &mode));
+                cmds.extend(self.handle_layer_shift_press(idx, &layer_name, &mode, *suspend_base));
             } else {
                 let node = &self.profile.nodes[idx];
                 if !self.is_node_active(node) {
@@ -692,12 +801,20 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         for idx in indices {
             if let Node::LayerShift {
-                layer_name, mode, ..
+                layer_name,
+                mode,
+                suspend_base,
+                ..
             } = &self.profile.nodes[idx]
             {
                 let layer_name = layer_name.clone();
                 let mode = mode.clone();
-                cmds.extend(self.handle_layer_shift_release(idx, &layer_name, &mode));
+                cmds.extend(self.handle_layer_shift_release(
+                    idx,
+                    &layer_name,
+                    &mode,
+                    *suspend_base,
+                ));
             } else {
                 let node = &self.profile.nodes[idx];
                 if !self.is_node_active(node) {
@@ -714,26 +831,29 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         match node {
             Node::Tap { slot, pos, .. } => {
-                if let NodeState::Tap { active } = &self.states[idx] {
+                if let NodeState::Tap {
+                    active,
+                    pressed_at,
+                    pending_release_at,
+                } = &self.states[idx]
+                {
                     if !*active {
                         cmds.push(TouchCommand::TouchDown {
                             slot: *slot,
                             x: pos.x,
                             y: pos.y,
                         });
-                        self.states[idx] = NodeState::Tap { active: true };
-                    }
-                }
-            }
-            Node::HoldTap { slot, pos, .. } => {
-                if let NodeState::HoldTap { held } = &self.states[idx] {
-                    if !*held {
-                        cmds.push(TouchCommand::TouchDown {
-                            slot: *slot,
-                            x: pos.x,
-                            y: pos.y,
-                        });
-                        self.states[idx] = NodeState::HoldTap { held: true };
+                        self.states[idx] = NodeState::Tap {
+                            active: true,
+                            pressed_at: Some(Instant::now()),
+                            pending_release_at: None,
+                        };
+                    } else if pending_release_at.is_some() {
+                        self.states[idx] = NodeState::Tap {
+                            active: true,
+                            pressed_at: *pressed_at,
+                            pending_release_at: None,
+                        };
                     }
                 }
             }
@@ -752,12 +872,7 @@ impl KeymapEngine {
                 }
             }
             Node::Joystick {
-                slot,
-                pos,
-                radius,
-                mode,
-                region,
-                ..
+                slot, pos, radius, ..
             } => {
                 if let Some(d) = self.joystick_direction(idx, key) {
                     if let NodeState::Joystick {
@@ -765,63 +880,80 @@ impl KeymapEngine {
                         down,
                         left,
                         right,
+                        horizontal_bias,
+                        vertical_bias,
                         finger_active,
-                        pending_move: _,
                         origin_x,
                         origin_y,
+                        pending_release_at,
                     } = &self.states[idx]
                     {
                         let mut u = *up;
                         let mut dn = *down;
                         let mut l = *left;
                         let mut r = *right;
+                        let mut horizontal = *horizontal_bias;
+                        let mut vertical = *vertical_bias;
                         let mut fa = *finger_active;
-                        let mut pm = matches!(mode, JoystickMode::Fixed) && !fa;
                         let mut ox = *origin_x;
                         let mut oy = *origin_y;
+                        let mut pending = None;
                         match d {
-                            Dir::Up => u = true,
-                            Dir::Down => dn = true,
-                            Dir::Left => l = true,
-                            Dir::Right => r = true,
+                            Dir::Up => {
+                                u = true;
+                                vertical = Some(AxisBias::Negative);
+                            }
+                            Dir::Down => {
+                                dn = true;
+                                vertical = Some(AxisBias::Positive);
+                            }
+                            Dir::Left => {
+                                l = true;
+                                horizontal = Some(AxisBias::Negative);
+                            }
+                            Dir::Right => {
+                                r = true;
+                                horizontal = Some(AxisBias::Positive);
+                            }
+                        }
+
+                        if pending_release_at.is_some() {
+                            pending = None;
                         }
 
                         if !fa {
-                            let (dir_x, dir_y) = joystick_direction_vector(u, dn, l, r);
-                            let (start_x, start_y) =
-                                joystick_origin(mode, pos, region.as_ref(), *radius, dir_x, dir_y);
-                            ox = start_x;
-                            oy = start_y;
+                            ox = pos.x;
+                            oy = pos.y;
                             cmds.push(TouchCommand::TouchDown {
                                 slot: *slot,
-                                x: start_x,
-                                y: start_y,
+                                x: ox,
+                                y: oy,
                             });
+                            cmds.push(TouchCommand::Commit);
                             fa = true;
-                            pm = matches!(mode, JoystickMode::Fixed);
                         }
 
-                        let (offset_x, offset_y) = joystick_offset(u, dn, l, r, *radius);
-                        let (move_x, move_y) =
-                            joystick_target(ox, oy, offset_x, offset_y, region.as_ref());
+                        let (dir_x, dir_y) =
+                            joystick_direction_vector(u, dn, l, r, horizontal, vertical);
+                        let (move_x, move_y) = fixed_joystick_target(ox, oy, dir_x, dir_y, *radius);
 
-                        if !pm {
-                            cmds.push(TouchCommand::TouchMove {
-                                slot: *slot,
-                                x: move_x,
-                                y: move_y,
-                            });
-                        }
+                        cmds.push(TouchCommand::TouchMove {
+                            slot: *slot,
+                            x: move_x,
+                            y: move_y,
+                        });
 
                         self.states[idx] = NodeState::Joystick {
                             up: u,
                             down: dn,
                             left: l,
                             right: r,
+                            horizontal_bias: horizontal,
+                            vertical_bias: vertical,
                             finger_active: fa,
-                            pending_move: pm,
                             origin_x: ox,
                             origin_y: oy,
+                            pending_release_at: pending,
                         };
                     }
                 }
@@ -877,20 +1009,14 @@ impl KeymapEngine {
                     }
                 }
             }
-            Node::Macro { sequence, .. } => {
+            Node::Macro { .. } => {
                 if let NodeState::Macro { running, .. } = &self.states[idx] {
                     if !*running {
-                        let mut slots = Vec::new();
-                        for s in sequence {
-                            if !slots.contains(&s.slot) {
-                                slots.push(s.slot);
-                            }
-                        }
                         self.states[idx] = NodeState::Macro {
                             running: true,
                             step_index: 0,
                             step_start: Instant::now(),
-                            active_slots: slots,
+                            active_slots: Vec::new(),
                         };
                     }
                 }
@@ -920,72 +1046,97 @@ impl KeymapEngine {
         let mut cmds = Vec::new();
         match node {
             Node::Tap { slot, .. } => {
-                if let NodeState::Tap { active } = &self.states[idx] {
+                if let NodeState::Tap {
+                    active,
+                    pressed_at,
+                    pending_release_at: _,
+                } = &self.states[idx]
+                {
                     if *active {
-                        cmds.push(TouchCommand::TouchUp { slot: *slot });
-                        self.states[idx] = NodeState::Tap { active: false };
-                    }
-                }
-            }
-            Node::HoldTap { slot, .. } => {
-                if let NodeState::HoldTap { held } = &self.states[idx] {
-                    if *held {
-                        cmds.push(TouchCommand::TouchUp { slot: *slot });
-                        self.states[idx] = NodeState::HoldTap { held: false };
+                        let now = Instant::now();
+                        let pressed_at = pressed_at.unwrap_or(now);
+                        let release_at = pressed_at + STANDARD_TAP_MIN_PULSE;
+                        if now >= release_at {
+                            cmds.push(TouchCommand::TouchUp { slot: *slot });
+                            self.states[idx] = NodeState::Tap {
+                                active: false,
+                                pressed_at: None,
+                                pending_release_at: None,
+                            };
+                        } else {
+                            self.states[idx] = NodeState::Tap {
+                                active: true,
+                                pressed_at: Some(pressed_at),
+                                pending_release_at: Some(release_at),
+                            };
+                        }
                     }
                 }
             }
             Node::ToggleTap { .. } => {}
-            Node::Joystick {
-                slot,
-                radius,
-                region,
-                ..
-            } => {
+            Node::Joystick { slot, radius, .. } => {
                 if let Some(d) = self.joystick_direction(idx, key) {
                     if let NodeState::Joystick {
                         up,
                         down,
                         left,
                         right,
+                        horizontal_bias,
+                        vertical_bias,
                         finger_active,
-                        pending_move: _,
                         origin_x,
                         origin_y,
+                        pending_release_at: _,
                     } = &self.states[idx]
                     {
                         let mut u = *up;
                         let mut dn = *down;
                         let mut l = *left;
                         let mut r = *right;
+                        let mut horizontal = *horizontal_bias;
+                        let mut vertical = *vertical_bias;
                         let fa = *finger_active;
                         match d {
-                            Dir::Up => u = false,
-                            Dir::Down => dn = false,
-                            Dir::Left => l = false,
-                            Dir::Right => r = false,
+                            Dir::Up => {
+                                u = false;
+                                vertical = if dn { Some(AxisBias::Positive) } else { None };
+                            }
+                            Dir::Down => {
+                                dn = false;
+                                vertical = if u { Some(AxisBias::Negative) } else { None };
+                            }
+                            Dir::Left => {
+                                l = false;
+                                horizontal = if r { Some(AxisBias::Positive) } else { None };
+                            }
+                            Dir::Right => {
+                                r = false;
+                                horizontal = if l { Some(AxisBias::Negative) } else { None };
+                            }
                         }
                         if !u && !dn && !l && !r && fa {
-                            cmds.push(TouchCommand::TouchUp { slot: *slot });
+                            cmds.push(TouchCommand::TouchMove {
+                                slot: *slot,
+                                x: *origin_x,
+                                y: *origin_y,
+                            });
                             self.states[idx] = NodeState::Joystick {
                                 up: false,
                                 down: false,
                                 left: false,
                                 right: false,
-                                finger_active: false,
-                                pending_move: false,
-                                origin_x: 0.0,
-                                origin_y: 0.0,
+                                horizontal_bias: None,
+                                vertical_bias: None,
+                                finger_active: true,
+                                origin_x: *origin_x,
+                                origin_y: *origin_y,
+                                pending_release_at: Some(Instant::now() + JOYSTICK_RELEASE_GRACE),
                             };
                         } else if fa {
-                            let (offset_x, offset_y) = joystick_offset(u, dn, l, r, *radius);
-                            let (move_x, move_y) = joystick_target(
-                                *origin_x,
-                                *origin_y,
-                                offset_x,
-                                offset_y,
-                                region.as_ref(),
-                            );
+                            let (dir_x, dir_y) =
+                                joystick_direction_vector(u, dn, l, r, horizontal, vertical);
+                            let (move_x, move_y) =
+                                fixed_joystick_target(*origin_x, *origin_y, dir_x, dir_y, *radius);
                             cmds.push(TouchCommand::TouchMove {
                                 slot: *slot,
                                 x: move_x,
@@ -996,10 +1147,12 @@ impl KeymapEngine {
                                 down: dn,
                                 left: l,
                                 right: r,
+                                horizontal_bias: horizontal,
+                                vertical_bias: vertical,
                                 finger_active: fa,
-                                pending_move: false,
                                 origin_x: *origin_x,
                                 origin_y: *origin_y,
+                                pending_release_at: None,
                             };
                         }
                     }
@@ -1024,22 +1177,24 @@ impl KeymapEngine {
             }
             Node::Wheel { .. } => {}
             Node::Drag { .. } => {}
-            Node::Macro { .. } => {
-                if let NodeState::Macro { running, .. } = &self.states[idx] {
-                    if *running {
-                        let slots = match &self.states[idx] {
-                            NodeState::Macro { active_slots, .. } => active_slots.clone(),
-                            _ => vec![],
-                        };
-                        for s in &slots {
-                            cmds.push(TouchCommand::TouchUp { slot: *s });
+            Node::Macro { mode, .. } => {
+                if matches!(mode, MacroRunMode::CancelOnRelease) {
+                    if let NodeState::Macro { running, .. } = &self.states[idx] {
+                        if *running {
+                            let slots = match &self.states[idx] {
+                                NodeState::Macro { active_slots, .. } => active_slots.clone(),
+                                _ => vec![],
+                            };
+                            for s in &slots {
+                                cmds.push(TouchCommand::TouchUp { slot: *s });
+                            }
+                            self.states[idx] = NodeState::Macro {
+                                running: false,
+                                step_index: 0,
+                                step_start: Instant::now(),
+                                active_slots: Vec::new(),
+                            };
                         }
-                        self.states[idx] = NodeState::Macro {
-                            running: false,
-                            step_index: 0,
-                            step_start: Instant::now(),
-                            active_slots: Vec::new(),
-                        };
                     }
                 }
             }
@@ -1060,6 +1215,7 @@ impl KeymapEngine {
         idx: usize,
         layer_name: &str,
         mode: &LayerMode,
+        suspend_base: bool,
     ) -> Vec<TouchCommand> {
         match mode {
             LayerMode::Hold => {
@@ -1067,6 +1223,9 @@ impl KeymapEngine {
                     if !*held {
                         self.active_layers.insert(layer_name.to_string());
                         self.states[idx] = NodeState::LayerShift { held: true };
+                        if suspend_base {
+                            return self.reconcile_after_layer_change();
+                        }
                     }
                 }
                 vec![]
@@ -1078,6 +1237,9 @@ impl KeymapEngine {
                 } else {
                     self.active_layers.insert(layer_name.to_string());
                 }
+                if suspend_base {
+                    cmds.extend(self.reconcile_after_layer_change());
+                }
                 cmds
             }
         }
@@ -1088,6 +1250,7 @@ impl KeymapEngine {
         idx: usize,
         layer_name: &str,
         mode: &LayerMode,
+        suspend_base: bool,
     ) -> Vec<TouchCommand> {
         match mode {
             LayerMode::Hold => {
@@ -1096,6 +1259,9 @@ impl KeymapEngine {
                         let mut cmds = self.release_layer(layer_name);
                         self.active_layers.remove(layer_name);
                         self.states[idx] = NodeState::LayerShift { held: false };
+                        if suspend_base {
+                            cmds.extend(self.reconcile_after_layer_change());
+                        }
                         return std::mem::take(&mut cmds);
                     }
                 }
@@ -1105,7 +1271,12 @@ impl KeymapEngine {
         }
     }
 
-    fn handle_mouse_move(&mut self, dx: i32, dy: i32) -> Vec<TouchCommand> {
+    fn handle_mouse_move(
+        &mut self,
+        dx: i32,
+        dy: i32,
+        source: crate::input::MouseMotionSource,
+    ) -> Vec<TouchCommand> {
         let mut cmds = Vec::new();
         for idx in 0..self.profile.nodes.len() {
             let node = &self.profile.nodes[idx];
@@ -1118,6 +1289,7 @@ impl KeymapEngine {
                 anchor,
                 reach,
                 sensitivity,
+                curve,
                 invert_y,
                 ..
             } = node
@@ -1134,8 +1306,9 @@ impl KeymapEngine {
                         continue;
                     }
 
-                    let delta_x = dx as f64 * sensitivity * self.sensitivity;
-                    let delta_y = if *invert_y { -(dy as f64) } else { dy as f64 }
+                    let (raw_delta_x, raw_delta_y) = shape_aim_delta(dx, dy, source, curve);
+                    let delta_x = raw_delta_x * sensitivity * self.sensitivity;
+                    let delta_y = if *invert_y { -raw_delta_y } else { raw_delta_y }
                         * sensitivity
                         * self.sensitivity;
 
@@ -1145,7 +1318,8 @@ impl KeymapEngine {
                             anchor,
                             *reach,
                             (*finger_active, *current_x, *current_y),
-                            (delta_x * AIM_SCALE, delta_y * AIM_SCALE),
+                            (delta_x, delta_y),
+                            source,
                         );
 
                     cmds.append(&mut move_cmds);
@@ -1244,6 +1418,8 @@ impl KeymapEngine {
     }
 
     pub fn resync_mouse_buttons(&mut self, pressed: &HashSet<Key>) -> Vec<TouchCommand> {
+        self.pressed_keys.retain(|key| !key.is_mouse());
+        self.pressed_keys.extend(pressed.iter().copied());
         let mut cmds = Vec::new();
 
         for idx in 0..self.profile.nodes.len() {
@@ -1253,7 +1429,7 @@ impl KeymapEngine {
             }
 
             match node {
-                Node::HoldTap { slot, pos, key, .. } => {
+                Node::Tap { slot, pos, key, .. } => {
                     let Ok(bound_key) = key.parse::<Key>() else {
                         continue;
                     };
@@ -1261,19 +1437,27 @@ impl KeymapEngine {
                         continue;
                     }
                     let should_hold = pressed.contains(&bound_key);
-                    if let NodeState::HoldTap { held } = &self.states[idx] {
-                        match (*held, should_hold) {
+                    if let NodeState::Tap { active, .. } = &self.states[idx] {
+                        match (*active, should_hold) {
                             (false, true) => {
                                 cmds.push(TouchCommand::TouchDown {
                                     slot: *slot,
                                     x: pos.x,
                                     y: pos.y,
                                 });
-                                self.states[idx] = NodeState::HoldTap { held: true };
+                                self.states[idx] = NodeState::Tap {
+                                    active: true,
+                                    pressed_at: Some(Instant::now()),
+                                    pending_release_at: None,
+                                };
                             }
                             (true, false) => {
                                 cmds.push(TouchCommand::TouchUp { slot: *slot });
-                                self.states[idx] = NodeState::HoldTap { held: false };
+                                self.states[idx] = NodeState::Tap {
+                                    active: false,
+                                    pressed_at: None,
+                                    pending_release_at: None,
+                                };
                             }
                             _ => {}
                         }
@@ -1351,6 +1535,192 @@ impl KeymapEngine {
         cmds
     }
 
+    pub fn resync_keyboard_keys(&mut self, pressed: &HashSet<Key>) -> Vec<TouchCommand> {
+        self.pressed_keys.retain(|key| key.is_mouse());
+        self.pressed_keys.extend(pressed.iter().copied());
+        let mut cmds = Vec::new();
+
+        // Hold-style layer shifts must be re-established first so held keys in
+        // those layers can be resynced against the correct active-layer state.
+        for idx in 0..self.profile.nodes.len() {
+            let (bound_key, layer_name, mode, suspend_base) = match &self.profile.nodes[idx] {
+                Node::LayerShift {
+                    key,
+                    layer_name,
+                    mode,
+                    suspend_base,
+                    ..
+                } => (key.clone(), layer_name.clone(), mode.clone(), *suspend_base),
+                _ => continue,
+            };
+
+            if !matches!(mode, LayerMode::Hold) {
+                continue;
+            }
+
+            let Ok(bound_key) = bound_key.parse::<Key>() else {
+                continue;
+            };
+            if bound_key.is_mouse() {
+                continue;
+            }
+
+            let held = matches!(&self.states[idx], NodeState::LayerShift { held: true });
+            let should_hold = pressed.contains(&bound_key);
+            match (held, should_hold) {
+                (false, true) => cmds.extend(self.handle_layer_shift_press(
+                    idx,
+                    &layer_name,
+                    &mode,
+                    suspend_base,
+                )),
+                (true, false) => cmds.extend(self.handle_layer_shift_release(
+                    idx,
+                    &layer_name,
+                    &mode,
+                    suspend_base,
+                )),
+                _ => {}
+            }
+        }
+
+        for idx in 0..self.profile.nodes.len() {
+            let node = &self.profile.nodes[idx];
+            if !self.is_node_active(node) {
+                continue;
+            }
+
+            match node {
+                Node::Tap { key, .. } | Node::RepeatTap { key, .. } => {
+                    let Ok(bound_key) = key.parse::<Key>() else {
+                        continue;
+                    };
+                    if bound_key.is_mouse() {
+                        continue;
+                    }
+
+                    let should_hold = pressed.contains(&bound_key);
+                    let active = match &self.states[idx] {
+                        NodeState::Tap { active, .. } => *active,
+                        NodeState::RepeatTap { active, .. } => *active,
+                        _ => false,
+                    };
+
+                    match (active, should_hold) {
+                        (false, true) => cmds.extend(self.handle_action_press(idx, bound_key)),
+                        (true, false) => cmds.extend(self.handle_action_release(idx, bound_key)),
+                        _ => {}
+                    }
+                }
+                Node::Joystick { keys, .. } => {
+                    let states = match &self.states[idx] {
+                        NodeState::Joystick {
+                            up,
+                            down,
+                            left,
+                            right,
+                            ..
+                        } => Some((*up, *down, *left, *right)),
+                        _ => None,
+                    };
+                    let Some((up_active, down_active, left_active, right_active)) = states else {
+                        continue;
+                    };
+
+                    let directions = [
+                        (keys.up.clone(), up_active),
+                        (keys.down.clone(), down_active),
+                        (keys.left.clone(), left_active),
+                        (keys.right.clone(), right_active),
+                    ];
+
+                    for (binding, active) in directions {
+                        let Ok(bound_key) = binding.parse::<Key>() else {
+                            continue;
+                        };
+                        if bound_key.is_mouse() {
+                            continue;
+                        }
+                        let should_hold = pressed.contains(&bound_key);
+                        match (active, should_hold) {
+                            (false, true) => cmds.extend(self.handle_action_press(idx, bound_key)),
+                            (true, false) => {
+                                cmds.extend(self.handle_action_release(idx, bound_key))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Node::MouseCamera {
+                    activation_mode,
+                    activation_key,
+                    ..
+                } => {
+                    if !matches!(activation_mode, MouseCameraActivationMode::WhileHeld) {
+                        continue;
+                    }
+                    let Some(key_name) = activation_key.as_deref() else {
+                        continue;
+                    };
+                    let Ok(bound_key) = key_name.parse::<Key>() else {
+                        continue;
+                    };
+                    if bound_key.is_mouse() {
+                        continue;
+                    }
+                    let should_hold = pressed.contains(&bound_key);
+                    let enabled = matches!(
+                        &self.states[idx],
+                        NodeState::MouseCamera { enabled: true, .. }
+                    );
+                    match (enabled, should_hold) {
+                        (false, true) => cmds.extend(self.handle_action_press(idx, bound_key)),
+                        (true, false) => cmds.extend(self.handle_action_release(idx, bound_key)),
+                        _ => {}
+                    }
+                }
+                Node::LayerShift { .. }
+                | Node::ToggleTap { .. }
+                | Node::Wheel { .. }
+                | Node::Drag { .. }
+                | Node::Macro { .. } => {}
+            }
+        }
+
+        cmds
+    }
+
+    fn reconcile_after_layer_change(&mut self) -> Vec<TouchCommand> {
+        let mut cmds = Vec::new();
+
+        for idx in 0..self.profile.nodes.len() {
+            if !self.is_node_active(&self.profile.nodes[idx]) {
+                if matches!(&self.profile.nodes[idx], Node::MouseCamera { .. }) {
+                    cmds.extend(self.suspend_mouse_node(idx));
+                } else {
+                    cmds.extend(self.release_node(idx));
+                }
+            }
+        }
+
+        let pressed_keyboard: HashSet<Key> = self
+            .pressed_keys
+            .iter()
+            .copied()
+            .filter(|key| !key.is_mouse())
+            .collect();
+        let pressed_mouse: HashSet<Key> = self
+            .pressed_keys
+            .iter()
+            .copied()
+            .filter(|key| key.is_mouse())
+            .collect();
+
+        cmds.extend(self.resync_keyboard_keys(&pressed_keyboard));
+        cmds.extend(self.resync_mouse_buttons(&pressed_mouse));
+        cmds
+    }
+
     fn release_layer(&mut self, layer_name: &str) -> Vec<TouchCommand> {
         let mut cmds = Vec::new();
         for idx in 0..self.profile.nodes.len() {
@@ -1366,17 +1736,15 @@ impl KeymapEngine {
         let node = &self.profile.nodes[idx];
         let slot = node.slot();
         match &self.states[idx] {
-            NodeState::Tap { active: true } => {
+            NodeState::Tap { active: true, .. } => {
                 if let Some(s) = slot {
                     cmds.push(TouchCommand::TouchUp { slot: s });
                 }
-                self.states[idx] = NodeState::Tap { active: false };
-            }
-            NodeState::HoldTap { held: true } => {
-                if let Some(s) = slot {
-                    cmds.push(TouchCommand::TouchUp { slot: s });
-                }
-                self.states[idx] = NodeState::HoldTap { held: false };
+                self.states[idx] = NodeState::Tap {
+                    active: false,
+                    pressed_at: None,
+                    pending_release_at: None,
+                };
             }
             NodeState::ToggleTap { active: true } => {
                 if let Some(s) = slot {
@@ -1396,10 +1764,12 @@ impl KeymapEngine {
                     down: false,
                     left: false,
                     right: false,
+                    horizontal_bias: None,
+                    vertical_bias: None,
                     finger_active: false,
-                    pending_move: false,
                     origin_x: 0.0,
                     origin_y: 0.0,
+                    pending_release_at: None,
                 };
             }
             NodeState::Drag { running: true, .. } => {
@@ -1495,8 +1865,15 @@ impl KeymapEngine {
     }
 
     fn is_node_active(&self, node: &Node) -> bool {
+        if matches!(node, Node::LayerShift { .. }) {
+            return true;
+        }
         let layer = node.layer().trim();
-        layer.is_empty() || self.active_layers.contains(layer)
+        if layer.is_empty() {
+            !self.is_base_layer_suspended()
+        } else {
+            self.active_layers.contains(layer)
+        }
     }
 
     fn node_uses_mouse_input(&self, node: &Node) -> bool {
@@ -1545,32 +1922,67 @@ enum Dir {
     Right,
 }
 
-fn joystick_offset(up: bool, down: bool, left: bool, right: bool, radius: f64) -> (f64, f64) {
-    let (dir_x, dir_y) = joystick_direction_vector(up, down, left, right);
-    (dir_x * radius, dir_y * radius)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AxisBias {
+    Negative,
+    Positive,
 }
 
-fn joystick_direction_vector(up: bool, down: bool, left: bool, right: bool) -> (f64, f64) {
-    let mut dx = 0.0;
-    let mut dy = 0.0;
-    if up {
-        dy -= 1.0;
+fn smoothstep01(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn shape_relative_aim_component(delta: i32, curve: &AimCurvePreset) -> f64 {
+    if matches!(curve, AimCurvePreset::Linear) {
+        return delta as f64 * AIM_RELATIVE_BASE_SCALE;
     }
-    if down {
-        dy += 1.0;
+
+    let (min_factor, max_factor, curve_end) = match curve {
+        AimCurvePreset::Linear => unreachable!(),
+        AimCurvePreset::Precision => (0.18, 1.10, 14.0),
+        AimCurvePreset::Balanced => (
+            AIM_RELATIVE_MIN_FACTOR,
+            AIM_RELATIVE_MAX_FACTOR,
+            AIM_RELATIVE_CURVE_END,
+        ),
+    };
+    let magnitude = (delta.abs()) as f64;
+    let curve = smoothstep01(
+        (magnitude - AIM_RELATIVE_CURVE_START) / (curve_end - AIM_RELATIVE_CURVE_START),
+    );
+    let factor = lerp(min_factor, max_factor, curve);
+    delta as f64 * AIM_RELATIVE_BASE_SCALE * factor
+}
+
+fn shape_aim_delta(
+    dx: i32,
+    dy: i32,
+    source: crate::input::MouseMotionSource,
+    curve: &AimCurvePreset,
+) -> (f64, f64) {
+    match source {
+        crate::input::MouseMotionSource::Relative => (
+            shape_relative_aim_component(dx, curve),
+            shape_relative_aim_component(dy, curve),
+        ),
+        crate::input::MouseMotionSource::Absolute => (
+            dx as f64 * AIM_ABSOLUTE_SCALE,
+            dy as f64 * AIM_ABSOLUTE_SCALE,
+        ),
     }
-    if left {
-        dx -= 1.0;
-    }
-    if right {
-        dx += 1.0;
-    }
-    if up && down {
-        dy = 0.0;
-    }
-    if left && right {
-        dx = 0.0;
-    }
+}
+
+fn joystick_direction_vector(
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+    horizontal_bias: Option<AxisBias>,
+    vertical_bias: Option<AxisBias>,
+) -> (f64, f64) {
+    let mut dx = resolve_joystick_axis(left, right, horizontal_bias);
+    let mut dy = resolve_joystick_axis(up, down, vertical_bias);
     if dx != 0.0 && dy != 0.0 {
         let diagonal = std::f64::consts::FRAC_1_SQRT_2;
         dx *= diagonal;
@@ -1579,67 +1991,65 @@ fn joystick_direction_vector(up: bool, down: bool, left: bool, right: bool) -> (
     (dx, dy)
 }
 
-fn joystick_origin(
-    mode: &JoystickMode,
-    pos: &crate::profile::RelPos,
-    region: Option<&Region>,
-    radius: f64,
-    dir_x: f64,
-    dir_y: f64,
-) -> (f64, f64) {
-    match mode {
-        JoystickMode::Fixed => (pos.x, pos.y),
-        JoystickMode::Floating => {
-            let region = region.expect("floating joystick requires region");
-            floating_joystick_origin(region, radius, dir_x, dir_y)
-        }
+fn resolve_joystick_axis(negative: bool, positive: bool, bias: Option<AxisBias>) -> f64 {
+    match (negative, positive, bias) {
+        (true, false, _) => -1.0,
+        (false, true, _) => 1.0,
+        (true, true, Some(AxisBias::Negative)) => -1.0,
+        (true, true, Some(AxisBias::Positive)) => 1.0,
+        _ => 0.0,
     }
 }
 
-fn joystick_target(
+fn fixed_joystick_target(
     origin_x: f64,
     origin_y: f64,
-    offset_x: f64,
-    offset_y: f64,
-    region: Option<&Region>,
+    dir_x: f64,
+    dir_y: f64,
+    _radius: f64,
 ) -> (f64, f64) {
-    let mut x = origin_x + offset_x;
-    let mut y = origin_y + offset_y;
-    if let Some(region) = region {
-        x = x.clamp(region.x, region.x + region.w);
-        y = y.clamp(region.y, region.y + region.h);
-    }
-    (x, y)
+    let bounds = Region {
+        x: JOYSTICK_EDGE_GUARD,
+        y: JOYSTICK_EDGE_GUARD,
+        w: 1.0 - JOYSTICK_EDGE_GUARD * 2.0,
+        h: 1.0 - JOYSTICK_EDGE_GUARD * 2.0,
+    };
+    edge_directed_target((origin_x, origin_y), &bounds, (dir_x, dir_y))
 }
 
-fn floating_joystick_origin(region: &Region, radius: f64, dir_x: f64, dir_y: f64) -> (f64, f64) {
-    // Floating sticks and football-style drag zones need a runtime origin:
-    // the synthetic finger should start inside the allowed zone, then keep
-    // that origin stable until all bound directions are released.
-    let center_x = region.x + region.w / 2.0;
-    let center_y = region.y + region.h / 2.0;
-    let desired_x = center_x - dir_x * radius * 0.5;
-    let desired_y = center_y - dir_y * radius * 0.5;
+fn edge_directed_target(origin: (f64, f64), bounds: &Region, dir: (f64, f64)) -> (f64, f64) {
+    let (origin_x, origin_y) = origin;
+    let (dir_x, dir_y) = dir;
+    if dir_x.abs() <= f64::EPSILON && dir_y.abs() <= f64::EPSILON {
+        return (origin_x, origin_y);
+    }
 
-    let margin_x = radius.min(region.w / 2.0);
-    let margin_y = radius.min(region.h / 2.0);
-    let min_x = region.x + margin_x;
-    let max_x = region.x + region.w - margin_x;
-    let min_y = region.y + margin_y;
-    let max_y = region.y + region.h - margin_y;
+    let min_x = bounds.x;
+    let max_x = bounds.x + bounds.w;
+    let min_y = bounds.y;
+    let max_y = bounds.y + bounds.h;
 
-    let origin_x = if min_x <= max_x {
-        desired_x.clamp(min_x, max_x)
+    let tx = if dir_x > 0.0 {
+        (max_x - origin_x) / dir_x
+    } else if dir_x < 0.0 {
+        (min_x - origin_x) / dir_x
     } else {
-        center_x
-    };
-    let origin_y = if min_y <= max_y {
-        desired_y.clamp(min_y, max_y)
-    } else {
-        center_y
+        f64::INFINITY
     };
 
-    (origin_x, origin_y)
+    let ty = if dir_y > 0.0 {
+        (max_y - origin_y) / dir_y
+    } else if dir_y < 0.0 {
+        (min_y - origin_y) / dir_y
+    } else {
+        f64::INFINITY
+    };
+
+    let travel = tx.min(ty);
+    (
+        (origin_x + dir_x * travel).clamp(min_x, max_x),
+        (origin_y + dir_y * travel).clamp(min_y, max_y),
+    )
 }
 
 fn lerp(start: f64, end: f64, t: f64) -> f64 {
@@ -1667,6 +2077,7 @@ mod tests {
             anchor: RelPos { x: 0.75, y: 0.5 },
             reach: 0.18,
             sensitivity: 1.0,
+            curve: AimCurvePreset::Balanced,
             activation_mode: mode,
             activation_key: activation_key.map(str::to_string),
             invert_y: false,
@@ -1694,8 +2105,6 @@ mod tests {
                     slot: 1,
                     pos: RelPos { x: 0.2, y: 0.7 },
                     radius: 0.07,
-                    mode: JoystickMode::Fixed,
-                    region: None,
                     keys: JoystickKeys {
                         up: "W".into(),
                         down: "S".into(),
@@ -1714,6 +2123,9 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 0, .. }));
         let cmds = engine.process(&InputEvent::KeyRelease(Key::Space));
+        assert!(cmds.is_empty());
+        std::thread::sleep(STANDARD_TAP_MIN_PULSE + Duration::from_millis(5));
+        let cmds = engine.tick();
         assert_eq!(cmds.len(), 1);
         assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
     }
@@ -1721,11 +2133,14 @@ mod tests {
     #[test]
     fn joystick_diagonal_is_normalized() {
         let mut engine = KeymapEngine::new(test_profile());
-        let _ = engine.process(&InputEvent::KeyPress(Key::W));
-        let cmds = engine.tick();
+        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
         assert!(matches!(
             cmds.as_slice(),
-            [TouchCommand::TouchMove { slot: 1, .. }]
+            [
+                TouchCommand::TouchDown { slot: 1, .. },
+                TouchCommand::Commit,
+                TouchCommand::TouchMove { slot: 1, .. }
+            ]
         ));
         let cmds = engine.process(&InputEvent::KeyPress(Key::D));
         match &cmds[0] {
@@ -1738,9 +2153,68 @@ mod tests {
     }
 
     #[test]
-    fn floating_joystick_starts_inside_zone_and_keeps_origin() {
+    fn joystick_release_recenters_before_lifting() {
+        let mut engine = KeymapEngine::new(test_profile());
+        engine.process(&InputEvent::KeyPress(Key::W));
+
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::W));
+        let [TouchCommand::TouchMove { slot, x, y }] = cmds.as_slice() else {
+            panic!("expected center move, got {cmds:?}");
+        };
+        assert_eq!(*slot, 1);
+        assert!((*x - 0.2).abs() < f64::EPSILON);
+        assert!((*y - 0.7).abs() < f64::EPSILON);
+
+        std::thread::sleep(JOYSTICK_RELEASE_GRACE + Duration::from_millis(5));
+        let cmds = engine.tick();
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchUp { slot: 1 }]
+        ));
+    }
+
+    #[test]
+    fn joystick_reengage_within_grace_uses_existing_finger() {
+        let mut engine = KeymapEngine::new(test_profile());
+        engine.process(&InputEvent::KeyPress(Key::W));
+        let _ = engine.process(&InputEvent::KeyRelease(Key::W));
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::D));
+        let [TouchCommand::TouchMove { slot, x, y }] = cmds.as_slice() else {
+            panic!("expected single move, got {cmds:?}");
+        };
+        assert_eq!(*slot, 1);
+        assert!(*x > 0.2);
+        assert!((*y - 0.7).abs() < f64::EPSILON);
+
+        std::thread::sleep(JOYSTICK_RELEASE_GRACE + Duration::from_millis(5));
+        assert!(engine.tick().is_empty());
+    }
+
+    #[test]
+    fn joystick_same_axis_prefers_last_pressed_direction() {
+        let mut engine = KeymapEngine::new(test_profile());
+        engine.process(&InputEvent::KeyPress(Key::D));
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::A));
+        let [TouchCommand::TouchMove { slot, x, y }] = cmds.as_slice() else {
+            panic!("expected single move, got {cmds:?}");
+        };
+        assert_eq!(*slot, 1);
+        assert!(*x < 0.2);
+        assert!((*y - 0.7).abs() < f64::EPSILON);
+
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::A));
+        let [TouchCommand::TouchMove { x, .. }] = cmds.as_slice() else {
+            panic!("expected single move, got {cmds:?}");
+        };
+        assert!(*x > 0.2);
+    }
+
+    #[test]
+    fn fixed_joystick_swipes_toward_screen_edge() {
         let profile = Profile {
-            name: "Float".into(),
+            name: "Fixed".into(),
             version: 1,
             screen: screen(),
             global_sensitivity: 1.0,
@@ -1748,15 +2222,8 @@ mod tests {
                 id: "move".into(),
                 layer: String::new(),
                 slot: 1,
-                pos: RelPos { x: 0.2, y: 0.7 },
-                radius: 0.08,
-                mode: JoystickMode::Floating,
-                region: Some(Region {
-                    x: 0.0,
-                    y: 0.4,
-                    w: 0.45,
-                    h: 0.45,
-                }),
+                pos: RelPos { x: 0.5, y: 0.5 },
+                radius: 0.03,
                 keys: JoystickKeys {
                     up: "W".into(),
                     down: "S".into(),
@@ -1767,35 +2234,14 @@ mod tests {
         };
 
         let mut engine = KeymapEngine::new(profile);
-        let cmds = engine.process(&InputEvent::KeyPress(Key::D));
-        let [TouchCommand::TouchDown {
-            x: down_x,
-            y: down_y,
-            ..
-        }, TouchCommand::TouchMove {
-            x: move_x,
-            y: move_y,
-            ..
-        }] = cmds.as_slice()
-        else {
-            panic!("expected down+move, got {cmds:?}");
-        };
-        assert!((*down_x >= 0.0) && (*down_x <= 0.45));
-        assert!((*down_y >= 0.4) && (*down_y <= 0.85));
-        assert!(*move_x >= *down_x);
-
         let cmds = engine.process(&InputEvent::KeyPress(Key::W));
-        let [TouchCommand::TouchMove {
-            x: next_x,
-            y: next_y,
-            ..
-        }] = cmds.as_slice()
+        let [TouchCommand::TouchDown { .. }, TouchCommand::Commit, TouchCommand::TouchMove { x, y, .. }] =
+            cmds.as_slice()
         else {
-            panic!("expected single move, got {cmds:?}");
+            panic!("expected down+commit+move, got {cmds:?}");
         };
-        assert!((*next_x >= 0.0) && (*next_x <= 0.45));
-        assert!((*next_y >= 0.4) && (*next_y <= 0.85));
-        assert!(*next_y <= *move_y);
+        assert!((*x - 0.5).abs() < f64::EPSILON);
+        assert!((*y - JOYSTICK_EDGE_GUARD).abs() < 0.002);
     }
 
     #[test]
@@ -1843,7 +2289,8 @@ mod tests {
             source: MouseMotionSource::Relative,
         });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::Commit));
+        assert!(matches!(&cmds[2], TouchCommand::TouchMove { slot: 1, .. }));
     }
 
     #[test]
@@ -1875,7 +2322,8 @@ mod tests {
             source: MouseMotionSource::Relative,
         });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::Commit));
+        assert!(matches!(&cmds[2], TouchCommand::TouchMove { slot: 1, .. }));
         let cmds = engine.process(&InputEvent::KeyRelease(Key::MouseRight));
         assert!(matches!(
             cmds.as_slice(),
@@ -1912,7 +2360,8 @@ mod tests {
             source: MouseMotionSource::Relative,
         });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        assert!(matches!(&cmds[1], TouchCommand::TouchMove { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::Commit));
+        assert!(matches!(&cmds[2], TouchCommand::TouchMove { slot: 1, .. }));
         assert!(engine
             .process(&InputEvent::KeyRelease(Key::MouseRight))
             .is_empty());
@@ -1962,6 +2411,7 @@ mod tests {
             source: MouseMotionSource::Relative,
         });
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+        assert!(matches!(&cmds[1], TouchCommand::Commit));
     }
 
     #[test]
@@ -1995,13 +2445,147 @@ mod tests {
             dy: 5,
             source: MouseMotionSource::Relative,
         });
-        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds.len(), 3);
 
         pressed.clear();
         let cmds = engine.resync_mouse_buttons(&pressed);
         assert!(matches!(
             cmds.as_slice(),
             [TouchCommand::TouchUp { slot: 1 }]
+        ));
+    }
+
+    #[test]
+    fn mouse_camera_while_held_recenters_on_reengage() {
+        let profile = Profile {
+            name: "Cam Hold".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![aim_node(
+                MouseCameraActivationMode::WhileHeld,
+                Some("MouseRight"),
+            )],
+        };
+        let mut engine = KeymapEngine::new(profile);
+
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::MouseRight))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 50,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        let moved_x = match &cmds[2] {
+            TouchCommand::TouchMove { x, .. } => *x,
+            other => panic!("expected move, got {other:?}"),
+        };
+        assert!(moved_x > 0.75);
+
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::MouseRight));
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchUp { slot: 1 }]
+        ));
+
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::MouseRight))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 1,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        let restarted_x = match &cmds[0] {
+            TouchCommand::TouchDown { x, .. } => *x,
+            other => panic!("expected down, got {other:?}"),
+        };
+        assert!((restarted_x - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn mouse_camera_large_flick_resegments_without_clipping() {
+        let profile = Profile {
+            name: "Cam".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![aim_node(MouseCameraActivationMode::AlwaysOn, None)],
+        };
+        let mut engine = KeymapEngine::new(profile);
+
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 400,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        assert!(cmds.len() > 8);
+        let NodeState::MouseCamera { current_x, .. } = &engine.states[0] else {
+            panic!("expected mouse camera state");
+        };
+        assert!(*current_x > 0.75);
+    }
+
+    #[test]
+    fn relative_mouse_uses_wider_operational_reach_than_absolute_touch() {
+        let anchor = RelPos { x: 0.75, y: 0.5 };
+        let delta = (0.12, 0.0);
+
+        let (relative_cmds, _, relative_x, _) = KeymapEngine::move_mouse_camera_segmented(
+            1,
+            &anchor,
+            0.18,
+            (false, 0.0, 0.0),
+            delta,
+            MouseMotionSource::Relative,
+        );
+        assert!(!relative_cmds
+            .iter()
+            .any(|cmd| matches!(cmd, TouchCommand::TouchUp { .. })));
+        assert!((relative_x - 0.87).abs() < 1e-6);
+
+        let (absolute_cmds, _, absolute_x, _) = KeymapEngine::move_mouse_camera_segmented(
+            1,
+            &anchor,
+            0.18,
+            (false, 0.0, 0.0),
+            delta,
+            MouseMotionSource::Absolute,
+        );
+        assert!(absolute_cmds
+            .iter()
+            .any(|cmd| matches!(cmd, TouchCommand::TouchUp { .. })));
+        assert!((absolute_x - 0.79).abs() < 1e-6);
+    }
+
+    #[test]
+    fn keyboard_resync_restores_held_standard_button() {
+        let mut engine = KeymapEngine::new(test_profile());
+        let mut pressed = HashSet::new();
+        pressed.insert(Key::Space);
+
+        let cmds = engine.resync_keyboard_keys(&pressed);
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchDown { slot: 0, .. }]
+        ));
+    }
+
+    #[test]
+    fn keyboard_resync_restores_fixed_joystick_direction() {
+        let mut engine = KeymapEngine::new(test_profile());
+        let mut pressed = HashSet::new();
+        pressed.insert(Key::W);
+
+        let cmds = engine.resync_keyboard_keys(&pressed);
+        assert!(matches!(
+            cmds.as_slice(),
+            [
+                TouchCommand::TouchDown { slot: 1, .. },
+                TouchCommand::Commit,
+                TouchCommand::TouchMove { slot: 1, .. }
+            ]
         ));
     }
 
@@ -2020,7 +2604,7 @@ mod tests {
             dy: 0,
             source: MouseMotionSource::Relative,
         });
-        let moved_x = match &cmds[1] {
+        let moved_x = match &cmds[2] {
             TouchCommand::TouchMove { x, .. } => *x,
             other => panic!("expected move, got {other:?}"),
         };
@@ -2043,18 +2627,113 @@ mod tests {
     }
 
     #[test]
-    fn fixed_joystick_engages_then_moves_on_tick() {
+    fn tap_quick_repress_cancels_pending_release() {
+        let mut engine = KeymapEngine::new(test_profile());
+        let _ = engine.process(&InputEvent::KeyPress(Key::Space));
+        assert!(engine
+            .process(&InputEvent::KeyRelease(Key::Space))
+            .is_empty());
+        assert!(engine.process(&InputEvent::KeyPress(Key::Space)).is_empty());
+        std::thread::sleep(STANDARD_TAP_MIN_PULSE + Duration::from_millis(5));
+        assert!(engine.tick().is_empty());
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::Space));
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 0 }));
+    }
+
+    #[test]
+    fn fixed_joystick_engages_immediately() {
         let mut engine = KeymapEngine::new(test_profile());
         let cmds = engine.process(&InputEvent::KeyPress(Key::W));
         assert!(matches!(
             cmds.as_slice(),
-            [TouchCommand::TouchDown { slot: 1, .. }]
+            [
+                TouchCommand::TouchDown { slot: 1, .. },
+                TouchCommand::Commit,
+                TouchCommand::TouchMove { slot: 1, .. }
+            ]
         ));
-        let cmds = engine.tick();
-        assert!(matches!(
-            cmds.as_slice(),
-            [TouchCommand::TouchMove { slot: 1, .. }]
-        ));
+    }
+
+    #[test]
+    fn fixed_joystick_release_then_repress_uses_fresh_direction() {
+        let mut engine = KeymapEngine::new(test_profile());
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::A));
+        let [TouchCommand::TouchDown { .. }, TouchCommand::Commit, TouchCommand::TouchMove { x, y, .. }] =
+            cmds.as_slice()
+        else {
+            panic!("expected down+commit+move, got {cmds:?}");
+        };
+        assert!(*x < 0.2);
+        assert!((*y - 0.7).abs() < 0.001);
+
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::A));
+        let [TouchCommand::TouchMove { slot: 1, x, y }] = cmds.as_slice() else {
+            panic!("expected center move, got {cmds:?}");
+        };
+        assert!((*x - 0.2).abs() < 0.001);
+        assert!((*y - 0.7).abs() < 0.001);
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
+        let [TouchCommand::TouchMove { x, y, .. }] = cmds.as_slice() else {
+            panic!("expected move, got {cmds:?}");
+        };
+        assert!((*x - 0.2).abs() < 0.001);
+        assert!(*y < 0.7);
+    }
+
+    #[test]
+    fn relative_aim_curve_damps_small_motion_and_preserves_large_turns() {
+        let (small_dx, small_dy) =
+            shape_aim_delta(1, 0, MouseMotionSource::Relative, &AimCurvePreset::Balanced);
+        assert!(small_dx > 0.0);
+        assert_eq!(small_dy, 0.0);
+
+        let (large_dx, _) = shape_aim_delta(
+            30,
+            0,
+            MouseMotionSource::Relative,
+            &AimCurvePreset::Balanced,
+        );
+        assert!(large_dx > small_dx);
+        assert!((large_dx / 30.0) > small_dx);
+    }
+
+    #[test]
+    fn relative_aim_curve_does_not_cross_amplify_minor_axis_noise() {
+        let (pure_dx, pure_dy) =
+            shape_aim_delta(1, 0, MouseMotionSource::Relative, &AimCurvePreset::Balanced);
+        let (mixed_dx, mixed_dy) = shape_aim_delta(
+            1,
+            20,
+            MouseMotionSource::Relative,
+            &AimCurvePreset::Balanced,
+        );
+
+        assert!((mixed_dx - pure_dx).abs() < f64::EPSILON);
+        assert_eq!(pure_dy, 0.0);
+        assert!(mixed_dy > pure_dy);
+    }
+
+    #[test]
+    fn linear_aim_curve_preserves_raw_scale() {
+        let (dx, dy) =
+            shape_aim_delta(10, -5, MouseMotionSource::Relative, &AimCurvePreset::Linear);
+        assert!((dx - (10.0 * AIM_RELATIVE_BASE_SCALE)).abs() < f64::EPSILON);
+        assert!((dy - (-5.0 * AIM_RELATIVE_BASE_SCALE)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn absolute_aim_curve_stays_linear() {
+        let (dx, dy) = shape_aim_delta(
+            10,
+            -5,
+            MouseMotionSource::Absolute,
+            &AimCurvePreset::Balanced,
+        );
+        assert!((dx - (10.0 * AIM_ABSOLUTE_SCALE)).abs() < f64::EPSILON);
+        assert!((dy - (-5.0 * AIM_ABSOLUTE_SCALE)).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2107,6 +2786,7 @@ mod tests {
                     key: "LeftAlt".into(),
                     layer_name: "combat".into(),
                     mode: LayerMode::Hold,
+                    suspend_base: false,
                 },
             ],
         };
@@ -2117,7 +2797,119 @@ mod tests {
             .is_empty());
         let cmds = engine.process(&InputEvent::KeyPress(Key::E));
         assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
-        let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
+        assert!(engine.process(&InputEvent::KeyRelease(Key::E)).is_empty());
+        std::thread::sleep(STANDARD_TAP_MIN_PULSE + Duration::from_millis(5));
+        let cmds = engine.tick();
         assert!(matches!(&cmds[0], TouchCommand::TouchUp { slot: 1 }));
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn suspend_base_layer_remaps_held_key() {
+        let profile = Profile {
+            name: "Layers".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![
+                Node::Tap {
+                    id: "forward".into(),
+                    layer: String::new(),
+                    slot: 0,
+                    pos: RelPos { x: 0.2, y: 0.2 },
+                    key: "W".into(),
+                },
+                Node::Tap {
+                    id: "vehicle_forward".into(),
+                    layer: "vehicle".into(),
+                    slot: 1,
+                    pos: RelPos { x: 0.8, y: 0.8 },
+                    key: "W".into(),
+                },
+                Node::LayerShift {
+                    id: "vehicle_layer".into(),
+                    key: "LeftAlt".into(),
+                    layer_name: "vehicle".into(),
+                    mode: LayerMode::Hold,
+                    suspend_base: true,
+                },
+            ],
+        };
+        let mut engine = KeymapEngine::new(profile);
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::W));
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchDown { slot: 0, .. }]
+        ));
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::LeftAlt));
+        assert!(matches!(
+            cmds.as_slice(),
+            [
+                TouchCommand::TouchUp { slot: 0 },
+                TouchCommand::TouchDown { slot: 1, .. }
+            ]
+        ));
+
+        let cmds = engine.process(&InputEvent::KeyRelease(Key::LeftAlt));
+        assert!(matches!(
+            cmds.as_slice(),
+            [
+                TouchCommand::TouchUp { slot: 1 },
+                TouchCommand::TouchDown { slot: 0, .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn suspend_base_layer_preserves_toggle_camera_state() {
+        let profile = Profile {
+            name: "Cam Toggle".into(),
+            version: 1,
+            screen: screen(),
+            global_sensitivity: 1.0,
+            nodes: vec![
+                aim_node(MouseCameraActivationMode::Toggle, Some("MouseRight")),
+                Node::LayerShift {
+                    id: "vehicle_layer".into(),
+                    key: "LeftAlt".into(),
+                    layer_name: "vehicle".into(),
+                    mode: LayerMode::Hold,
+                    suspend_base: true,
+                },
+            ],
+        };
+        let mut engine = KeymapEngine::new(profile);
+
+        assert!(engine
+            .process(&InputEvent::KeyPress(Key::MouseRight))
+            .is_empty());
+        assert!(engine
+            .process(&InputEvent::KeyRelease(Key::MouseRight))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 10,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
+
+        let cmds = engine.process(&InputEvent::KeyPress(Key::LeftAlt));
+        assert!(matches!(
+            cmds.as_slice(),
+            [TouchCommand::TouchUp { slot: 1 }]
+        ));
+
+        assert!(engine
+            .process(&InputEvent::KeyRelease(Key::LeftAlt))
+            .is_empty());
+        let cmds = engine.process(&InputEvent::MouseMove {
+            dx: 1,
+            dy: 0,
+            source: MouseMotionSource::Relative,
+        });
+        assert!(matches!(&cmds[0], TouchCommand::TouchDown { slot: 1, .. }));
     }
 }

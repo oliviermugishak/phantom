@@ -313,22 +313,43 @@ impl UinputDevice {
 
         tracing::trace!(count = cmds.len(), ?cmds, "injecting touch batch");
 
+        let mut wrote_since_sync = false;
+        let mut touch_state_dirty = false;
         for cmd in cmds {
             match cmd {
                 crate::engine::TouchCommand::TouchDown { slot, x, y } => {
-                    self.touch_down_inner(*slot, *x, *y, false)?
+                    self.touch_down_inner(*slot, *x, *y, false)?;
+                    wrote_since_sync = true;
+                    touch_state_dirty = true;
                 }
                 crate::engine::TouchCommand::TouchMove { slot, x, y } => {
-                    self.touch_move_inner(*slot, *x, *y, false)?
+                    self.touch_move_inner(*slot, *x, *y, false)?;
+                    wrote_since_sync = true;
                 }
                 crate::engine::TouchCommand::TouchUp { slot } => {
-                    self.touch_up_inner(*slot, false)?
+                    self.touch_up_inner(*slot, false)?;
+                    wrote_since_sync = true;
+                    touch_state_dirty = true;
+                }
+                crate::engine::TouchCommand::Commit => {
+                    if wrote_since_sync {
+                        if touch_state_dirty {
+                            self.update_touch_state()?;
+                        }
+                        self.sync_report()?;
+                        wrote_since_sync = false;
+                        touch_state_dirty = false;
+                    }
                 }
             }
         }
 
-        self.update_touch_state()?;
-        self.sync_report()?;
+        if wrote_since_sync {
+            if touch_state_dirty {
+                self.update_touch_state()?;
+            }
+            self.sync_report()?;
+        }
         tracing::trace!(
             active_touches = self.slots.active_count(),
             active_slots = ?self.active_slot_ids(),
@@ -421,13 +442,7 @@ impl UinputDevice {
     }
 
     fn scale_coords(&self, x: f64, y: f64) -> (i32, i32) {
-        let px = ((x.clamp(0.0, 1.0)) * (self.screen_width as f64)) as i32;
-        let py = ((y.clamp(0.0, 1.0)) * (self.screen_height as f64)) as i32;
-
-        (
-            px.clamp(0, self.screen_width.saturating_sub(1)),
-            py.clamp(0, self.screen_height.saturating_sub(1)),
-        )
+        scale_coords_to_screen(self.screen_width, self.screen_height, x, y)
     }
 
     fn alloc_tracking_id(&mut self) -> i32 {
@@ -536,6 +551,15 @@ fn ioctl_err(op: &str, errno: Errno) -> PhantomError {
     }
 }
 
+fn scale_coords_to_screen(screen_width: i32, screen_height: i32, x: f64, y: f64) -> (i32, i32) {
+    let max_x = screen_width.saturating_sub(1);
+    let max_y = screen_height.saturating_sub(1);
+    let px = (x.clamp(0.0, 1.0) * (max_x as f64)).round() as i32;
+    let py = (y.clamp(0.0, 1.0) * (max_y as f64)).round() as i32;
+
+    (px.clamp(0, max_x), py.clamp(0, max_y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +647,39 @@ mod tests {
         assert!(slot_writes.windows(1).any(|window| window[0] == 1));
         assert_eq!(tracking_ids.len(), 2);
         assert_ne!(tracking_ids[0], tracking_ids[1]);
+    }
+
+    #[test]
+    fn commit_splits_joystick_engage_into_two_reports() {
+        let (mut dev, path) = fake_device();
+        dev.apply_commands(&[
+            crate::engine::TouchCommand::TouchDown {
+                slot: 0,
+                x: 0.2,
+                y: 0.2,
+            },
+            crate::engine::TouchCommand::Commit,
+            crate::engine::TouchCommand::TouchMove {
+                slot: 0,
+                x: 0.2,
+                y: 0.1,
+            },
+        ])
+        .unwrap();
+
+        let events = read_events(&mut dev, &path);
+        let syn_reports = events
+            .iter()
+            .filter(|event| event.type_ == EV_SYN && event.code == SYN_REPORT)
+            .count();
+        let btn_touch_events: Vec<&InputEvent> = events
+            .iter()
+            .filter(|event| event.type_ == EV_KEY && event.code == BTN_TOUCH)
+            .collect();
+
+        assert_eq!(syn_reports, 2);
+        assert_eq!(btn_touch_events.len(), 1);
+        assert_eq!(btn_touch_events[0].value, 1);
     }
 
     #[test]
@@ -736,5 +793,15 @@ mod tests {
         drop(file);
         let _ = std::fs::remove_file(path);
         events
+    }
+
+    #[test]
+    fn scale_coords_rounds_to_nearest_pixel() {
+        let (_dev, path) = fake_device();
+        let coords = scale_coords_to_screen(1920, 1080, 0.5, 0.5);
+        assert_eq!(coords, (960, 540));
+        let coords = scale_coords_to_screen(1920, 1080, 0.001, 0.001);
+        assert_eq!(coords, (2, 1));
+        let _ = std::fs::remove_file(path);
     }
 }

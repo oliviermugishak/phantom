@@ -130,6 +130,7 @@ That command:
 - installs a sudo-visible `phantom` launcher into `/usr/local/bin` when possible
 - installs `phantom-server.jar` into `~/.local/share/phantom/android/`
 - creates `~/.config/phantom/config.toml` if missing
+- refreshes `android.server_jar` in the existing config when it still points at a source-tree `contrib/android-server/build/phantom-server.jar`
 - copies shipped profiles into `~/.config/phantom/profiles/` if those files do not already exist
 
 Optional overwrite prompt:
@@ -199,7 +200,10 @@ height = 1080
 
 [android]
 auto_launch = true
-server_jar = "/absolute/path/to/phantom/contrib/android-server/build/phantom-server.jar"
+# Optional explicit override. If missing or stale, Phantom also tries the
+# installed jar under ~/.local/share/phantom/android/ and the current source
+# tree build under contrib/android-server/build/phantom-server.jar.
+server_jar = "/absolute/path/to/phantom-server.jar"
 server_class = "com.phantom.server.PhantomServer"
 container_bind_host = "0.0.0.0"
 port = 27183

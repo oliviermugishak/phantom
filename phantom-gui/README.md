@@ -42,10 +42,11 @@ Typical workflow:
 1. open or create a profile
 2. set the screen contract
 3. place controls
-4. bind keys
-5. save
-6. push live
-7. switch to runtime controls when needed
+4. convert or refine the selected control in `Inspect` when needed
+5. bind keys
+6. save
+7. push live
+8. switch to runtime controls when needed
 
 ## Persistence
 

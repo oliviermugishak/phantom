@@ -116,7 +116,7 @@ That is a keyboard behavior issue on many compact keyboards, not usually a Phant
 
 For `F10`, also remember:
 
-- the current overlay is an experimental host-side debug window
+- the current overlay is experimental; on Wayland it should prefer the compact passthrough HUD and only fall back to the older fullscreen preview when needed
 - if it does not appear, inspect `~/.config/phantom/overlay.log`
 - if the log mentions missing `WAYLAND_DISPLAY` or `DISPLAY`, the overlay child was launched without a usable desktop session environment
 
@@ -145,7 +145,7 @@ Run these in order:
 5. double-tap style action
 6. joystick plus button
 7. aim plus button
-8. floating joystick movement
+8. joystick re-engage and direction swaps
 9. one-shot drag gesture
 10. layer shift or macro, if used
 

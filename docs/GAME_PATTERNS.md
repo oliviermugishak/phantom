@@ -4,7 +4,7 @@ This guide explains how to structure Phantom profiles for real games, especially
 
 - fast-paced shooters such as PUBG Mobile and Call of Duty Mobile
 - games with multiple contexts like vehicles, parachutes, loot, and menus
-- swipe games and floating-stick games
+- swipe games and movement-stick games
 
 The goal is not just to list node types. The goal is to show how to combine them into profiles that are understandable, testable, and maintainable.
 
@@ -44,7 +44,7 @@ For example:
 
 - `joystick` on `W/A/S/D`
 - `aim` on `MouseRight` in `while_held` or `toggle`
-- `hold_tap` on `MouseLeft` for fire
+- `tap` on `MouseLeft` for fire
 - `repeat_tap` on an auxiliary key when the game benefits from repeated taps
 - `wheel` for scroll-driven stance, zoom, or context actions
 - `tap` on `Space` for jump
@@ -110,6 +110,9 @@ Use a `layer_shift` that activates the `vehicle` layer:
 
 - `hold` if vehicle mode should only exist while a key is held
 - `toggle` if it should stay active until explicitly turned off
+- enable `suspend_base` if the vehicle layer reuses the same movement or camera
+  keys as base combat and should temporarily replace them instead of stacking on
+  top of them
 
 For PUBG-style vehicles, `toggle` is usually easier because entering a vehicle is a durable state.
 
@@ -172,6 +175,11 @@ Good for:
 
 This is the best default for shooter profiles.
 
+Engine note:
+
+- `while_held` now re-centers the hidden look touch on release, so quick
+  release/re-engage cycles do not resume from a stale edge position
+
 ## 5.5 Turbo Fire Patterns
 
 Use `repeat_tap` when:
@@ -216,23 +224,23 @@ Recommended setup:
 
 This keeps sprint lock separate from the movement stick itself.
 
-## 7. Fixed vs Floating Joystick
+## 7. Joystick Movement
 
-Use `fixed` when:
+Engine note:
 
-- the game shows a visible static stick
-- the movement origin should always be the same
-
-Use `floating` when:
-
-- the game accepts movement from a touch zone
-- the origin can be chosen dynamically within a region
+- keyboard-driven joysticks now re-center briefly before lifting on full release,
+  which helps fast re-engage in games like PUBG and eFootball
+- when opposite directions on the same axis overlap briefly, Phantom follows the
+  most recently pressed direction instead of dropping to neutral first
+- keyboard-driven joystick movement now uses a stronger full-throw swipe model:
+  sticks drag from their configured center toward the screen edge instead of
+  making a short local nudge
 
 Practical examples:
 
-- PUBG left stick: usually `fixed`
-- football-style drag movement zone: usually `floating`
-- some MOBAs with loose movement areas: usually `floating`
+- PUBG left stick: `joystick`
+- eFootball left stick: `joystick`
+- sprint-lock or one-shot movement gestures: `drag`
 
 ## 8. COD / PUBG Large-Profile Planning
 
@@ -287,8 +295,8 @@ Then vehicle-only actions can live in:
 For example:
 
 - `tap` for exit
-- `hold_tap` for accelerate
-- `hold_tap` for brake
+- `tap` for accelerate
+- `tap` for brake
 - `tap` for seat switch
 
 ## 11. JSON Example: ADS + Aim
@@ -346,7 +354,7 @@ Use a different control type instead of forcing one primitive to do everything:
 - use `drag` for one-shot swipes
 - use `joystick` for continuous movement
 - use `aim` for camera/look
-- use `hold_tap` for true held buttons
+- use `tap` for standard press/release buttons, including actions that the game treats as held while the key stays down
 - use `toggle_tap` only when the game really wants a latched state
 
 This keeps profiles clean and behavior predictable.

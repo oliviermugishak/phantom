@@ -14,12 +14,11 @@ use phantom::config;
 use phantom::input::Key;
 use phantom::ipc::{self, IpcRequest, IpcResponse};
 use phantom::profile::{
-    JoystickKeys, JoystickMode, LayerMode, MacroAction, MacroStep, MouseCameraActivationMode, Node,
-    Profile, Region, RelPos, ScreenOverride,
+    AimCurvePreset, JoystickKeys, LayerMode, MacroAction, MacroRunMode, MacroStep,
+    MouseCameraActivationMode, Node, Profile, RelPos, ScreenOverride,
 };
 
 const COLOR_TAP: Color32 = Color32::from_rgb(66, 133, 244);
-const COLOR_HOLD: Color32 = Color32::from_rgb(234, 67, 53);
 const COLOR_TOGGLE: Color32 = Color32::from_rgb(0, 172, 193);
 const COLOR_JOYSTICK: Color32 = Color32::from_rgb(52, 168, 83);
 const COLOR_DRAG: Color32 = Color32::from_rgb(0, 200, 140);
@@ -30,19 +29,17 @@ const COLOR_MACRO: Color32 = Color32::from_rgb(255, 112, 67);
 const COLOR_LAYER: Color32 = Color32::from_rgb(158, 158, 158);
 const CANVAS_BG: Color32 = Color32::from_rgb(19, 21, 26);
 const CONTENT_BG: Color32 = Color32::from_rgb(26, 29, 36);
-const HANDLE_SIZE: f32 = 12.0;
-const REGION_PICK_MARGIN: f32 = 6.0;
-const REGION_BORDER_PICK_WIDTH: f32 = 14.0;
-const DASH_LENGTH: f32 = 10.0;
-const DASH_GAP: f32 = 6.0;
 const LEFT_PANEL_WIDTH: f32 = 290.0;
 const LEFT_PANEL_RUNTIME_RESERVE: f32 = 200.0;
 const RIGHT_PANEL_WIDTH: f32 = 390.0;
 const CONTROL_CARD_ACTION_BUTTON_WIDTH: f32 = 26.0;
 const MAX_HISTORY: usize = 128;
 const RUNTIME_POLL_INTERVAL_ACTIVE: Duration = Duration::from_millis(250);
+const RUNTIME_POLL_INTERVAL_ACTIVE_UNFOCUSED: Duration = Duration::from_secs(2);
 const RUNTIME_POLL_INTERVAL_CONNECTED: Duration = Duration::from_secs(1);
+const RUNTIME_POLL_INTERVAL_CONNECTED_UNFOCUSED: Duration = Duration::from_secs(3);
 const RUNTIME_POLL_INTERVAL_IDLE: Duration = Duration::from_secs(5);
+const RUNTIME_POLL_INTERVAL_IDLE_UNFOCUSED: Duration = Duration::from_secs(12);
 const MIN_CANVAS_ZOOM: f32 = 0.75;
 const MAX_CANVAS_ZOOM: f32 = 3.0;
 const SNAP_GRID_STEP: f64 = 0.05;
@@ -140,7 +137,6 @@ enum Tool {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NodeTemplate {
     Tap,
-    HoldTap,
     ToggleTap,
     Joystick,
     Drag,
@@ -166,40 +162,10 @@ enum BindingTarget {
     MouseLookActivation(usize),
 }
 
-#[derive(Clone, Copy)]
-enum RegionHandle {
-    TopLeft,
-    Top,
-    TopRight,
-    Right,
-    BottomLeft,
-    Bottom,
-    BottomRight,
-    Left,
-}
-
 enum DragState {
-    Point {
-        idx: usize,
-    },
-    DragEnd {
-        idx: usize,
-    },
-    Pan {
-        origin_pan: Vec2,
-        start_mouse: Pos2,
-    },
-    RegionMove {
-        idx: usize,
-        origin: Region,
-        start_mouse: Pos2,
-    },
-    RegionResize {
-        idx: usize,
-        handle: RegionHandle,
-        origin: Region,
-        start_mouse: Pos2,
-    },
+    Point { idx: usize },
+    DragEnd { idx: usize },
+    Pan { origin_pan: Vec2, start_mouse: Pos2 },
 }
 
 #[derive(Clone, Copy)]
@@ -1382,8 +1348,8 @@ impl PhantomGui {
         }
     }
 
-    fn maybe_poll_runtime(&mut self) {
-        let interval = self.runtime_poll_interval();
+    fn maybe_poll_runtime(&mut self, window_focused: bool) {
+        let interval = self.runtime_poll_interval(window_focused);
         let should_poll = self
             .runtime
             .last_checked
@@ -1394,20 +1360,32 @@ impl PhantomGui {
         }
     }
 
-    fn runtime_poll_interval(&self) -> Duration {
+    fn runtime_poll_interval(&self, window_focused: bool) -> Duration {
         if self.runtime.last_checked.is_none()
             || matches!(self.right_panel_tab, RightPanelTab::Runtime)
         {
-            RUNTIME_POLL_INTERVAL_ACTIVE
+            if window_focused {
+                RUNTIME_POLL_INTERVAL_ACTIVE
+            } else {
+                RUNTIME_POLL_INTERVAL_ACTIVE_UNFOCUSED
+            }
         } else if self.runtime.connected {
-            RUNTIME_POLL_INTERVAL_CONNECTED
+            if window_focused {
+                RUNTIME_POLL_INTERVAL_CONNECTED
+            } else {
+                RUNTIME_POLL_INTERVAL_CONNECTED_UNFOCUSED
+            }
         } else {
-            RUNTIME_POLL_INTERVAL_IDLE
+            if window_focused {
+                RUNTIME_POLL_INTERVAL_IDLE
+            } else {
+                RUNTIME_POLL_INTERVAL_IDLE_UNFOCUSED
+            }
         }
     }
 
-    fn background_tick_interval(&self) -> Duration {
-        self.runtime_poll_interval()
+    fn background_tick_interval(&self, window_focused: bool) -> Duration {
+        self.runtime_poll_interval(window_focused)
     }
 
     fn used_touch_slots(&self) -> Option<std::collections::HashSet<u8>> {
@@ -1448,6 +1426,251 @@ impl PhantomGui {
         Some(slots)
     }
 
+    fn used_touch_slots_excluding(
+        &self,
+        exclude_idx: usize,
+    ) -> Option<std::collections::HashSet<u8>> {
+        let profile = self.profile.as_ref()?;
+        let mut used_slots = std::collections::HashSet::new();
+        for (idx, node) in profile.nodes.iter().enumerate() {
+            if idx == exclude_idx {
+                continue;
+            }
+            match node {
+                Node::Wheel {
+                    up_slot, down_slot, ..
+                } => {
+                    used_slots.insert(*up_slot);
+                    used_slots.insert(*down_slot);
+                }
+                _ => {
+                    if let Some(slot) = node.slot() {
+                        used_slots.insert(slot);
+                    }
+                }
+            }
+        }
+        Some(used_slots)
+    }
+
+    fn next_slot_excluding(&self, exclude_idx: usize) -> Option<u8> {
+        let used_slots = self.used_touch_slots_excluding(exclude_idx)?;
+        (0..=MAX_LOGICAL_TOUCH_SLOT).find(|slot| !used_slots.contains(slot))
+    }
+
+    fn convert_selected_node(&mut self, template: NodeTemplate) -> bool {
+        let Some(idx) = self.selected else {
+            return false;
+        };
+        let Some(source) = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.nodes.get(idx))
+            .cloned()
+        else {
+            return false;
+        };
+
+        if template_from_node(&source) == template {
+            return false;
+        }
+
+        let id = source.id().to_string();
+        let layer = source.layer().to_string();
+        let anchor = node_conversion_anchor(&source);
+        let primary_key = node_primary_binding_for_conversion(&source);
+        let single_slot = reusable_single_slot(self, idx, &source);
+        let wheel_slots = reusable_wheel_slots(self, idx, &source);
+        let require_single_slot = |slot: Option<u8>| -> Option<u8> {
+            if slot.is_none() {
+                tracing::warn!("no free logical touch slot available while converting node");
+            }
+            slot
+        };
+        let replacement = match template {
+            NodeTemplate::Tap => Node::Tap {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                pos: anchor,
+                key: primary_key.unwrap_or_else(|| "Space".into()),
+            },
+            NodeTemplate::ToggleTap => Node::ToggleTap {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                pos: anchor,
+                key: primary_key.unwrap_or_else(|| "Q".into()),
+            },
+            NodeTemplate::Joystick => Node::Joystick {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                pos: anchor,
+                radius: 0.08,
+                keys: match &source {
+                    Node::Joystick { keys, .. } => keys.clone(),
+                    _ => JoystickKeys {
+                        up: "W".into(),
+                        down: "S".into(),
+                        left: "A".into(),
+                        right: "D".into(),
+                    },
+                },
+            },
+            NodeTemplate::Drag => Node::Drag {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                start: anchor,
+                end: RelPos {
+                    x: anchor.x,
+                    y: (anchor.y - 0.18).clamp(0.0, 1.0),
+                },
+                key: primary_key.unwrap_or_else(|| "Up".into()),
+                duration_ms: 90,
+            },
+            NodeTemplate::MouseLook => {
+                let preserved_key = primary_key;
+                Node::MouseCamera {
+                    id,
+                    layer,
+                    slot: match require_single_slot(single_slot) {
+                        Some(slot) => slot,
+                        None => {
+                            self.set_banner("No free logical touch slot for conversion", true);
+                            return false;
+                        }
+                    },
+                    anchor,
+                    reach: 0.18,
+                    sensitivity: 1.0,
+                    curve: AimCurvePreset::Balanced,
+                    activation_mode: if preserved_key.is_some() {
+                        MouseCameraActivationMode::WhileHeld
+                    } else {
+                        MouseCameraActivationMode::AlwaysOn
+                    },
+                    activation_key: preserved_key,
+                    invert_y: false,
+                    legacy_region: None,
+                }
+            }
+            NodeTemplate::RepeatTap => Node::RepeatTap {
+                id,
+                layer,
+                slot: match require_single_slot(single_slot) {
+                    Some(slot) => slot,
+                    None => {
+                        self.set_banner("No free logical touch slot for conversion", true);
+                        return false;
+                    }
+                },
+                pos: anchor,
+                key: primary_key.unwrap_or_else(|| "F".into()),
+                interval_ms: 90,
+            },
+            NodeTemplate::Wheel => {
+                let Some((up_slot, down_slot)) = wheel_slots else {
+                    self.set_banner("Wheel control needs two free logical touch slots", true);
+                    return false;
+                };
+                Node::Wheel {
+                    id,
+                    layer,
+                    up_slot,
+                    up_pos: RelPos {
+                        x: anchor.x,
+                        y: (anchor.y - 0.05).clamp(0.0, 1.0),
+                    },
+                    down_slot,
+                    down_pos: RelPos {
+                        x: anchor.x,
+                        y: (anchor.y + 0.05).clamp(0.0, 1.0),
+                    },
+                }
+            }
+            NodeTemplate::Macro => Node::Macro {
+                id,
+                layer,
+                key: primary_key.unwrap_or_else(|| "G".into()),
+                mode: MacroRunMode::CancelOnRelease,
+                sequence: vec![
+                    MacroStep {
+                        action: MacroAction::Down,
+                        pos: Some(anchor),
+                        slot: match require_single_slot(single_slot) {
+                            Some(slot) => slot,
+                            None => {
+                                self.set_banner("No free logical touch slot for conversion", true);
+                                return false;
+                            }
+                        },
+                        delay_ms: 0,
+                    },
+                    MacroStep {
+                        action: MacroAction::Up,
+                        pos: None,
+                        slot: match require_single_slot(single_slot) {
+                            Some(slot) => slot,
+                            None => {
+                                self.set_banner("No free logical touch slot for conversion", true);
+                                return false;
+                            }
+                        },
+                        delay_ms: 30,
+                    },
+                ],
+            },
+            NodeTemplate::LayerShift => Node::LayerShift {
+                id,
+                key: primary_key.unwrap_or_else(|| "LeftAlt".into()),
+                layer_name: if layer.is_empty() {
+                    "combat".into()
+                } else {
+                    layer.clone()
+                },
+                mode: LayerMode::Hold,
+                suspend_base: false,
+            },
+        };
+
+        let Some(profile) = &mut self.profile else {
+            return false;
+        };
+        profile.nodes[idx] = replacement;
+        self.right_panel_tab = RightPanelTab::Inspect;
+        self.set_banner(
+            format!("Converted control to {}", template_label(template)),
+            false,
+        );
+        true
+    }
+
     fn unique_node_id(&self, prefix: &str) -> String {
         let Some(profile) = &self.profile else {
             return format!("{prefix}_1");
@@ -1468,7 +1691,6 @@ impl PhantomGui {
         set_node_id(&mut node, self.unique_node_id(prefix));
         match &mut node {
             Node::Tap { slot, pos, .. }
-            | Node::HoldTap { slot, pos, .. }
             | Node::ToggleTap { slot, pos, .. }
             | Node::RepeatTap { slot, pos, .. } => {
                 *slot = self.next_slot()?;
@@ -1494,21 +1716,9 @@ impl PhantomGui {
                 *start = offset_rel_pos(*start);
                 *end = offset_rel_pos(*end);
             }
-            Node::Joystick {
-                slot,
-                pos,
-                mode,
-                region,
-                ..
-            } => {
+            Node::Joystick { slot, pos, .. } => {
                 *slot = self.next_slot()?;
                 *pos = offset_rel_pos(*pos);
-                if matches!(mode, JoystickMode::Floating) {
-                    if let Some(zone) = region.as_mut() {
-                        *zone = offset_region(*zone);
-                        *pos = region_center(zone);
-                    }
-                }
             }
             Node::MouseCamera { slot, anchor, .. } => {
                 *slot = self.next_slot()?;
@@ -1598,7 +1808,6 @@ impl PhantomGui {
 
         match &mut node {
             Node::Tap { layer, .. }
-            | Node::HoldTap { layer, .. }
             | Node::ToggleTap { layer, .. }
             | Node::Joystick { layer, .. }
             | Node::Drag { layer, .. }
@@ -1665,6 +1874,7 @@ impl PhantomGui {
                 id: format!("macro_{}", profile.nodes.len() + 1),
                 layer: String::new(),
                 key: "G".into(),
+                mode: MacroRunMode::CancelOnRelease,
                 sequence: vec![
                     MacroStep {
                         action: MacroAction::Down,
@@ -1685,6 +1895,7 @@ impl PhantomGui {
                 key: "LeftAlt".into(),
                 layer_name: "combat".into(),
                 mode: LayerMode::Hold,
+                suspend_base: false,
             },
             _ => return,
         };
@@ -1728,13 +1939,6 @@ impl PhantomGui {
                 pos: rel,
                 key: "Space".into(),
             },
-            NodeTemplate::HoldTap => Node::HoldTap {
-                id: format!("hold_{}", slot),
-                layer: String::new(),
-                slot,
-                pos: rel,
-                key: "MouseLeft".into(),
-            },
             NodeTemplate::ToggleTap => Node::ToggleTap {
                 id: format!("toggle_{}", slot),
                 layer: String::new(),
@@ -1748,8 +1952,6 @@ impl PhantomGui {
                 slot,
                 pos: rel,
                 radius: 0.08,
-                mode: JoystickMode::Fixed,
-                region: None,
                 keys: JoystickKeys {
                     up: "W".into(),
                     down: "S".into(),
@@ -1776,6 +1978,7 @@ impl PhantomGui {
                 anchor: rel,
                 reach: 0.18,
                 sensitivity: 1.0,
+                curve: AimCurvePreset::Balanced,
                 activation_mode: MouseCameraActivationMode::AlwaysOn,
                 activation_key: None,
                 invert_y: false,
@@ -1915,7 +2118,6 @@ impl PhantomGui {
                 };
                 match node {
                     Node::Tap { key, .. }
-                    | Node::HoldTap { key, .. }
                     | Node::ToggleTap { key, .. }
                     | Node::Drag { key, .. }
                     | Node::RepeatTap { key, .. }
@@ -2081,24 +2283,21 @@ impl PhantomGui {
             self.tool = Tool::Place(NodeTemplate::Tap);
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Num3)) {
-            self.tool = Tool::Place(NodeTemplate::HoldTap);
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num4)) {
             self.tool = Tool::Place(NodeTemplate::ToggleTap);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num5)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num4)) {
             self.tool = Tool::Place(NodeTemplate::Joystick);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num6)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num5)) {
             self.tool = Tool::Place(NodeTemplate::Drag);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num7)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num6)) {
             self.tool = Tool::Place(NodeTemplate::MouseLook);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num8)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num7)) {
             self.tool = Tool::Place(NodeTemplate::RepeatTap);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num9)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Num8)) {
             self.tool = Tool::Place(NodeTemplate::Wheel);
         }
     }
@@ -2186,44 +2385,38 @@ impl PhantomGui {
                     tool_button(
                         ui,
                         &mut self.tool,
-                        Tool::Place(NodeTemplate::HoldTap),
-                        "Hold (3)",
-                    );
-                    tool_button(
-                        ui,
-                        &mut self.tool,
                         Tool::Place(NodeTemplate::ToggleTap),
-                        "Toggle (4)",
+                        "Toggle (3)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::Joystick),
-                        "Left Stick (5)",
+                        "Left Stick (4)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::Drag),
-                        "Drag (6)",
+                        "Drag (5)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::MouseLook),
-                        "Aim (7)",
+                        "Aim (6)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::RepeatTap),
-                        "Rapid Tap (8)",
+                        "Rapid Tap (7)",
                     );
                     tool_button(
                         ui,
                         &mut self.tool,
                         Tool::Place(NodeTemplate::Wheel),
-                        "Wheel (9)",
+                        "Wheel (8)",
                     );
                     if ui.button("Add Macro").clicked() {
                         self.add_non_canvas_node(NodeTemplate::Macro);
@@ -2684,41 +2877,71 @@ impl PhantomGui {
 
                 let mut start_binding = None;
                 let mut delete_current = false;
+                let mut convert_to = None;
                 let mut dirty = false;
                 let screen = profile.screen.clone();
                 let mut duplicate_into_layer = None;
 
-                let node = &mut profile.nodes[idx];
-                ui.label(
-                    RichText::new(display_type(node))
-                        .strong()
-                        .color(node_color(node)),
-                );
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Id");
-                    let mut id = node.id().to_string();
-                    if ui.text_edit_singleline(&mut id).changed() {
-                        set_node_id(node, id);
-                        dirty = true;
-                    }
-                });
-
-                if let Some(slot) = node.slot() {
-                    ui.label(format!("Touch slot {}", slot));
-                } else if let Node::Wheel {
-                    up_slot, down_slot, ..
-                } = node
                 {
-                    ui.label(format!("Touch slots {} / {}", up_slot, down_slot));
-                } else {
-                    ui.label("No touch slot");
-                }
+                    let node = &mut profile.nodes[idx];
+                    ui.label(
+                        RichText::new(display_type(node))
+                            .strong()
+                            .color(node_color(node)),
+                    );
+                    ui.add_space(4.0);
 
-                match node {
+                    ui.horizontal(|ui| {
+                        ui.label("Type");
+                        egui::ComboBox::from_id_salt(("node_type", idx))
+                            .selected_text(template_label(template_from_node(node)))
+                            .show_ui(ui, |ui| {
+                                for template in [
+                                    NodeTemplate::Tap,
+                                    NodeTemplate::ToggleTap,
+                                    NodeTemplate::Joystick,
+                                    NodeTemplate::Drag,
+                                    NodeTemplate::MouseLook,
+                                    NodeTemplate::RepeatTap,
+                                    NodeTemplate::Wheel,
+                                    NodeTemplate::Macro,
+                                    NodeTemplate::LayerShift,
+                                ] {
+                                    if ui
+                                        .selectable_label(
+                                            template_from_node(node) == template,
+                                            template_label(template),
+                                        )
+                                        .clicked()
+                                    {
+                                        convert_to = Some(template);
+                                    }
+                                }
+                            });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Id");
+                        let mut id = node.id().to_string();
+                        if ui.text_edit_singleline(&mut id).changed() {
+                            set_node_id(node, id);
+                            dirty = true;
+                        }
+                    });
+
+                    if let Some(slot) = node.slot() {
+                        ui.label(format!("Touch slot {}", slot));
+                    } else if let Node::Wheel {
+                        up_slot, down_slot, ..
+                    } = node
+                    {
+                        ui.label(format!("Touch slots {} / {}", up_slot, down_slot));
+                    } else {
+                        ui.label("No touch slot");
+                    }
+
+                    match node {
                     Node::Tap { layer, pos, .. }
-                    | Node::HoldTap { layer, pos, .. }
                     | Node::ToggleTap { layer, pos, .. }
                     | Node::RepeatTap { layer, pos, .. } => {
                         layer_row(
@@ -2754,8 +2977,6 @@ impl PhantomGui {
                         layer,
                         pos,
                         radius,
-                        mode,
-                        region,
                         ..
                     } => {
                         layer_row(
@@ -2766,54 +2987,7 @@ impl PhantomGui {
                             suggested_layer,
                             &mut dirty,
                         );
-                        ui.horizontal(|ui| {
-                            ui.label("Mode");
-                            egui::ComboBox::from_id_salt(("joystick_mode", idx))
-                                .selected_text(match mode {
-                                    JoystickMode::Fixed => "Fixed Center",
-                                    JoystickMode::Floating => "Floating Zone",
-                                })
-                                .show_ui(ui, |ui| {
-                                    if ui
-                                        .selectable_label(
-                                            matches!(mode, JoystickMode::Fixed),
-                                            "Fixed Center",
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(zone) = region.as_ref() {
-                                            *pos = region_center(zone);
-                                        }
-                                        *mode = JoystickMode::Fixed;
-                                        *region = None;
-                                        dirty = true;
-                                    }
-                                    if ui
-                                        .selectable_label(
-                                            matches!(mode, JoystickMode::Floating),
-                                            "Floating Zone",
-                                        )
-                                        .clicked()
-                                    {
-                                        *mode = JoystickMode::Floating;
-                                        if region.is_none() {
-                                            *region = Some(default_joystick_region(*pos));
-                                        }
-                                        dirty = true;
-                                    }
-                                });
-                        });
-                        match mode {
-                            JoystickMode::Fixed => {
-                                position_editor(ui, pos, screen.as_ref(), &mut dirty);
-                            }
-                            JoystickMode::Floating => {
-                                let zone =
-                                    region.get_or_insert_with(|| default_joystick_region(*pos));
-                                region_editor(ui, zone, screen.as_ref(), &mut dirty);
-                                *pos = region_center(zone);
-                            }
-                        }
+                        position_editor(ui, pos, screen.as_ref(), &mut dirty);
                         ui.horizontal(|ui| {
                             ui.label("Radius");
                             let mut value = *radius;
@@ -2829,16 +3003,10 @@ impl PhantomGui {
                                 dirty = true;
                             }
                         });
-                        let mode_hint = match mode {
-                            JoystickMode::Fixed => {
-                                "Fixed Center: always drag from one exact center point. Best for games with a visible static stick."
-                            }
-                            JoystickMode::Floating => {
-                                "Floating Zone: touch starts inside the zone when movement begins, then drags from that runtime origin. Best for floating sticks and football-style movement zones."
-                            }
-                        };
                         ui.label(
-                            RichText::new(mode_hint)
+                            RichText::new(
+                                "Joystick: always drags from the configured center using the fixed full-swipe model.",
+                            )
                                 .small()
                                 .color(Color32::from_gray(170)),
                         );
@@ -2926,14 +3094,14 @@ impl PhantomGui {
                             });
                             ui.label(
                                 RichText::new(
-                                    "Configured reach is an upper envelope. Phantom keeps live aim travel tighter internally, so large values mostly affect how aggressively it can re-segment rather than turning Aim into a giant screen wrapper.",
+                                    "Configured reach is the hidden camera envelope. Real mouse aim can use more of it for smoother high-speed turns, while touchpad aim stays tighter for stability.",
                                 )
-                                .small()
-                                .color(Color32::from_gray(160)),
+                                    .small()
+                                    .color(Color32::from_gray(160)),
                             );
                         });
                     }
-                    Node::Macro { layer, .. } => {
+                    Node::Macro { layer, mode, .. } => {
                         layer_row(
                             ui,
                             layer,
@@ -2942,35 +3110,71 @@ impl PhantomGui {
                             suggested_layer,
                             &mut dirty,
                         );
+                        ui.horizontal(|ui| {
+                            ui.label("Run mode");
+                            egui::ComboBox::from_id_salt(("macro_mode", idx))
+                                .selected_text(match mode {
+                                    MacroRunMode::CancelOnRelease => "Cancel On Release",
+                                    MacroRunMode::OneShot => "One Shot",
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(mode, MacroRunMode::CancelOnRelease),
+                                            "Cancel On Release",
+                                        )
+                                        .clicked()
+                                    {
+                                        *mode = MacroRunMode::CancelOnRelease;
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(mode, MacroRunMode::OneShot),
+                                            "One Shot",
+                                        )
+                                        .clicked()
+                                    {
+                                        *mode = MacroRunMode::OneShot;
+                                        dirty = true;
+                                    }
+                                });
+                        });
+                        ui.label(
+                            RichText::new(
+                                "Cancel On Release matches the old behavior. One Shot continues after the key is released until the sequence completes.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(160)),
+                        );
                     }
                     Node::LayerShift { .. } => {}
-                }
+                    }
 
-                if !matches!(node, Node::LayerShift { .. }) {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("Duplicate Into Base").clicked() {
-                            duplicate_into_layer = Some(String::new());
-                        }
-                        if let Some(layer_name) = suggested_layer {
-                            let button = format!("Duplicate Into {}", layer_name);
-                            if ui.button(button).clicked() {
-                                duplicate_into_layer = Some(layer_name.to_string());
+                    if !matches!(node, Node::LayerShift { .. }) {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Duplicate Into Base").clicked() {
+                                duplicate_into_layer = Some(String::new());
                             }
-                        }
-                    });
-                    ui.label(
-                        RichText::new(
-                            "Use layer duplicates to reuse a control in a new context without rebuilding it from scratch.",
-                        )
-                        .small()
-                        .color(Color32::from_gray(160)),
-                    );
-                }
+                            if let Some(layer_name) = suggested_layer {
+                                let button = format!("Duplicate Into {}", layer_name);
+                                if ui.button(button).clicked() {
+                                    duplicate_into_layer = Some(layer_name.to_string());
+                                }
+                            }
+                        });
+                        ui.label(
+                            RichText::new(
+                                "Use layer duplicates to reuse a control in a new context without rebuilding it from scratch.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(160)),
+                        );
+                    }
 
-                ui.separator();
-                match node {
+                    ui.separator();
+                    match node {
                     Node::Tap { key, .. }
-                    | Node::HoldTap { key, .. }
                     | Node::ToggleTap { key, .. }
                     | Node::Drag { key, .. }
                     | Node::RepeatTap { key, .. }
@@ -3047,6 +3251,7 @@ impl PhantomGui {
                     }
                     Node::MouseCamera {
                         sensitivity,
+                        curve,
                         activation_mode,
                         activation_key,
                         invert_y,
@@ -3066,6 +3271,47 @@ impl PhantomGui {
                                 *sensitivity = (value * 100.0).round() / 100.0;
                                 dirty = true;
                             }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Curve");
+                            egui::ComboBox::from_id_salt(("mouse_curve_quick", idx))
+                                .selected_text(match curve {
+                                    AimCurvePreset::Balanced => "Balanced",
+                                    AimCurvePreset::Precision => "Precision",
+                                    AimCurvePreset::Linear => "Linear",
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            matches!(curve, AimCurvePreset::Balanced),
+                                            "Balanced",
+                                        )
+                                        .clicked()
+                                    {
+                                        *curve = AimCurvePreset::Balanced;
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(curve, AimCurvePreset::Precision),
+                                            "Precision",
+                                        )
+                                        .clicked()
+                                    {
+                                        *curve = AimCurvePreset::Precision;
+                                        dirty = true;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(curve, AimCurvePreset::Linear),
+                                            "Linear",
+                                        )
+                                        .clicked()
+                                    {
+                                        *curve = AimCurvePreset::Linear;
+                                        dirty = true;
+                                    }
+                                });
                         });
                         ui.horizontal(|ui| {
                             ui.label("Activation");
@@ -3141,6 +3387,13 @@ impl PhantomGui {
                                 .small()
                                 .color(Color32::from_gray(170)),
                         );
+                        ui.label(
+                            RichText::new(
+                                "For fast shooter aim, a real mouse is the recommended hardware path. Touchpad aim remains best-effort and is mainly for fallback use.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(150)),
+                        );
                         if !matches!(activation_mode, MouseCameraActivationMode::AlwaysOn) {
                             let key = activation_key.get_or_insert_with(|| "MouseRight".into());
                             binding_picker(
@@ -3157,154 +3410,180 @@ impl PhantomGui {
                             dirty = true;
                         }
                     }
-                }
+                    }
 
-                if let Node::RepeatTap { interval_ms, .. } = node {
-                    ui.horizontal(|ui| {
-                        ui.label("Interval ms");
-                        let mut value = *interval_ms as f64;
+                    if let Node::RepeatTap { interval_ms, .. } = node {
+                        ui.horizontal(|ui| {
+                            ui.label("Interval ms");
+                            let mut value = *interval_ms as f64;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut value)
+                                        .speed(1.0)
+                                        .range(1.0..=1000.0),
+                                )
+                                .changed()
+                            {
+                                *interval_ms = value as u64;
+                                dirty = true;
+                            }
+                        });
+                    }
+
+                    if let Node::Macro { sequence, .. } = node {
+                        ui.separator();
+                        ui.label(RichText::new("Macro Steps").strong());
+                        let mut remove_idx = None;
+                        for (step_idx, step) in sequence.iter_mut().enumerate() {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("Step {}", step_idx + 1));
+                                    egui::ComboBox::from_id_salt(("macro_action", idx, step_idx))
+                                        .selected_text(match step.action {
+                                            MacroAction::Down => "Down",
+                                            MacroAction::Up => "Up",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(
+                                                    matches!(step.action, MacroAction::Down),
+                                                    "Down",
+                                                )
+                                                .clicked()
+                                            {
+                                                step.action = MacroAction::Down;
+                                                if step.pos.is_none() {
+                                                    step.pos = Some(RelPos { x: 0.5, y: 0.5 });
+                                                }
+                                                dirty = true;
+                                            }
+                                            if ui
+                                                .selectable_label(
+                                                    matches!(step.action, MacroAction::Up),
+                                                    "Up",
+                                                )
+                                                .clicked()
+                                            {
+                                                step.action = MacroAction::Up;
+                                                step.pos = None;
+                                                dirty = true;
+                                            }
+                                        });
+                                    if ui.button("Remove").clicked() {
+                                        remove_idx = Some(step_idx);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Slot");
+                                    let mut slot = step.slot as f64;
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut slot)
+                                                .range(0.0..=MAX_LOGICAL_TOUCH_SLOT as f64),
+                                        )
+                                        .changed()
+                                    {
+                                        step.slot = slot as u8;
+                                        dirty = true;
+                                    }
+                                    ui.label("Delay");
+                                    let mut delay = step.delay_ms as f64;
+                                    if ui
+                                        .add(egui::DragValue::new(&mut delay).range(0.0..=5000.0))
+                                        .changed()
+                                    {
+                                        step.delay_ms = delay as u64;
+                                        dirty = true;
+                                    }
+                                });
+                                if let Some(pos) = &mut step.pos {
+                                    position_editor(ui, pos, screen.as_ref(), &mut dirty);
+                                }
+                            });
+                        }
+                        if let Some(remove_idx) = remove_idx {
+                            sequence.remove(remove_idx);
+                            dirty = true;
+                        }
+                        if ui.button("Add Step").clicked() {
+                            sequence.push(MacroStep {
+                                action: MacroAction::Down,
+                                pos: Some(RelPos { x: 0.5, y: 0.5 }),
+                                slot: 0,
+                                delay_ms: 30,
+                            });
+                            dirty = true;
+                        }
+                    }
+
+                    if let Node::LayerShift {
+                        layer_name,
+                        mode,
+                        suspend_base,
+                        ..
+                    } = node
+                    {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("Target layer");
+                            if ui.text_edit_singleline(layer_name).changed() {
+                                dirty = true;
+                            }
+                        });
+                        egui::ComboBox::from_label("Mode")
+                            .selected_text(match mode {
+                                LayerMode::Hold => "Hold",
+                                LayerMode::Toggle => "Toggle",
+                            })
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(matches!(mode, LayerMode::Hold), "Hold")
+                                    .clicked()
+                                {
+                                    *mode = LayerMode::Hold;
+                                    dirty = true;
+                                }
+                                if ui
+                                    .selectable_label(matches!(mode, LayerMode::Toggle), "Toggle")
+                                    .clicked()
+                                {
+                                    *mode = LayerMode::Toggle;
+                                    dirty = true;
+                                }
+                            });
                         if ui
-                            .add(
-                                egui::DragValue::new(&mut value)
-                                    .speed(1.0)
-                                    .range(1.0..=1000.0),
+                            .checkbox(
+                                suspend_base,
+                                "Suspend base-layer controls while this layer is active",
                             )
                             .changed()
                         {
-                            *interval_ms = value as u64;
                             dirty = true;
                         }
-                    });
-                }
+                        ui.label(
+                            RichText::new(
+                                "Enable this when the target layer reuses the same movement or camera keys as base, such as vehicle or parachute remaps.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(160)),
+                        );
+                    }
 
-
-                if let Node::Macro { sequence, .. } = node {
                     ui.separator();
-                    ui.label(RichText::new("Macro Steps").strong());
-                    let mut remove_idx = None;
-                    for (step_idx, step) in sequence.iter_mut().enumerate() {
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(format!("Step {}", step_idx + 1));
-                                egui::ComboBox::from_id_salt(("macro_action", idx, step_idx))
-                                    .selected_text(match step.action {
-                                        MacroAction::Down => "Down",
-                                        MacroAction::Up => "Up",
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        if ui
-                                            .selectable_label(
-                                                matches!(step.action, MacroAction::Down),
-                                                "Down",
-                                            )
-                                            .clicked()
-                                        {
-                                            step.action = MacroAction::Down;
-                                            if step.pos.is_none() {
-                                                step.pos = Some(RelPos { x: 0.5, y: 0.5 });
-                                            }
-                                            dirty = true;
-                                        }
-                                        if ui
-                                            .selectable_label(
-                                                matches!(step.action, MacroAction::Up),
-                                                "Up",
-                                            )
-                                            .clicked()
-                                        {
-                                            step.action = MacroAction::Up;
-                                            step.pos = None;
-                                            dirty = true;
-                                        }
-                                    });
-                                if ui.button("Remove").clicked() {
-                                    remove_idx = Some(step_idx);
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Slot");
-                                let mut slot = step.slot as f64;
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut slot)
-                                            .range(0.0..=MAX_LOGICAL_TOUCH_SLOT as f64),
-                                    )
-                                    .changed()
-                                {
-                                    step.slot = slot as u8;
-                                    dirty = true;
-                                }
-                                ui.label("Delay");
-                                let mut delay = step.delay_ms as f64;
-                                if ui
-                                    .add(egui::DragValue::new(&mut delay).range(0.0..=5000.0))
-                                    .changed()
-                                {
-                                    step.delay_ms = delay as u64;
-                                    dirty = true;
-                                }
-                            });
-                            if let Some(pos) = &mut step.pos {
-                                position_editor(ui, pos, screen.as_ref(), &mut dirty);
-                            }
-                        });
+                    if ui.button("Delete Control").clicked() {
+                        delete_current = true;
                     }
-                    if let Some(remove_idx) = remove_idx {
-                        sequence.remove(remove_idx);
-                        dirty = true;
-                    }
-                    if ui.button("Add Step").clicked() {
-                        sequence.push(MacroStep {
-                            action: MacroAction::Down,
-                            pos: Some(RelPos { x: 0.5, y: 0.5 }),
-                            slot: 0,
-                            delay_ms: 30,
-                        });
-                        dirty = true;
-                    }
-                }
-
-                if let Node::LayerShift {
-                    layer_name, mode, ..
-                } = node
-                {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label("Target layer");
-                        if ui.text_edit_singleline(layer_name).changed() {
-                            dirty = true;
-                        }
-                    });
-                    egui::ComboBox::from_label("Mode")
-                        .selected_text(match mode {
-                            LayerMode::Hold => "Hold",
-                            LayerMode::Toggle => "Toggle",
-                        })
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(matches!(mode, LayerMode::Hold), "Hold")
-                                .clicked()
-                            {
-                                *mode = LayerMode::Hold;
-                                dirty = true;
-                            }
-                            if ui
-                                .selectable_label(matches!(mode, LayerMode::Toggle), "Toggle")
-                                .clicked()
-                            {
-                                *mode = LayerMode::Toggle;
-                                dirty = true;
-                            }
-                        });
-                }
-
-                ui.separator();
-                if ui.button("Delete Control").clicked() {
-                    delete_current = true;
                 }
 
                 if let Some(target) = start_binding {
                     self.begin_binding_capture(target);
+                }
+                if let Some(template) = convert_to {
+                    if self.convert_selected_node(template) {
+                        self.push_history_snapshot(snapshot_before);
+                        self.mark_dirty();
+                    }
+                    return;
                 }
                 if delete_current {
                     self.delete_selected();
@@ -3365,10 +3644,6 @@ impl PhantomGui {
 
             if let Some(hit) = hovered_hit {
                 match hit {
-                    HitTarget::RegionHandle(_, handle) => {
-                        ctx.set_cursor_icon(region_handle_cursor(handle));
-                    }
-                    HitTarget::Region(_) => ctx.set_cursor_icon(egui::CursorIcon::Grab),
                     HitTarget::Point(_) | HitTarget::DragEnd(_) => {
                         ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
@@ -3404,13 +3679,6 @@ impl PhantomGui {
                         content,
                         node,
                         self.selected == Some(idx),
-                        hovered_hit.is_some_and(|hit| {
-                            hit.idx() == idx
-                                && matches!(
-                                    hit,
-                                    HitTarget::Region(_) | HitTarget::RegionHandle(_, _)
-                                )
-                        }),
                         !node.layer().trim().is_empty()
                             && self
                                 .runtime
@@ -3625,36 +3893,16 @@ impl PhantomGui {
                         });
                     } else {
                         self.overlap_picker = None;
-                        self.drag_state = hit_test(profile, content, mouse, self.selected)
-                            .and_then(|hit| match hit {
-                                HitTarget::Point(idx) => Some(DragState::Point { idx }),
-                                HitTarget::DragEnd(idx) => Some(DragState::DragEnd { idx }),
-                                HitTarget::Region(idx) => profile.nodes.get(idx).and_then(|node| {
-                                    let region = node_region(node)?;
-                                    Some(DragState::RegionMove {
-                                        idx,
-                                        origin: *region,
-                                        start_mouse: mouse,
-                                    })
-                                }),
-                                HitTarget::RegionHandle(idx, handle) => {
-                                    profile.nodes.get(idx).and_then(|node| {
-                                        let region = node_region(node)?;
-                                        Some(DragState::RegionResize {
-                                            idx,
-                                            handle,
-                                            origin: *region,
-                                            start_mouse: mouse,
-                                        })
-                                    })
-                                }
+                        self.drag_state =
+                            hit_test(profile, content, mouse, self.selected).map(|hit| match hit {
+                                HitTarget::Point(idx) => DragState::Point { idx },
+                                HitTarget::DragEnd(idx) => DragState::DragEnd { idx },
                             });
                     }
                     let dragged_idx = match self.drag_state.as_ref() {
-                        Some(DragState::Point { idx })
-                        | Some(DragState::DragEnd { idx })
-                        | Some(DragState::RegionMove { idx, .. })
-                        | Some(DragState::RegionResize { idx, .. }) => Some(*idx),
+                        Some(DragState::Point { idx }) | Some(DragState::DragEnd { idx }) => {
+                            Some(*idx)
+                        }
                         _ => None,
                     };
                     if let Some(idx) = dragged_idx {
@@ -3711,91 +3959,6 @@ impl PhantomGui {
                                     self.mark_dirty();
                                 }
                             }
-                            DragState::RegionMove {
-                                idx,
-                                origin,
-                                start_mouse,
-                            } => {
-                                if let Some(node) = self
-                                    .profile
-                                    .as_mut()
-                                    .and_then(|profile| profile.nodes.get_mut(*idx))
-                                {
-                                    if let Some(region) = node_region_mut(node) {
-                                        let delta = (mouse - *start_mouse)
-                                            / Vec2::new(content.width(), content.height());
-                                        let next = Region {
-                                            x: (origin.x + delta.x as f64)
-                                                .clamp(0.0, 1.0 - origin.w),
-                                            y: (origin.y + delta.y as f64)
-                                                .clamp(0.0, 1.0 - origin.h),
-                                            w: origin.w,
-                                            h: origin.h,
-                                        };
-                                        *region = snap_region(next, self.snap_to_grid);
-                                        sync_node_pos_from_region(node);
-                                        self.mark_dirty();
-                                    }
-                                }
-                            }
-                            DragState::RegionResize {
-                                idx,
-                                handle,
-                                origin,
-                                start_mouse,
-                            } => {
-                                if let Some(node) = self
-                                    .profile
-                                    .as_mut()
-                                    .and_then(|profile| profile.nodes.get_mut(*idx))
-                                {
-                                    if let Some(region) = node_region_mut(node) {
-                                        let delta = (mouse - *start_mouse)
-                                            / Vec2::new(content.width(), content.height());
-                                        let mut next = *origin;
-                                        match handle {
-                                            RegionHandle::TopLeft => {
-                                                next.x = origin.x + delta.x as f64;
-                                                next.y = origin.y + delta.y as f64;
-                                                next.w = origin.w - delta.x as f64;
-                                                next.h = origin.h - delta.y as f64;
-                                            }
-                                            RegionHandle::Top => {
-                                                next.y = origin.y + delta.y as f64;
-                                                next.h = origin.h - delta.y as f64;
-                                            }
-                                            RegionHandle::TopRight => {
-                                                next.y = origin.y + delta.y as f64;
-                                                next.w = origin.w + delta.x as f64;
-                                                next.h = origin.h - delta.y as f64;
-                                            }
-                                            RegionHandle::Right => {
-                                                next.w = origin.w + delta.x as f64;
-                                            }
-                                            RegionHandle::BottomLeft => {
-                                                next.x = origin.x + delta.x as f64;
-                                                next.w = origin.w - delta.x as f64;
-                                                next.h = origin.h + delta.y as f64;
-                                            }
-                                            RegionHandle::Bottom => {
-                                                next.h = origin.h + delta.y as f64;
-                                            }
-                                            RegionHandle::BottomRight => {
-                                                next.w = origin.w + delta.x as f64;
-                                                next.h = origin.h + delta.y as f64;
-                                            }
-                                            RegionHandle::Left => {
-                                                next.x = origin.x + delta.x as f64;
-                                                next.w = origin.w - delta.x as f64;
-                                            }
-                                        }
-                                        *region =
-                                            snap_region(clamp_region(next), self.snap_to_grid);
-                                        sync_node_pos_from_region(node);
-                                        self.mark_dirty();
-                                    }
-                                }
-                            }
                         }
                     }
                 }
@@ -3819,10 +3982,11 @@ impl PhantomGui {
 impl eframe::App for PhantomGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let prefs_before = self.studio_prefs();
+        let window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(i.focused));
         self.handle_shortcuts(ctx);
         self.handle_binding_capture(ctx);
-        self.maybe_poll_runtime();
-        ctx.request_repaint_after(self.background_tick_interval());
+        self.maybe_poll_runtime(window_focused);
+        ctx.request_repaint_after(self.background_tick_interval(window_focused));
 
         self.draw_top_bar(ctx);
         self.draw_left_panel(ctx);
@@ -3940,17 +4104,12 @@ fn find_phantom_binary() -> Option<PathBuf> {
 enum HitTarget {
     Point(usize),
     DragEnd(usize),
-    Region(usize),
-    RegionHandle(usize, RegionHandle),
 }
 
 impl HitTarget {
     fn idx(self) -> usize {
         match self {
-            HitTarget::Point(idx)
-            | HitTarget::DragEnd(idx)
-            | HitTarget::Region(idx)
-            | HitTarget::RegionHandle(idx, _) => idx,
+            HitTarget::Point(idx) | HitTarget::DragEnd(idx) => idx,
         }
     }
 }
@@ -3966,31 +4125,6 @@ fn hit_test(
             let end_point = to_canvas_pos(content, end);
             if (end_point - mouse).length() <= 14.0 {
                 return Some(HitTarget::DragEnd(idx));
-            }
-        }
-        if let Some(region) = profile.nodes.get(idx).and_then(node_region) {
-            let rect = region_rect(content, region);
-            for (handle, handle_rect) in region_handles(rect) {
-                if handle_rect.contains(mouse) {
-                    return Some(HitTarget::RegionHandle(idx, handle));
-                }
-            }
-            if region_border_contains(rect, mouse) {
-                return Some(HitTarget::Region(idx));
-            }
-        }
-    }
-
-    for (idx, node) in profile.nodes.iter().enumerate().rev() {
-        if Some(idx) == selected {
-            continue;
-        }
-        if let Some(region) = node_region(node) {
-            let rect = region_rect(content, region);
-            for (handle, handle_rect) in region_handles(rect) {
-                if handle_rect.contains(mouse) {
-                    return Some(HitTarget::RegionHandle(idx, handle));
-                }
             }
         }
     }
@@ -4009,14 +4143,6 @@ fn hit_test(
     }
     if let Some((idx, _)) = best_point {
         return Some(HitTarget::Point(idx));
-    }
-
-    for (idx, node) in profile.nodes.iter().enumerate() {
-        if let Some(region) = node_region(node) {
-            if region_border_contains(region_rect(content, region), mouse) {
-                return Some(HitTarget::Region(idx));
-            }
-        }
     }
 
     None
@@ -4058,7 +4184,6 @@ fn draw_node(
     content: Rect,
     node: &Node,
     selected: bool,
-    hovered_region: bool,
     layer_active: bool,
     show_labels: bool,
 ) {
@@ -4068,75 +4193,6 @@ fn draw_node(
     } else {
         Color32::WHITE
     };
-    if let Some(region) = node_region(node) {
-        let rect = region_rect(content, region);
-        draw_dashed_rect(
-            painter,
-            rect,
-            Stroke::new(
-                if selected || hovered_region { 3.0 } else { 2.0 },
-                if selected || hovered_region || layer_active {
-                    accent
-                } else {
-                    color.gamma_multiply(0.85)
-                },
-            ),
-        );
-        if let Node::Joystick { radius, .. } = node {
-            let center = to_canvas_pos(content, &region_center(region));
-            let radius_px = (*radius as f32 * content.width()).max(16.0);
-            painter.circle_stroke(
-                center,
-                radius_px,
-                Stroke::new(2.0, color.gamma_multiply(0.65)),
-            );
-            let marker_radius = if selected { 16.0 } else { 12.0 };
-            painter.circle_filled(center, marker_radius, color);
-            if selected || layer_active {
-                painter.circle_stroke(center, marker_radius + 3.0, Stroke::new(2.0, accent));
-            }
-            painter.text(
-                center,
-                Align2::CENTER_CENTER,
-                marker_glyph(node),
-                egui::FontId::proportional(12.0),
-                Color32::BLACK,
-            );
-            if show_labels {
-                draw_joystick_compass_labels(
-                    painter,
-                    center,
-                    radius_px,
-                    node,
-                    accent,
-                    layer_active,
-                );
-            }
-        }
-        if selected || hovered_region {
-            for (_, handle_rect) in region_handles(rect) {
-                painter.rect_filled(
-                    handle_rect,
-                    2.0,
-                    if selected {
-                        accent
-                    } else {
-                        accent.gamma_multiply(0.72)
-                    },
-                );
-            }
-        }
-        if show_labels {
-            draw_region_badge(
-                painter,
-                rect,
-                region_badge_text(node),
-                if layer_active { accent } else { color },
-            );
-        }
-        return;
-    }
-
     let Some(pos) = node_pos(node) else {
         return;
     };
@@ -4153,43 +4209,32 @@ fn draw_node(
 
     if let Node::Joystick { radius, .. } = node {
         let radius_px = (*radius as f32 * content.width()).max(16.0);
-        painter.circle_stroke(
-            point,
-            radius_px,
-            Stroke::new(2.0, color.gamma_multiply(0.65)),
-        );
+        draw_canvas_joystick(painter, point, radius_px, color, selected, layer_active);
         if show_labels {
             draw_joystick_compass_labels(painter, point, radius_px, node, accent, layer_active);
         }
+        return;
     }
 
     let marker_radius = if selected { 16.0 } else { 12.0 };
-    painter.circle_filled(point, marker_radius, color);
-    if selected || layer_active {
-        painter.circle_stroke(point, marker_radius + 3.0, Stroke::new(2.0, accent));
-    }
-    painter.text(
+    draw_canvas_marker(
+        painter,
         point,
-        Align2::CENTER_CENTER,
-        marker_glyph(node),
-        egui::FontId::proportional(12.0),
-        Color32::BLACK,
+        marker_radius,
+        color,
+        node_marker_label(node),
+        selected,
+        if selected || layer_active {
+            Some(accent)
+        } else {
+            None
+        },
     );
-    if show_labels && !matches!(node, Node::Joystick { .. }) {
-        painter.text(
-            point + Vec2::new(0.0, marker_radius + 6.0),
-            Align2::CENTER_TOP,
-            display_binding(node),
-            egui::FontId::proportional(11.0),
-            if layer_active { accent } else { Color32::WHITE },
-        );
-    }
 }
 
 fn display_type(node: &Node) -> &'static str {
     match node {
-        Node::Tap { .. } => "Tap Button",
-        Node::HoldTap { .. } => "Hold Button",
+        Node::Tap { .. } => "Button",
         Node::ToggleTap { .. } => "Toggle Button",
         Node::Joystick { .. } => "Left Stick",
         Node::Drag { .. } => "Drag Gesture",
@@ -4204,7 +4249,6 @@ fn display_type(node: &Node) -> &'static str {
 fn display_binding(node: &Node) -> String {
     match node {
         Node::Tap { key, .. }
-        | Node::HoldTap { key, .. }
         | Node::ToggleTap { key, .. }
         | Node::Drag { key, .. }
         | Node::RepeatTap { key, .. }
@@ -4227,13 +4271,6 @@ fn display_binding(node: &Node) -> String {
                 format!("Aim: toggle {}", activation_key.as_deref().unwrap_or("?"))
             }
         },
-    }
-}
-
-fn region_badge_text(node: &Node) -> String {
-    match node {
-        Node::Joystick { .. } => display_type(node).into(),
-        _ => display_binding(node),
     }
 }
 
@@ -4302,6 +4339,12 @@ fn draw_control_card(
                         action = Some(ControlListAction::Select(idx));
                     }
 
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        draw_kind_chip(ui, kind, color);
+                        ui.label(RichText::new(metadata.as_str()).small().color(accent));
+                    });
+
                     if selected {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
@@ -4325,8 +4368,6 @@ fn draw_control_card(
                         });
                     }
 
-                    ui.label(RichText::new(kind).small().color(Color32::from_gray(205)));
-                    ui.label(RichText::new(metadata).small().color(accent));
                     if !node.id().is_empty() {
                         ui.label(RichText::new(node.id()).small().italics().weak());
                     }
@@ -4344,10 +4385,28 @@ fn action_button<'a>(ui: &'a mut egui::Ui, text: &'a str, tooltip: &'a str) -> e
     .on_hover_text(tooltip)
 }
 
+fn draw_kind_chip(ui: &mut egui::Ui, label: &str, color: Color32) {
+    let text = RichText::new(label)
+        .small()
+        .color(color.gamma_multiply(1.04));
+    egui::Frame::NONE
+        .fill(Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            18,
+        ))
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.82)))
+        .corner_radius(999.0)
+        .inner_margin(Vec2::new(8.0, 3.0))
+        .show(ui, |ui| {
+            ui.label(text);
+        });
+}
+
 fn node_color(node: &Node) -> Color32 {
     match node {
         Node::Tap { .. } => COLOR_TAP,
-        Node::HoldTap { .. } => COLOR_HOLD,
         Node::ToggleTap { .. } => COLOR_TOGGLE,
         Node::Joystick { .. } => COLOR_JOYSTICK,
         Node::Drag { .. } => COLOR_DRAG,
@@ -4359,105 +4418,59 @@ fn node_color(node: &Node) -> Color32 {
     }
 }
 
-fn node_region(node: &Node) -> Option<&Region> {
+fn node_marker_label(node: &Node) -> String {
     match node {
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            region: Some(region),
+        Node::Tap { key, .. }
+        | Node::ToggleTap { key, .. }
+        | Node::Drag { key, .. }
+        | Node::RepeatTap { key, .. }
+        | Node::Macro { key, .. }
+        | Node::LayerShift { key, .. } => display_key_label(key),
+        Node::Wheel { .. } => "Wheel".into(),
+        Node::Joystick { .. } => "Move".into(),
+        Node::MouseCamera {
+            activation_mode,
+            activation_key,
             ..
-        } => Some(region),
-        _ => None,
-    }
-}
-
-fn node_region_mut(node: &mut Node) -> Option<&mut Region> {
-    match node {
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            region: Some(region),
-            ..
-        } => Some(region),
-        _ => None,
-    }
-}
-
-fn sync_node_pos_from_region(node: &mut Node) {
-    if let Node::Joystick {
-        mode: JoystickMode::Floating,
-        pos,
-        region: Some(region),
-        ..
-    } = node
-    {
-        *pos = region_center(region);
-    }
-}
-
-fn marker_glyph(node: &Node) -> &'static str {
-    match node {
-        Node::Tap { .. } => "T",
-        Node::HoldTap { .. } => "H",
-        Node::ToggleTap { .. } => "G",
-        Node::Joystick { .. } => "J",
-        Node::Drag { .. } => "D",
-        Node::MouseCamera { .. } => "A",
-        Node::RepeatTap { .. } => "R",
-        Node::Wheel { .. } => "W",
-        Node::Macro { .. } => "C",
-        Node::LayerShift { .. } => "L",
+        } => match activation_mode {
+            MouseCameraActivationMode::AlwaysOn => "Aim".into(),
+            MouseCameraActivationMode::WhileHeld | MouseCameraActivationMode::Toggle => {
+                activation_key
+                    .as_deref()
+                    .map(display_key_label)
+                    .unwrap_or_else(|| "Aim".into())
+            }
+        },
     }
 }
 
 fn node_pos(node: &Node) -> Option<&RelPos> {
     match node {
         Node::Tap { pos, .. }
-        | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
         | Node::Drag { start: pos, .. }
         | Node::RepeatTap { pos, .. }
         | Node::Wheel { up_pos: pos, .. } => Some(pos),
-        Node::Joystick {
-            mode: JoystickMode::Fixed,
-            pos,
-            ..
-        }
-        | Node::MouseCamera { anchor: pos, .. } => Some(pos),
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            ..
-        }
-        | Node::Macro { .. }
-        | Node::LayerShift { .. } => None,
+        Node::Joystick { pos, .. } | Node::MouseCamera { anchor: pos, .. } => Some(pos),
+        Node::Macro { .. } | Node::LayerShift { .. } => None,
     }
 }
 
 fn node_pos_mut(node: &mut Node) -> Option<&mut RelPos> {
     match node {
         Node::Tap { pos, .. }
-        | Node::HoldTap { pos, .. }
         | Node::ToggleTap { pos, .. }
         | Node::Drag { start: pos, .. }
         | Node::RepeatTap { pos, .. }
         | Node::Wheel { up_pos: pos, .. } => Some(pos),
-        Node::Joystick {
-            mode: JoystickMode::Fixed,
-            pos,
-            ..
-        }
-        | Node::MouseCamera { anchor: pos, .. } => Some(pos),
-        Node::Joystick {
-            mode: JoystickMode::Floating,
-            ..
-        }
-        | Node::Macro { .. }
-        | Node::LayerShift { .. } => None,
+        Node::Joystick { pos, .. } | Node::MouseCamera { anchor: pos, .. } => Some(pos),
+        Node::Macro { .. } | Node::LayerShift { .. } => None,
     }
 }
 
 fn set_node_id(node: &mut Node, id: String) {
     match node {
         Node::Tap { id: field, .. }
-        | Node::HoldTap { id: field, .. }
         | Node::ToggleTap { id: field, .. }
         | Node::Joystick { id: field, .. }
         | Node::Drag { id: field, .. }
@@ -4472,8 +4485,7 @@ fn set_node_id(node: &mut Node, id: String) {
 fn tool_label(tool: Tool) -> &'static str {
     match tool {
         Tool::Select => "Select",
-        Tool::Place(NodeTemplate::Tap) => "tap button",
-        Tool::Place(NodeTemplate::HoldTap) => "hold button",
+        Tool::Place(NodeTemplate::Tap) => "button",
         Tool::Place(NodeTemplate::ToggleTap) => "toggle button",
         Tool::Place(NodeTemplate::Joystick) => "left stick",
         Tool::Place(NodeTemplate::Drag) => "drag gesture",
@@ -4595,50 +4607,6 @@ fn position_editor(
             RichText::new(format!("Pixels: {}, {}", px, py))
                 .small()
                 .color(Color32::from_gray(170)),
-        );
-    }
-}
-
-fn region_editor(
-    ui: &mut egui::Ui,
-    region: &mut Region,
-    screen: Option<&ScreenOverride>,
-    dirty: &mut bool,
-) {
-    for (label, value) in [
-        ("X", &mut region.x),
-        ("Y", &mut region.y),
-        ("W", &mut region.w),
-        ("H", &mut region.h),
-    ] {
-        ui.horizontal(|ui| {
-            ui.label(label);
-            if ui
-                .add(egui::DragValue::new(value).speed(0.001).range(0.0..=1.0))
-                .changed()
-            {
-                *dirty = true;
-            }
-        });
-    }
-    *region = clamp_region(*region);
-    if let Some(screen) = screen {
-        let origin = RelPos {
-            x: region.x,
-            y: region.y,
-        };
-        let size = (
-            (region.w * screen.width as f64).round() as i32,
-            (region.h * screen.height as f64).round() as i32,
-        );
-        let (px, py) = rel_to_pixels(&origin, screen);
-        ui.label(
-            RichText::new(format!(
-                "Pixels: origin {}, {} • size {}x{}",
-                px, py, size.0, size.1
-            ))
-            .small()
-            .color(Color32::from_gray(170)),
         );
     }
 }
@@ -4800,146 +4768,93 @@ fn rel_to_pixels(pos: &RelPos, screen: &ScreenOverride) -> (i32, i32) {
     )
 }
 
-fn region_center(region: &Region) -> RelPos {
-    RelPos {
-        x: round3(region.x + region.w / 2.0),
-        y: round3(region.y + region.h / 2.0),
-    }
-}
-
-fn default_joystick_region(center: RelPos) -> Region {
-    clamp_region(Region {
-        x: center.x - 0.18,
-        y: center.y - 0.18,
-        w: 0.36,
-        h: 0.36,
-    })
-}
-
-fn region_rect(content: Rect, region: &Region) -> Rect {
-    Rect::from_min_size(
-        to_canvas_pos(
-            content,
-            &RelPos {
-                x: region.x,
-                y: region.y,
-            },
-        ),
-        Vec2::new(
-            content.width() * region.w as f32,
-            content.height() * region.h as f32,
-        ),
-    )
-}
-
-fn region_border_contains(rect: Rect, mouse: Pos2) -> bool {
-    let outer = rect.expand(REGION_PICK_MARGIN);
-    if !outer.contains(mouse) {
-        return false;
-    }
-
-    let inset = REGION_BORDER_PICK_WIDTH.min((rect.width().min(rect.height()) / 2.0) - 2.0);
-    if inset <= 0.0 {
-        return rect.contains(mouse);
-    }
-
-    !rect.shrink(inset).contains(mouse)
-}
-
-fn region_handles(rect: Rect) -> [(RegionHandle, Rect); 8] {
-    let mid_top = Pos2::new(rect.center().x, rect.top());
-    let mid_right = Pos2::new(rect.right(), rect.center().y);
-    let mid_bottom = Pos2::new(rect.center().x, rect.bottom());
-    let mid_left = Pos2::new(rect.left(), rect.center().y);
-    [
-        (
-            RegionHandle::TopLeft,
-            Rect::from_center_size(rect.left_top(), Vec2::splat(HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::Top,
-            Rect::from_center_size(mid_top, Vec2::new(HANDLE_SIZE * 1.35, HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::TopRight,
-            Rect::from_center_size(rect.right_top(), Vec2::splat(HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::Right,
-            Rect::from_center_size(mid_right, Vec2::new(HANDLE_SIZE, HANDLE_SIZE * 1.35)),
-        ),
-        (
-            RegionHandle::BottomLeft,
-            Rect::from_center_size(rect.left_bottom(), Vec2::splat(HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::Bottom,
-            Rect::from_center_size(mid_bottom, Vec2::new(HANDLE_SIZE * 1.35, HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::BottomRight,
-            Rect::from_center_size(rect.right_bottom(), Vec2::splat(HANDLE_SIZE)),
-        ),
-        (
-            RegionHandle::Left,
-            Rect::from_center_size(mid_left, Vec2::new(HANDLE_SIZE, HANDLE_SIZE * 1.35)),
-        ),
-    ]
-}
-
-fn region_handle_cursor(handle: RegionHandle) -> egui::CursorIcon {
-    match handle {
-        RegionHandle::TopLeft | RegionHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
-        RegionHandle::TopRight | RegionHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
-        RegionHandle::Top | RegionHandle::Bottom => egui::CursorIcon::ResizeVertical,
-        RegionHandle::Left | RegionHandle::Right => egui::CursorIcon::ResizeHorizontal,
-    }
-}
-
-fn draw_dashed_rect(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    draw_dashed_line(painter, rect.left_top(), rect.right_top(), stroke);
-    draw_dashed_line(painter, rect.right_top(), rect.right_bottom(), stroke);
-    draw_dashed_line(painter, rect.right_bottom(), rect.left_bottom(), stroke);
-    draw_dashed_line(painter, rect.left_bottom(), rect.left_top(), stroke);
-}
-
-fn draw_dashed_line(painter: &egui::Painter, start: Pos2, end: Pos2, stroke: Stroke) {
-    let delta = end - start;
-    let length = delta.length();
-    if length <= 0.0 {
-        return;
-    }
-    let direction = delta / length;
-    let mut traveled = 0.0;
-    while traveled < length {
-        let dash_end = (traveled + DASH_LENGTH).min(length);
-        let from = start + direction * traveled;
-        let to = start + direction * dash_end;
-        painter.line_segment([from, to], stroke);
-        traveled += DASH_LENGTH + DASH_GAP;
-    }
-}
-
-fn draw_region_badge(painter: &egui::Painter, rect: Rect, text: String, color: Color32) {
-    let width = (text.len() as f32 * 7.2).clamp(52.0, 180.0);
-    let badge = Rect::from_min_size(
-        rect.left_top() + Vec2::new(10.0, 10.0),
-        Vec2::new(width, 22.0),
+fn draw_canvas_marker(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    color: Color32,
+    label: String,
+    selected: bool,
+    highlight: Option<Color32>,
+) {
+    painter.circle_filled(
+        center + Vec2::new(1.2, 1.8),
+        radius + 0.8,
+        Color32::from_black_alpha(48),
     );
-    painter.rect_filled(badge, 999.0, Color32::from_black_alpha(168));
-    painter.rect_stroke(
-        badge,
-        999.0,
-        Stroke::new(1.5, color.gamma_multiply(0.95)),
-        StrokeKind::Outside,
+    painter.circle_filled(
+        center,
+        radius - 1.8,
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 24),
     );
+    painter.circle_stroke(center, radius, Stroke::new(1.8, color.gamma_multiply(0.96)));
+    if let Some(accent) = highlight {
+        painter.circle_stroke(
+            center,
+            radius + 3.0,
+            Stroke::new(
+                if selected { 1.8 } else { 1.4 },
+                accent.gamma_multiply(0.94),
+            ),
+        );
+    }
+    let font_size = if label.len() >= 6 {
+        10.0
+    } else if label.len() >= 4 {
+        11.0
+    } else {
+        12.5
+    };
     painter.text(
-        badge.center(),
+        center,
         Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(11.0),
-        color,
+        label,
+        egui::FontId::proportional(font_size),
+        Color32::from_rgb(246, 247, 250),
     );
+}
+
+fn draw_canvas_joystick(
+    painter: &egui::Painter,
+    center: Pos2,
+    radius: f32,
+    color: Color32,
+    selected: bool,
+    layer_active: bool,
+) {
+    painter.circle_filled(
+        center + Vec2::new(1.4, 2.0),
+        radius + 1.2,
+        Color32::from_black_alpha(34),
+    );
+    painter.circle_filled(
+        center,
+        radius - 1.8,
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 14),
+    );
+    painter.circle_stroke(center, radius, Stroke::new(2.0, color.gamma_multiply(0.72)));
+    painter.circle_filled(
+        center,
+        (radius * 0.16).max(4.5),
+        Color32::from_rgba_unmultiplied(240, 244, 247, 116),
+    );
+    painter.circle_stroke(
+        center,
+        (radius * 0.19).max(5.8),
+        Stroke::new(1.1, color.gamma_multiply(0.7)),
+    );
+    if selected || layer_active {
+        let accent = if layer_active {
+            Color32::from_rgb(255, 218, 121)
+        } else {
+            Color32::WHITE
+        };
+        painter.circle_stroke(
+            center,
+            radius + 3.0,
+            Stroke::new(1.4, accent.gamma_multiply(0.92)),
+        );
+    }
 }
 
 fn draw_joystick_compass_labels(
@@ -4984,11 +4899,11 @@ fn draw_joystick_compass_labels(
 fn draw_key_chip(painter: &egui::Painter, center: Pos2, text: &str, text_color: Color32) {
     let width = (text.len() as f32 * 7.5).clamp(24.0, 68.0);
     let rect = Rect::from_center_size(center, Vec2::new(width, 22.0));
-    painter.rect_filled(rect, 999.0, Color32::from_black_alpha(178));
+    painter.rect_filled(rect, 999.0, Color32::from_black_alpha(156));
     painter.rect_stroke(
         rect,
         999.0,
-        Stroke::new(1.0, text_color.gamma_multiply(0.8)),
+        Stroke::new(1.0, text_color.gamma_multiply(0.72)),
         StrokeKind::Outside,
     );
     painter.text(
@@ -5000,16 +4915,22 @@ fn draw_key_chip(painter: &egui::Painter, center: Pos2, text: &str, text_color: 
     );
 }
 
-fn clamp_region(mut region: Region) -> Region {
-    region.w = region.w.clamp(0.05, 1.0);
-    region.h = region.h.clamp(0.05, 1.0);
-    region.x = region.x.clamp(0.0, 1.0 - region.w);
-    region.y = region.y.clamp(0.0, 1.0 - region.h);
-    region.x = round3(region.x);
-    region.y = round3(region.y);
-    region.w = round3(region.w);
-    region.h = round3(region.h);
-    region
+fn display_key_label(key: &str) -> String {
+    match key {
+        "MouseLeft" => "LMB".into(),
+        "MouseRight" => "RMB".into(),
+        "MouseMiddle" => "MMB".into(),
+        "LeftShift" => "LShift".into(),
+        "RightShift" => "RShift".into(),
+        "LeftCtrl" => "LCtrl".into(),
+        "RightCtrl" => "RCtrl".into(),
+        "LeftAlt" => "LAlt".into(),
+        "RightAlt" => "RAlt".into(),
+        "PageUp" => "PgUp".into(),
+        "PageDown" => "PgDn".into(),
+        other if other.chars().count() <= 6 => other.into(),
+        other => other.chars().take(6).collect(),
+    }
 }
 
 fn snap_rel_pos(
@@ -5048,18 +4969,6 @@ fn snap_rel_pos(
     pos
 }
 
-fn snap_region(region: Region, enabled: bool) -> Region {
-    if !enabled {
-        return clamp_region(region);
-    }
-    clamp_region(Region {
-        x: snap_scalar(region.x),
-        y: snap_scalar(region.y),
-        w: snap_scalar(region.w),
-        h: snap_scalar(region.h),
-    })
-}
-
 fn snap_scalar(value: f64) -> f64 {
     let snapped = (value / SNAP_GRID_STEP).round() * SNAP_GRID_STEP;
     if (value - snapped).abs() <= SNAP_THRESHOLD {
@@ -5076,19 +4985,98 @@ fn offset_rel_pos(pos: RelPos) -> RelPos {
     }
 }
 
-fn offset_region(region: Region) -> Region {
-    clamp_region(Region {
-        x: region.x + 0.02,
-        y: region.y + 0.02,
-        w: region.w,
-        h: region.h,
-    })
+fn template_label(template: NodeTemplate) -> &'static str {
+    match template {
+        NodeTemplate::Tap => "Button",
+        NodeTemplate::ToggleTap => "Toggle Button",
+        NodeTemplate::Joystick => "Left Stick",
+        NodeTemplate::Drag => "Drag Gesture",
+        NodeTemplate::MouseLook => "Aim",
+        NodeTemplate::RepeatTap => "Rapid Tap",
+        NodeTemplate::Wheel => "Wheel Control",
+        NodeTemplate::Macro => "Macro",
+        NodeTemplate::LayerShift => "Layer Switch",
+    }
+}
+
+fn template_from_node(node: &Node) -> NodeTemplate {
+    match node {
+        Node::Tap { .. } => NodeTemplate::Tap,
+        Node::ToggleTap { .. } => NodeTemplate::ToggleTap,
+        Node::Joystick { .. } => NodeTemplate::Joystick,
+        Node::Drag { .. } => NodeTemplate::Drag,
+        Node::MouseCamera { .. } => NodeTemplate::MouseLook,
+        Node::RepeatTap { .. } => NodeTemplate::RepeatTap,
+        Node::Wheel { .. } => NodeTemplate::Wheel,
+        Node::Macro { .. } => NodeTemplate::Macro,
+        Node::LayerShift { .. } => NodeTemplate::LayerShift,
+    }
+}
+
+fn node_conversion_anchor(node: &Node) -> RelPos {
+    match node {
+        Node::Tap { pos, .. } | Node::ToggleTap { pos, .. } | Node::RepeatTap { pos, .. } => *pos,
+        Node::Drag { start, .. } => *start,
+        Node::MouseCamera { anchor, .. } => *anchor,
+        Node::Joystick { pos, .. } => *pos,
+        Node::Wheel {
+            up_pos, down_pos, ..
+        } => RelPos {
+            x: round3((up_pos.x + down_pos.x) * 0.5),
+            y: round3((up_pos.y + down_pos.y) * 0.5),
+        },
+        Node::Macro { .. } | Node::LayerShift { .. } => RelPos { x: 0.5, y: 0.5 },
+    }
+}
+
+fn node_primary_binding_for_conversion(node: &Node) -> Option<String> {
+    match node {
+        Node::Tap { key, .. }
+        | Node::ToggleTap { key, .. }
+        | Node::Drag { key, .. }
+        | Node::RepeatTap { key, .. }
+        | Node::Macro { key, .. }
+        | Node::LayerShift { key, .. } => Some(key.clone()),
+        Node::MouseCamera {
+            activation_mode,
+            activation_key,
+            ..
+        } => match activation_mode {
+            MouseCameraActivationMode::AlwaysOn => None,
+            MouseCameraActivationMode::WhileHeld | MouseCameraActivationMode::Toggle => {
+                activation_key.clone()
+            }
+        },
+        Node::Joystick { .. } | Node::Wheel { .. } => None,
+    }
+}
+
+fn reusable_single_slot(app: &PhantomGui, exclude_idx: usize, node: &Node) -> Option<u8> {
+    match node {
+        Node::Wheel { up_slot, .. } => Some(*up_slot),
+        _ => node.slot().or_else(|| app.next_slot_excluding(exclude_idx)),
+    }
+}
+
+fn reusable_wheel_slots(app: &PhantomGui, exclude_idx: usize, node: &Node) -> Option<(u8, u8)> {
+    match node {
+        Node::Wheel {
+            up_slot, down_slot, ..
+        } => Some((*up_slot, *down_slot)),
+        _ => {
+            let primary = reusable_single_slot(app, exclude_idx, node)?;
+            let mut used = app.used_touch_slots_excluding(exclude_idx)?;
+            used.insert(primary);
+            let secondary =
+                (0..=MAX_LOGICAL_TOUCH_SLOT).find(|candidate| !used.contains(candidate))?;
+            Some((primary, secondary))
+        }
+    }
 }
 
 fn node_id_prefix(node: &Node) -> &'static str {
     match node {
         Node::Tap { .. } => "tap",
-        Node::HoldTap { .. } => "hold",
         Node::ToggleTap { .. } => "toggle",
         Node::Joystick { .. } => "stick",
         Node::Drag { .. } => "drag",
@@ -5122,10 +5110,7 @@ fn draw_hover_card(
         lines.push(format!("Layer: {}", node.layer()));
     }
     match node {
-        Node::Tap { pos, .. }
-        | Node::HoldTap { pos, .. }
-        | Node::ToggleTap { pos, .. }
-        | Node::RepeatTap { pos, .. } => {
+        Node::Tap { pos, .. } | Node::ToggleTap { pos, .. } | Node::RepeatTap { pos, .. } => {
             lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
             if let Some(screen) = screen {
                 let (px, py) = rel_to_pixels(pos, screen);
@@ -5154,38 +5139,12 @@ fn draw_hover_card(
                 lines.push(format!("Down Pixels: {}, {}", down_px, down_py));
             }
         }
-        Node::Joystick {
-            pos,
-            radius,
-            mode,
-            region,
-            ..
-        } => {
-            lines.push(format!(
-                "Mode: {}",
-                match mode {
-                    JoystickMode::Fixed => "fixed",
-                    JoystickMode::Floating => "floating",
-                }
-            ));
+        Node::Joystick { pos, radius, .. } => {
             lines.push(format!("Radius: {:.3}", radius));
-            match (mode, region) {
-                (JoystickMode::Fixed, _) => {
-                    lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
-                    if let Some(screen) = screen {
-                        let (px, py) = rel_to_pixels(pos, screen);
-                        lines.push(format!("Pixels: {}, {}", px, py));
-                    }
-                }
-                (JoystickMode::Floating, Some(region)) => {
-                    lines.push(format!(
-                        "Zone: {:.3}, {:.3}, {:.3}, {:.3}",
-                        region.x, region.y, region.w, region.h
-                    ));
-                }
-                (JoystickMode::Floating, None) => {
-                    lines.push("Zone: missing".into());
-                }
+            lines.push(format!("Pos: {:.3}, {:.3}", pos.x, pos.y));
+            if let Some(screen) = screen {
+                let (px, py) = rel_to_pixels(pos, screen);
+                lines.push(format!("Pixels: {}, {}", px, py));
             }
         }
         Node::Drag {
@@ -5212,11 +5171,20 @@ fn draw_hover_card(
             activation_mode,
             activation_key,
             sensitivity,
+            curve,
             ..
         } => {
             lines.push(format!("Anchor: {:.3}, {:.3}", anchor.x, anchor.y));
             lines.push(format!("Travel Envelope: {:.3}", reach));
             lines.push(format!("Sensitivity: {:.2}", sensitivity));
+            lines.push(format!(
+                "Curve: {}",
+                match curve {
+                    AimCurvePreset::Balanced => "balanced",
+                    AimCurvePreset::Precision => "precision",
+                    AimCurvePreset::Linear => "linear",
+                }
+            ));
             lines.push(format!(
                 "Mode: {}",
                 match activation_mode {
@@ -5229,16 +5197,29 @@ fn draw_hover_card(
                 lines.push(format!("Activation: {}", key));
             }
         }
-        Node::Macro { sequence, .. } => lines.push(format!("Steps: {}", sequence.len())),
+        Node::Macro { sequence, mode, .. } => {
+            lines.push(format!("Steps: {}", sequence.len()));
+            lines.push(format!(
+                "Mode: {}",
+                match mode {
+                    MacroRunMode::CancelOnRelease => "cancel_on_release",
+                    MacroRunMode::OneShot => "one_shot",
+                }
+            ));
+        }
         Node::LayerShift {
-            layer_name, mode, ..
+            layer_name,
+            mode,
+            suspend_base,
+            ..
         } => lines.push(format!(
-            "Target: {} ({})",
+            "Target: {} ({}{})",
             layer_name,
             match mode {
                 LayerMode::Hold => "hold",
                 LayerMode::Toggle => "toggle",
-            }
+            },
+            if *suspend_base { ", suspend_base" } else { "" }
         )),
     }
 
@@ -5455,7 +5436,7 @@ Fullscreen mapping GUI and runtime control surface for Phantom.
 USAGE:
     {binary}
     {binary} --cursor-overlay <state.json>
-    {binary} --overlay <profile.json>
+    {binary} --overlay <overlay.json>
     {binary} version
 
 FLAGS:
@@ -5464,7 +5445,7 @@ FLAGS:
 
 INTERNAL:
     --cursor-overlay <state.json>    Launch the owned menu-touch cursor overlay
-    --overlay <profile.json>    Launch the experimental debug overlay preview"#,
+    --overlay <overlay.json>    Launch the experimental debug control preview"#,
         binary = binary,
         version = env!("CARGO_PKG_VERSION"),
     );

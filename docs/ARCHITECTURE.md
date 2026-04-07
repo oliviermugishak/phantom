@@ -142,6 +142,7 @@ Important runtime boundary:
 - menu-touch is a runtime-owned mouse mode, not a profile node
 - the owned menu-touch cursor is seeded from host cursor position when capture enters menu-touch
 - after that seed, menu-touch uses Phantom-owned cursor state and does not depend on desktop click delivery
+- capture transitions now also flush the desktop keyboard relay and rebuild hold-style keyboard state from the real currently pressed keys so Phantom does not carry stale key ownership across mode changes
 - a separate lightweight cursor overlay visualizes the owned menu-touch cursor while that mode is active
 - on Wayland compositors, that cursor overlay uses a layer-shell surface with an empty input region so Phantom does not steal mouse input back from Waydroid
 - touchpad tap gestures are synthesized inside Phantom while menu-touch owns the mouse, because the desktop is no longer responsible for translating them
@@ -248,6 +249,16 @@ It emits:
 - `TouchMove`
 - `TouchUp`
 
+During runtime, Phantom now applies gameplay touch commands per translated input event instead of coalescing unrelated key transitions into one larger backend batch. That keeps release and re-engage boundaries explicit for controls like fixed joysticks. Joystick startup also uses an explicit commit boundary between `TouchDown` and the first `TouchMove` so visible sticks behave like a real drag rather than a teleported touch.
+
+For `aim`, Phantom now keeps the transport immediate but shapes real relative-mouse
+motion with a source-specific response curve. Small mouse reports are damped for
+precision, while larger reports preserve fast turn speed. Relative-mouse
+shaping is applied per axis so a strong vertical recoil pull does not
+cross-amplify tiny horizontal noise. This is a per-report spatial transform,
+not time-based smoothing, so it does not intentionally add latency to the
+mouse path.
+
 That abstraction is the key boundary in the codebase.
 
 Backends then decide how to realize those commands:
@@ -257,7 +268,7 @@ Backends then decide how to realize those commands:
 
 Two important recent consequences of that abstraction:
 
-- `joystick` can now support both fixed-center and floating-zone behavior without changing backend semantics
+- `joystick` now uses one fixed-center movement model without changing backend semantics
 - `drag` can model swipe games and sprint-lock style gestures without introducing a new transport contract
 
 The engine stays responsible for gesture meaning. The backend stays responsible for touch realization.
@@ -290,15 +301,24 @@ Why the enabled state exists:
 Runtime note:
 
 - aim still reacts immediately to mouse/touchpad movement
+- relative mouse motion now keeps per-report cadence through input translation:
+  X/Y deltas from the same evdev report are combined, but separate reports are
+  not merged into larger batches before the engine sees them
 - absolute-touchpad translation now suppresses fresh-contact reseed jumps before
   the engine sees motion, and keeps tiny single-step motion available for held
   drags and careful cursor work
 - touchpad contact start and end are now explicit engine-visible boundaries for
   aim, so repeated swipe contacts can lift and re-arm the hidden look touch
   cleanly instead of inheriting stale edge position
+- when aim has to re-center or start a fresh drag segment, the engine emits
+  explicit transport boundaries so the backend sees a real drag lifecycle
+- the old fixed eight-step re-segmentation cap is gone; large mouse sweeps now
+  keep re-centering until the motion is consumed or a high safety cap is hit
 - the engine also keeps aim travel tighter around its anchor than the raw
-  profile reach alone would suggest, so the hidden touch is less likely to roam
-  into nearby controls
+  profile reach alone would suggest, but real mouse input is allowed a wider
+  envelope than absolute-touchpad input so fast flicks re-center less often
+- `while_held` re-engage now starts from a fresh center point instead of
+  inheriting the last edge position from the previous hold cycle
 
 When capture is active and gameplay aim is inactive, the daemon runs a separate owned menu-touch path for menu navigation. That path is runtime-only and is not expressed as a profile node. When Phantom enters that mode it seeds its internal cursor from host cursor position if possible, then continues from Phantom-owned cursor state while the mouse remains captured. A tiny always-on-top cursor overlay is launched for that mode so the operator can see where the owned cursor is even though the desktop cursor itself is no longer moving.
 
@@ -386,7 +406,6 @@ If you need to change:
 
 The architecture explicitly does not solve:
 
-- automatic floating joystick discovery
 - UI recognition
 - sensor injection such as accelerometer tilt
 - monitor transforms

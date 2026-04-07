@@ -41,24 +41,26 @@ pub enum MouseCameraActivationMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum JoystickMode {
+pub enum AimCurvePreset {
+    Linear,
+    Precision,
     #[default]
-    Fixed,
-    Floating,
+    Balanced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MacroRunMode {
+    #[default]
+    CancelOnRelease,
+    OneShot,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
+    #[serde(alias = "hold_tap")]
     Tap {
-        id: String,
-        #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
-        layer: String,
-        slot: u8,
-        pos: RelPos,
-        key: String,
-    },
-    HoldTap {
         id: String,
         #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
         layer: String,
@@ -81,10 +83,6 @@ pub enum Node {
         slot: u8,
         pos: RelPos,
         radius: f64,
-        #[serde(default, skip_serializing_if = "is_default_joystick_mode")]
-        mode: JoystickMode,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        region: Option<Region>,
         keys: JoystickKeys,
     },
     Drag {
@@ -114,6 +112,8 @@ pub enum Node {
         )]
         reach: f64,
         sensitivity: f64,
+        #[serde(default, skip_serializing_if = "is_default_aim_curve_preset")]
+        curve: AimCurvePreset,
         #[serde(
             default,
             skip_serializing_if = "is_default_mouse_camera_activation_mode"
@@ -149,6 +149,8 @@ pub enum Node {
         #[serde(default = "default_layer", skip_serializing_if = "is_default_layer")]
         layer: String,
         key: String,
+        #[serde(default, skip_serializing_if = "is_default_macro_run_mode")]
+        mode: MacroRunMode,
         sequence: Vec<MacroStep>,
     },
     LayerShift {
@@ -157,6 +159,8 @@ pub enum Node {
         layer_name: String,
         #[serde(default)]
         mode: LayerMode,
+        #[serde(default)]
+        suspend_base: bool,
     },
 }
 
@@ -244,6 +248,10 @@ fn default_aim_reach() -> f64 {
     0.18
 }
 
+fn is_default_aim_curve_preset(curve: &AimCurvePreset) -> bool {
+    matches!(curve, AimCurvePreset::Balanced)
+}
+
 fn is_default_layer(layer: &str) -> bool {
     layer.trim().is_empty()
 }
@@ -252,8 +260,8 @@ fn is_default_mouse_camera_activation_mode(mode: &MouseCameraActivationMode) -> 
     matches!(mode, MouseCameraActivationMode::AlwaysOn)
 }
 
-fn is_default_joystick_mode(mode: &JoystickMode) -> bool {
-    matches!(mode, JoystickMode::Fixed)
+fn is_default_macro_run_mode(mode: &MacroRunMode) -> bool {
+    matches!(mode, MacroRunMode::CancelOnRelease)
 }
 
 fn is_default_aim_anchor(anchor: &RelPos) -> bool {
@@ -269,7 +277,6 @@ impl Node {
     pub fn kind(&self) -> &'static str {
         match self {
             Node::Tap { .. } => "tap",
-            Node::HoldTap { .. } => "hold_tap",
             Node::ToggleTap { .. } => "toggle_tap",
             Node::Joystick { .. } => "joystick",
             Node::Drag { .. } => "drag",
@@ -284,7 +291,6 @@ impl Node {
     pub fn id(&self) -> &str {
         match self {
             Node::Tap { id, .. }
-            | Node::HoldTap { id, .. }
             | Node::ToggleTap { id, .. }
             | Node::Joystick { id, .. }
             | Node::Drag { id, .. }
@@ -299,7 +305,6 @@ impl Node {
     pub fn layer(&self) -> &str {
         match self {
             Node::Tap { layer, .. }
-            | Node::HoldTap { layer, .. }
             | Node::ToggleTap { layer, .. }
             | Node::Joystick { layer, .. }
             | Node::Drag { layer, .. }
@@ -314,7 +319,6 @@ impl Node {
     pub fn slot(&self) -> Option<u8> {
         match self {
             Node::Tap { slot, .. }
-            | Node::HoldTap { slot, .. }
             | Node::ToggleTap { slot, .. }
             | Node::Joystick { slot, .. }
             | Node::Drag { slot, .. }
@@ -327,7 +331,6 @@ impl Node {
     pub fn bound_keys(&self) -> Vec<&str> {
         match self {
             Node::Tap { key, .. }
-            | Node::HoldTap { key, .. }
             | Node::ToggleTap { key, .. }
             | Node::RepeatTap { key, .. }
             | Node::Drag { key, .. }
@@ -349,7 +352,6 @@ impl Node {
     pub fn primary_binding(&self) -> Option<&str> {
         match self {
             Node::Tap { key, .. }
-            | Node::HoldTap { key, .. }
             | Node::ToggleTap { key, .. }
             | Node::RepeatTap { key, .. }
             | Node::Drag { key, .. }
@@ -363,7 +365,6 @@ impl Node {
     pub fn audit_bindings(&self) -> Vec<String> {
         match self {
             Node::Tap { key, .. }
-            | Node::HoldTap { key, .. }
             | Node::ToggleTap { key, .. }
             | Node::RepeatTap { key, .. }
             | Node::Drag { key, .. }
@@ -388,21 +389,7 @@ impl Node {
 
     pub fn audit_detail(&self) -> Option<String> {
         match self {
-            Node::Joystick {
-                radius,
-                mode,
-                region,
-                ..
-            } => Some(match (mode, region) {
-                (JoystickMode::Fixed, _) => format!("mode=fixed radius={:.3}", radius),
-                (JoystickMode::Floating, Some(region)) => format!(
-                    "mode=floating radius={:.3} region=({:.3},{:.3},{:.3},{:.3})",
-                    radius, region.x, region.y, region.w, region.h
-                ),
-                (JoystickMode::Floating, None) => {
-                    format!("mode=floating radius={:.3} region=<missing>", radius)
-                }
-            }),
+            Node::Joystick { radius, .. } => Some(format!("radius={:.3}", radius)),
             Node::Drag {
                 start,
                 end,
@@ -416,16 +403,22 @@ impl Node {
                 anchor,
                 reach,
                 sensitivity,
+                curve,
                 activation_mode,
                 activation_key,
                 invert_y,
                 ..
             } => Some(format!(
-                "anchor=({:.3},{:.3}) configured_reach={:.3} operational_cap=0.080 sensitivity={:.3} mode={} key={} invert_y={}",
+                "anchor=({:.3},{:.3}) configured_reach={:.3} operational_cap_relative=0.180 operational_cap_absolute=0.080 sensitivity={:.3} curve={} mode={} key={} invert_y={}",
                 anchor.x,
                 anchor.y,
                 reach,
                 sensitivity,
+                match curve {
+                    AimCurvePreset::Linear => "linear",
+                    AimCurvePreset::Precision => "precision",
+                    AimCurvePreset::Balanced => "balanced",
+                },
                 match activation_mode {
                     MouseCameraActivationMode::AlwaysOn => "always_on",
                     MouseCameraActivationMode::WhileHeld => "while_held",
@@ -444,16 +437,27 @@ impl Node {
                 "up_slot={} up=({:.3},{:.3}) down_slot={} down=({:.3},{:.3})",
                 up_slot, up_pos.x, up_pos.y, down_slot, down_pos.x, down_pos.y
             )),
-            Node::Macro { sequence, .. } => Some(format!("steps={}", sequence.len())),
+            Node::Macro { sequence, mode, .. } => Some(format!(
+                "steps={} mode={}",
+                sequence.len(),
+                match mode {
+                    MacroRunMode::CancelOnRelease => "cancel_on_release",
+                    MacroRunMode::OneShot => "one_shot",
+                }
+            )),
             Node::LayerShift {
-                layer_name, mode, ..
+                layer_name,
+                mode,
+                suspend_base,
+                ..
             } => Some(format!(
-                "target={} mode={}",
+                "target={} mode={} suspend_base={}",
                 layer_name,
                 match mode {
                     LayerMode::Hold => "hold",
                     LayerMode::Toggle => "toggle",
-                }
+                },
+                suspend_base
             )),
             _ => None,
         }
@@ -539,6 +543,7 @@ impl Profile {
         let mut slots = HashSet::new();
         let mut keys_by_name: HashMap<String, HashSet<String>> = HashMap::new();
         let mut layer_switch_keys = HashSet::new();
+        let mut layer_switch_modes_by_layer: HashMap<String, Vec<bool>> = HashMap::new();
 
         for node in &self.nodes {
             if !ids.insert(node.id()) {
@@ -577,7 +582,13 @@ impl Profile {
 
             validate_node(node)?;
 
-            if let Node::LayerShift { key, .. } = node {
+            if let Node::LayerShift {
+                key,
+                layer_name,
+                suspend_base,
+                ..
+            } = node
+            {
                 let normalized = normalize_key_name(key);
                 if !layer_switch_keys.insert(normalized.clone()) {
                     return Err(PhantomError::ProfileValidation {
@@ -585,6 +596,10 @@ impl Profile {
                         message: format!("key '{}' bound by multiple layer switches", key),
                     });
                 }
+                layer_switch_modes_by_layer
+                    .entry(layer_name.trim().to_string())
+                    .or_default()
+                    .push(*suspend_base);
             } else {
                 let layer = node.layer().trim().to_string();
                 for key in node.bound_keys() {
@@ -608,10 +623,21 @@ impl Profile {
 
         for (key, layers) in keys_by_name {
             if layers.len() > 1 && layers.contains("") {
+                let non_base_layers: Vec<&str> = layers
+                    .iter()
+                    .filter_map(|layer| (!layer.is_empty()).then_some(layer.as_str()))
+                    .collect();
+                if non_base_layers.iter().all(|layer| {
+                    layer_switch_modes_by_layer
+                        .get(*layer)
+                        .is_some_and(|modes| modes.iter().all(|mode| *mode))
+                }) {
+                    continue;
+                }
                 return Err(PhantomError::ProfileValidation {
                     field: "nodes.key".into(),
                     message: format!(
-                        "key '{}' is bound in the base layer and in a mode layer, which is ambiguous",
+                        "key '{}' is bound in the base layer and in a mode layer without suspend_base protection",
                         key
                     ),
                 });
@@ -709,7 +735,6 @@ fn validate_node(node: &Node) -> Result<()> {
 
     match node {
         Node::Tap { pos, key, .. }
-        | Node::HoldTap { pos, key, .. }
         | Node::ToggleTap { pos, key, .. }
         | Node::RepeatTap { pos, key, .. } => {
             validate_pos(pos, &format!("nodes.{id}.pos"))?;
@@ -734,12 +759,7 @@ fn validate_node(node: &Node) -> Result<()> {
             }
         }
         Node::Joystick {
-            pos,
-            radius,
-            mode,
-            region,
-            keys,
-            ..
+            pos, radius, keys, ..
         } => {
             validate_pos(pos, &format!("nodes.{id}.pos"))?;
             if *radius <= 0.0 || *radius > 1.0 {
@@ -747,25 +767,6 @@ fn validate_node(node: &Node) -> Result<()> {
                     field: format!("nodes.{id}.radius"),
                     message: format!("radius {} must be in (0, 1]", radius),
                 });
-            }
-            match mode {
-                JoystickMode::Fixed => {
-                    if region.is_some() {
-                        return Err(PhantomError::ProfileValidation {
-                            field: format!("nodes.{id}.region"),
-                            message: "region must be omitted when joystick mode is fixed".into(),
-                        });
-                    }
-                }
-                JoystickMode::Floating => {
-                    let Some(region) = region.as_ref() else {
-                        return Err(PhantomError::ProfileValidation {
-                            field: format!("nodes.{id}.region"),
-                            message: "region is required when joystick mode is floating".into(),
-                        });
-                    };
-                    validate_region(region, &format!("nodes.{id}.region"))?;
-                }
             }
             validate_key_name(&keys.up, &format!("nodes.{id}.keys.up"))?;
             validate_key_name(&keys.down, &format!("nodes.{id}.keys.down"))?;
@@ -793,6 +794,7 @@ fn validate_node(node: &Node) -> Result<()> {
             anchor,
             reach,
             sensitivity,
+            curve: _,
             activation_mode,
             activation_key,
             legacy_region,
@@ -838,7 +840,12 @@ fn validate_node(node: &Node) -> Result<()> {
                 }
             }
         }
-        Node::Macro { key, sequence, .. } => {
+        Node::Macro {
+            key,
+            mode: _,
+            sequence,
+            ..
+        } => {
             validate_key_name(key, &format!("nodes.{id}.key"))?;
             if sequence.is_empty() {
                 return Err(PhantomError::ProfileValidation {
@@ -860,7 +867,10 @@ fn validate_node(node: &Node) -> Result<()> {
             }
         }
         Node::LayerShift {
-            key, layer_name, ..
+            key,
+            layer_name,
+            suspend_base: _,
+            ..
         } => {
             validate_key_name(key, &format!("nodes.{id}.key"))?;
             validate_layer_name(layer_name, &format!("nodes.{id}.layer_name"))?;
@@ -997,8 +1007,9 @@ mod tests {
             key: "LeftAlt".into(),
             layer_name: "combat".into(),
             mode: LayerMode::Toggle,
+            suspend_base: false,
         });
-        profile.nodes.push(Node::HoldTap {
+        profile.nodes.push(Node::Tap {
             id: "fire".into(),
             layer: "combat".into(),
             slot: 3,
@@ -1097,6 +1108,54 @@ mod tests {
     }
 
     #[test]
+    fn allows_duplicate_keys_between_base_and_suspend_base_layer() {
+        let mut p = valid_profile();
+        p.nodes.push(Node::Tap {
+            id: "vehicle_jump".into(),
+            layer: "vehicle".into(),
+            slot: 1,
+            pos: RelPos { x: 0.6, y: 0.6 },
+            key: "Space".into(),
+        });
+        p.nodes.push(Node::LayerShift {
+            id: "vehicle_layer".into(),
+            key: "V".into(),
+            layer_name: "vehicle".into(),
+            mode: LayerMode::Toggle,
+            suspend_base: true,
+        });
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_keys_when_any_layer_switch_skips_suspend_base() {
+        let mut p = valid_profile();
+        p.nodes.push(Node::Tap {
+            id: "vehicle_jump".into(),
+            layer: "vehicle".into(),
+            slot: 1,
+            pos: RelPos { x: 0.6, y: 0.6 },
+            key: "Space".into(),
+        });
+        p.nodes.push(Node::LayerShift {
+            id: "vehicle_hold".into(),
+            key: "V".into(),
+            layer_name: "vehicle".into(),
+            mode: LayerMode::Hold,
+            suspend_base: true,
+        });
+        p.nodes.push(Node::LayerShift {
+            id: "vehicle_toggle".into(),
+            key: "B".into(),
+            layer_name: "vehicle".into(),
+            mode: LayerMode::Toggle,
+            suspend_base: false,
+        });
+
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
     fn allows_duplicate_keys_in_distinct_layers() {
         let mut p = valid_profile();
         p.nodes.clear();
@@ -1134,6 +1193,7 @@ mod tests {
             anchor: default_aim_anchor(),
             reach: 0.0,
             sensitivity: 1.0,
+            curve: AimCurvePreset::Balanced,
             activation_mode: MouseCameraActivationMode::AlwaysOn,
             activation_key: None,
             invert_y: false,
@@ -1152,6 +1212,7 @@ mod tests {
             anchor: default_aim_anchor(),
             reach: default_aim_reach(),
             sensitivity: 1.0,
+            curve: AimCurvePreset::Balanced,
             activation_mode: MouseCameraActivationMode::Toggle,
             activation_key: None,
             invert_y: false,
@@ -1170,6 +1231,7 @@ mod tests {
             anchor: default_aim_anchor(),
             reach: default_aim_reach(),
             sensitivity: 1.0,
+            curve: AimCurvePreset::Balanced,
             activation_mode: MouseCameraActivationMode::AlwaysOn,
             activation_key: Some("MouseRight".into()),
             invert_y: false,
@@ -1237,12 +1299,47 @@ mod tests {
     }
 
     #[test]
+    fn legacy_hold_tap_alias_loads_as_tap() {
+        let raw = r#"
+        {
+          "name": "Legacy Hold",
+          "version": 1,
+          "screen": { "width": 1920, "height": 1080 },
+          "global_sensitivity": 1.0,
+          "nodes": [
+            {
+              "id": "fire",
+              "type": "hold_tap",
+              "slot": 2,
+              "pos": { "x": 0.88, "y": 0.62 },
+              "key": "MouseLeft"
+            }
+          ]
+        }
+        "#;
+
+        let profile: Profile = serde_json::from_str(raw).unwrap();
+        let profile = profile.normalized();
+        profile.validate().unwrap();
+
+        match &profile.nodes[0] {
+            Node::Tap { key, slot, .. } => {
+                assert_eq!(key, "MouseLeft");
+                assert_eq!(*slot, 2);
+                assert_eq!(profile.nodes[0].kind(), "tap");
+            }
+            other => panic!("expected tap node, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn rejects_macro_empty_sequence() {
         let mut p = valid_profile();
         p.nodes = vec![Node::Macro {
             id: "combo".into(),
             layer: default_layer(),
             key: "G".into(),
+            mode: MacroRunMode::CancelOnRelease,
             sequence: vec![],
         }];
         assert!(p.validate().is_err());
@@ -1257,53 +1354,6 @@ mod tests {
             slot: 0,
             pos: RelPos { x: 0.5, y: 0.5 },
             key: "Nope".into(),
-        }];
-        assert!(p.validate().is_err());
-    }
-
-    #[test]
-    fn floating_joystick_requires_region() {
-        let mut p = valid_profile();
-        p.nodes = vec![Node::Joystick {
-            id: "move".into(),
-            layer: default_layer(),
-            slot: 0,
-            pos: RelPos { x: 0.2, y: 0.7 },
-            radius: 0.08,
-            mode: JoystickMode::Floating,
-            region: None,
-            keys: JoystickKeys {
-                up: "W".into(),
-                down: "S".into(),
-                left: "A".into(),
-                right: "D".into(),
-            },
-        }];
-        assert!(p.validate().is_err());
-    }
-
-    #[test]
-    fn fixed_joystick_rejects_region() {
-        let mut p = valid_profile();
-        p.nodes = vec![Node::Joystick {
-            id: "move".into(),
-            layer: default_layer(),
-            slot: 0,
-            pos: RelPos { x: 0.2, y: 0.7 },
-            radius: 0.08,
-            mode: JoystickMode::Fixed,
-            region: Some(Region {
-                x: 0.0,
-                y: 0.4,
-                w: 0.4,
-                h: 0.5,
-            }),
-            keys: JoystickKeys {
-                up: "W".into(),
-                down: "S".into(),
-                left: "A".into(),
-                right: "D".into(),
-            },
         }];
         assert!(p.validate().is_err());
     }
