@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.0.0 — First packaged release
+
+### Aim / Camera
+
+- renamed and stabilized the camera primitive around `aim`
+- switched real-mouse response shaping to per-axis handling so strong vertical
+  recoil pull does not inflate tiny sideways noise
+- widened the hidden-touch envelope for relative mouse aim to reduce
+  re-centering during fast turns
+- removed the old large-sweep clipping behavior from the segmented camera path
+- made `while_held` re-engage recenter cleanly instead of resuming from a stale
+  edge state
+- added explicit `linear`, `precision`, and `balanced` aim curve presets
+- kept aim routing immediate instead of adding smoothing latency
+
+### Joystick / Movement
+
+- reworked keyboard joystick movement around a stronger full-throw swipe model
+- fixed hesitation on fast re-engage by briefly re-centering before lift on
+  full release
+- made same-axis overlap follow the most recently pressed direction instead of
+  dropping to neutral first
+- removed floating joystick mode and standardized the project on one fixed
+  movement-stick model
+- aligned the engine, profile schema, GUI editor, overlay preview, and docs on
+  that single joystick behavior
+
+### Packaging / Distribution
+
+- bumped the workspace to `1.0.0`
+- added GitHub Actions CI for Rust checks and Android server jar validation
+- added tag-driven GitHub release publishing
+- added staged packaging for:
+  - release tarballs
+  - Debian packages
+  - Arch packages
+  - AppImage
+- added `SHA256SUMS` generation for published assets
+- added packaged Android server jar resolution through `/usr/lib/phantom/` and
+  `../lib/phantom/` relative to the running binary
+- updated the systemd unit to use `/usr/bin/phantom`
+- improved Android SDK build-tool detection for `d8`
+
+### Docs
+
+- added release packaging and distribution documentation
+- updated install docs for packaged jar resolution and release assets
+
 ## 0.1.0 — Initial release
 
 ### Daemon (`phantom`)

@@ -5,7 +5,7 @@ Wants=waydroid.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/phantom --daemon
+ExecStart=/usr/bin/phantom --daemon
 Restart=on-failure
 RestartSec=3
 

@@ -7,5 +7,6 @@ Cargo.lock
 .vscode/
 .DS_Store
 /contrib/android-server/build/
+/dist/
 /.codex
 /dev/

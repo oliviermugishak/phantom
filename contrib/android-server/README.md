@@ -68,7 +68,7 @@ touch_backend = "android_socket"
 
 [android]
 auto_launch = true
-server_jar = "/absolute/path/to/ttplayer/contrib/android-server/build/phantom-server.jar"
+server_jar = "/absolute/path/to/phantom-server.jar"
 ```
 
 Current runtime defaults:

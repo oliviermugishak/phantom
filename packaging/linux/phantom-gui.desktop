@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Phantom
+Comment=Waydroid keyboard-and-mouse touch mapper
+Exec=phantom-gui
+Icon=phantom
+Terminal=false
+Categories=Utility;Game;
+Keywords=waydroid;android;input;touch;gaming;
+StartupNotify=true
