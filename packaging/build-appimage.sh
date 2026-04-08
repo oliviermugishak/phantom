@@ -53,6 +53,7 @@ linuxdeploy_args=(
 )
 
 if command -v linuxdeploy-plugin-gtk.sh >/dev/null 2>&1 || command -v linuxdeploy-plugin-gtk >/dev/null 2>&1; then
+    export DEPLOY_GTK_VERSION="${DEPLOY_GTK_VERSION:-3}"
     linuxdeploy_args+=(--plugin gtk)
 fi
 

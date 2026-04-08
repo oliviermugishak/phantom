@@ -108,6 +108,7 @@ jobs:
         run: |
           export ANDROID_JAR="$ANDROID_SDK_ROOT/platforms/android-${ANDROID_API_LEVEL}/android.jar"
           export D8="$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}/d8"
+          export DEPLOY_GTK_VERSION=3
           export LINUXDEPLOY="$RUNNER_TEMP/appimage-tools/linuxdeploy"
           export APPIMAGETOOL="$RUNNER_TEMP/appimage-tools/appimagetool"
           export PATH="$RUNNER_TEMP/appimage-tools:$PATH"
