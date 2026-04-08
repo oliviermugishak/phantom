@@ -41,8 +41,9 @@ If `sudo phantom` is not found after install, rerun `./install.sh`. The installe
 
 If android auto-launch fails because `android.server_jar` points to an old
 source path, Phantom now falls back to the installed jar in
-`~/.local/share/phantom/android/` and then to a built jar in the current source
-tree before failing.
+`~/.local/share/phantom/android/`, then to `../lib/phantom/` relative to the
+running binary, then to `/usr/lib/phantom/`, and finally to a built jar in the
+current source tree before failing.
 
 Required Waydroid state:
 

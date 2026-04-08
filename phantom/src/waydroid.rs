@@ -12,6 +12,7 @@ const DEFAULT_ANDROID_SERVER_JAR_CONTAINER_PATH: &str = "/data/local/tmp/phantom
 const DEFAULT_ANDROID_SERVER_LOG_CONTAINER_PATH: &str = "/data/local/tmp/phantom-server.log";
 const DEFAULT_ANDROID_SERVER_BIND_HOST: &str = "0.0.0.0";
 const DEFAULT_ANDROID_SERVER_PORT: u16 = 27183;
+const SYSTEM_ANDROID_SERVER_JAR_PATH: &str = "/usr/lib/phantom/phantom-server.jar";
 const IDC_TEMPLATE: &str = include_str!("../../contrib/waydroid/Vendor_1234_Product_5678.idc");
 
 #[derive(Debug, Clone)]
@@ -488,6 +489,17 @@ fn android_server_jar_fallback_candidates() -> Vec<PathBuf> {
         }
     }
 
+    if let Some(relative) = executable_relative_android_server_jar_path() {
+        if seen.insert(relative.clone()) {
+            candidates.push(relative);
+        }
+    }
+
+    let system = system_android_server_jar_path();
+    if seen.insert(system.clone()) {
+        candidates.push(system);
+    }
+
     for candidate in source_tree_android_server_jar_candidates() {
         if seen.insert(candidate.clone()) {
             candidates.push(candidate);
@@ -505,6 +517,24 @@ fn installed_android_server_jar_path() -> Option<PathBuf> {
     data_home
         .as_deref()
         .map(android_server_jar_path_under_data_home)
+}
+
+fn executable_relative_android_server_jar_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    Some(executable_relative_android_server_jar_path_from(exe_dir))
+}
+
+fn executable_relative_android_server_jar_path_from(exe_dir: &Path) -> PathBuf {
+    exe_dir
+        .join("..")
+        .join("lib")
+        .join("phantom")
+        .join("phantom-server.jar")
+}
+
+fn system_android_server_jar_path() -> PathBuf {
+    PathBuf::from(SYSTEM_ANDROID_SERVER_JAR_PATH)
 }
 
 fn source_tree_android_server_jar_candidates() -> Vec<PathBuf> {
@@ -810,6 +840,22 @@ mod tests {
 
         assert!(
             candidates.contains(&repo_root.join("contrib/android-server/build/phantom-server.jar"))
+        );
+    }
+
+    #[test]
+    fn system_android_server_path_is_packaged_path() {
+        assert_eq!(
+            system_android_server_jar_path(),
+            PathBuf::from("/usr/lib/phantom/phantom-server.jar")
+        );
+    }
+
+    #[test]
+    fn executable_relative_android_server_path_uses_lib_dir() {
+        assert_eq!(
+            executable_relative_android_server_jar_path_from(Path::new("/opt/phantom/bin")),
+            PathBuf::from("/opt/phantom/bin/../lib/phantom/phantom-server.jar")
         );
     }
 }

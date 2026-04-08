@@ -8,6 +8,7 @@ It covers:
 - Android SDK tools
 - Linux input access
 - local install
+- release packages
 - config creation
 - shipped profile seeding
 - first startup
@@ -176,7 +177,26 @@ Artifacts:
 
 The Android jar must contain `classes.dex`.
 
-## 9. Config
+## 9. Release Packages
+
+GitHub Releases now publish:
+
+- `phantom-v<version>-linux-x86_64.tar.gz`
+- `phantom_<version>_amd64.deb`
+- `phantom-<version>-<pkgrel>-x86_64.pkg.tar.zst`
+- `phantom-v<version>-linux-x86_64.AppImage`
+
+Packaged installs resolve the Android server jar from:
+
+- `../lib/phantom/phantom-server.jar` relative to the running binary
+- `/usr/lib/phantom/phantom-server.jar`
+- the user install under `~/.local/share/phantom/android/`
+- the source tree as a development fallback
+
+Use the release packages when you want a packaged binary install instead of a
+source build with `./install.sh`.
+
+## 10. Config
 
 If you used `./install.sh`, `~/.config/phantom/config.toml` already exists.
 
@@ -201,8 +221,9 @@ height = 1080
 [android]
 auto_launch = true
 # Optional explicit override. If missing or stale, Phantom also tries the
-# installed jar under ~/.local/share/phantom/android/ and the current source
-# tree build under contrib/android-server/build/phantom-server.jar.
+# installed jar under ~/.local/share/phantom/android/, ../lib/phantom relative
+# to the running binary, /usr/lib/phantom/phantom-server.jar, and the current
+# source tree build under contrib/android-server/build/phantom-server.jar.
 server_jar = "/absolute/path/to/phantom-server.jar"
 server_class = "com.phantom.server.PhantomServer"
 container_bind_host = "0.0.0.0"

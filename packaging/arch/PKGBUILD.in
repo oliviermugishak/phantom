@@ -1,0 +1,33 @@
+pkgname=phantom
+pkgver=@VERSION@
+pkgrel=@PKGREL@
+pkgdesc="Waydroid keyboard-and-mouse to Android multitouch mapper"
+arch=('@ARCH@')
+url="https://github.com/oliviermugishak/phantom"
+license=('MIT')
+depends=(
+  'alsa-lib'
+  'gcc-libs'
+  'glibc'
+  'gtk3'
+  'libglvnd'
+  'libx11'
+  'libxcursor'
+  'libxfixes'
+  'libxi'
+  'libxinerama'
+  'libxkbcommon'
+  'libxrandr'
+  'wayland'
+)
+optdepends=('waydroid: Android container runtime')
+conflicts=('phantom-git')
+source=('@TARBALL_NAME@')
+sha256sums=('@TARBALL_SHA256@')
+
+package() {
+  cd "$srcdir/@PORTABLE_DIR@"
+
+  install -dm755 "$pkgdir/usr"
+  cp -a bin lib share "$pkgdir/usr/"
+}

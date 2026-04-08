@@ -1,0 +1,145 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+  ANDROID_API_LEVEL: "34"
+  ANDROID_BUILD_TOOLS: "34.0.0"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches workspace version
+        run: |
+          source packaging/common.sh
+          expected_tag="v$(workspace_version)"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            printf 'tag %s does not match workspace version %s\n' "$GITHUB_REF_NAME" "$expected_tag" >&2
+            exit 1
+          fi
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            desktop-file-utils \
+            dpkg-dev \
+            libasound2-dev \
+            libfuse2 \
+            libgl1-mesa-dev \
+            libgtk-3-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            patchelf \
+            pkg-config \
+            squashfs-tools \
+            zsync
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager \
+            "platforms;android-${ANDROID_API_LEVEL}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
+
+      - name: Verify workspace before packaging
+        run: |
+          cargo fmt --all -- --check
+          cargo test --quiet
+          cargo clippy --quiet --all-targets --all-features -- -D warnings
+          cargo build --release --quiet
+
+      - name: Build tarball and Debian package
+        run: |
+          export ANDROID_JAR="$ANDROID_SDK_ROOT/platforms/android-${ANDROID_API_LEVEL}/android.jar"
+          export D8="$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}/d8"
+          bash packaging/build-tarball.sh
+          bash packaging/build-deb.sh --skip-build
+
+      - name: Download AppImage tooling
+        run: |
+          mkdir -p "$RUNNER_TEMP/appimage-tools"
+          curl -fsSL \
+            -o "$RUNNER_TEMP/appimage-tools/linuxdeploy" \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSL \
+            -o "$RUNNER_TEMP/appimage-tools/appimagetool" \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          curl -fsSL \
+            -o "$RUNNER_TEMP/appimage-tools/linuxdeploy-plugin-gtk.sh" \
+            https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
+          chmod +x "$RUNNER_TEMP/appimage-tools/linuxdeploy"
+          chmod +x "$RUNNER_TEMP/appimage-tools/appimagetool"
+          chmod +x "$RUNNER_TEMP/appimage-tools/linuxdeploy-plugin-gtk.sh"
+
+      - name: Build AppImage
+        run: |
+          export ANDROID_JAR="$ANDROID_SDK_ROOT/platforms/android-${ANDROID_API_LEVEL}/android.jar"
+          export D8="$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}/d8"
+          export LINUXDEPLOY="$RUNNER_TEMP/appimage-tools/linuxdeploy"
+          export APPIMAGETOOL="$RUNNER_TEMP/appimage-tools/appimagetool"
+          export PATH="$RUNNER_TEMP/appimage-tools:$PATH"
+          bash packaging/build-appimage.sh --skip-build
+
+      - name: Build Arch package in Arch container
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/work \
+            -w /work \
+            archlinux:base-devel \
+            bash -lc '
+              set -euo pipefail
+              pacman -Syu --noconfirm --needed base-devel
+              useradd -m builder
+              chown -R builder:builder /work
+              su builder -c "bash packaging/build-arch-package.sh"
+            '
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
+      - name: Write release checksums
+        run: bash packaging/write-checksums.sh
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/release/* \
+              --verify-tag \
+              --generate-notes \
+              --title "Phantom $GITHUB_REF_NAME"
+          fi

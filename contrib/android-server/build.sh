@@ -25,9 +25,22 @@ detect_d8() {
     sdk_root="$HOME/Android/Sdk"
   fi
 
-  if [[ -n "$sdk_root" && -x "$sdk_root/cmdline-tools/latest/bin/d8" ]]; then
-    printf '%s\n' "$sdk_root/cmdline-tools/latest/bin/d8"
-    return 0
+  if [[ -n "$sdk_root" ]]; then
+    local build_tools_d8=""
+    build_tools_d8="$(
+      find "$sdk_root/build-tools" -maxdepth 2 -type f -name d8 2>/dev/null \
+        | sort -V \
+        | tail -n 1
+    )"
+    if [[ -n "$build_tools_d8" && -x "$build_tools_d8" ]]; then
+      printf '%s\n' "$build_tools_d8"
+      return 0
+    fi
+
+    if [[ -x "$sdk_root/cmdline-tools/latest/bin/d8" ]]; then
+      printf '%s\n' "$sdk_root/cmdline-tools/latest/bin/d8"
+      return 0
+    fi
   fi
 
   return 1

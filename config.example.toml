@@ -26,7 +26,9 @@ height = 1080
 auto_launch = true
 # Optional explicit override. If missing or stale, Phantom also tries the
 # installed jar under ~/.local/share/phantom/android/ and the current source
-# tree's contrib/android-server/build/phantom-server.jar.
+# tree's contrib/android-server/build/phantom-server.jar. Packaged installs
+# also resolve /usr/lib/phantom/phantom-server.jar and ../lib/phantom relative
+# to the current executable.
 # `./install.sh` replaces this placeholder with the installed jar path automatically.
 server_jar = "/absolute/path/to/phantom-server.jar"
 server_class = "com.phantom.server.PhantomServer"

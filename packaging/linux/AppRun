@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PATH="$APPDIR/usr/bin:$PATH"
+
+exec "$APPDIR/usr/bin/phantom-gui" "$@"

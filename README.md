@@ -115,8 +115,9 @@ That means:
 
 2. Edit `~/.config/phantom/config.toml` and set the real Waydroid screen size.
    If `android.server_jar` is stale or omitted, Phantom now falls back to the
-   installed jar in `~/.local/share/phantom/android/` or a built jar in the
-   current source tree.
+   installed jar in `~/.local/share/phantom/android/`, then to
+   `../lib/phantom/` relative to the running binary, then to
+   `/usr/lib/phantom/`, and finally to a built jar in the current source tree.
 
 3. Start Waydroid and make sure the container is not frozen:
 
@@ -314,7 +315,23 @@ Read these in this order:
 6. [docs/GAME_PATTERNS.md](docs/GAME_PATTERNS.md)
 7. [docs/TROUBLESHOOT.md](docs/TROUBLESHOOT.md)
 8. [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
-9. [docs/ROADMAD.md](docs/ROADMAD.md)
+9. [docs/RELEASING.md](docs/RELEASING.md)
+10. [docs/ROADMAD.md](docs/ROADMAD.md)
+
+## Release Packages
+
+GitHub Releases now publish:
+
+- release tarballs with the real `phantom`, `phantom-gui`, `phantom-server.jar`,
+  profiles, desktop file, and docs
+- Debian packages
+- Arch packages
+- AppImage builds for the GUI path
+- `SHA256SUMS`
+
+Package installs resolve the Android server jar from `/usr/lib/phantom/` and
+from `../lib/phantom/` relative to the running binary, so packaged and
+portable release layouts no longer depend on a source checkout.
 
 Reference docs:
 
