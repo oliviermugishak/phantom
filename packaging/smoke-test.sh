@@ -23,20 +23,30 @@ fi
 [[ -f "$stage_root/usr/share/applications/phantom-gui.desktop" ]] || fail "missing desktop file"
 [[ -f "$stage_root/usr/lib/udev/rules.d/99-phantom.rules" ]] || fail "missing udev rules"
 
+contains() {
+    printf '%s\n' "$1" | grep -q -- "$2"
+}
+
 tarball="$(release_dir)/$(tarball_asset_name)"
 if [[ -f "$tarball" ]]; then
-    tar -tzf "$tarball" | grep -q '/bin/phantom$' || fail "tarball missing bin/phantom"
-    tar -tzf "$tarball" | grep -q '/lib/phantom/phantom-server.jar$' || fail "tarball missing jar"
-    tar -tzf "$tarball" | grep -q '/share/phantom/' || fail "tarball missing share/phantom"
+    # Read the listing once. `tar | grep -q` under `pipefail` is a false
+    # negative: grep exits early, tar hits EPIPE, the pipeline fails.
+    tarball_list="$(tar -tzf "$tarball")"
+    contains "$tarball_list" '/bin/phantom$' || fail "tarball missing bin/phantom"
+    contains "$tarball_list" '/lib/phantom/phantom-server.jar$' || fail "tarball missing jar"
+    contains "$tarball_list" '/share/phantom/' || fail "tarball missing share/phantom"
 fi
 
 deb="$(release_dir)/$(deb_asset_name)"
 if [[ -f "$deb" ]]; then
     control="$(dpkg-deb -f "$deb" 2>/dev/null || true)"
-    printf '%s\n' "$control" | grep -q '^Recommends: waydroid' || fail "deb missing Recommends: waydroid"
-    printf '%s\n' "$control" | grep -q 'libasound2t64 | libasound2' || fail "deb missing t64 OR-depends for alsa"
-    printf '%s\n' "$control" | grep -q 'libgtk-3-0t64 | libgtk-3-0' || fail "deb missing t64 OR-depends for gtk"
-    printf '%s\n' "$control" | grep -A2 '^Description:' | grep -q 'Recommends:' && fail "Recommends leaked into Description"
+    contains "$control" '^Recommends: waydroid' || fail "deb missing Recommends: waydroid"
+    contains "$control" 'libasound2t64 | libasound2' || fail "deb missing t64 OR-depends for alsa"
+    contains "$control" 'libgtk-3-0t64 | libgtk-3-0' || fail "deb missing t64 OR-depends for gtk"
+    description="$(printf '%s\n' "$control" | sed -n '/^Description:/,/^[^ ]/p')"
+    if contains "$description" 'Recommends:'; then
+        fail "Recommends leaked into Description"
+    fi
 fi
 
 appimage="$(release_dir)/$(appimage_asset_name)"
