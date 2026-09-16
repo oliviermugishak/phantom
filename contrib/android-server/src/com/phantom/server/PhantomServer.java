@@ -3,6 +3,8 @@ package com.phantom.server;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.InputEvent;
+import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 
 import java.io.BufferedInputStream;
@@ -16,6 +18,8 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class PhantomServer {
     private static final int MAX_SLOTS = 10;
@@ -24,11 +28,14 @@ public final class PhantomServer {
     private static final int CMD_TOUCH_MOVE = 0x01;
     private static final int CMD_TOUCH_UP = 0x02;
     private static final int CMD_TOUCH_CANCEL = 0x03;
+    private static final int CMD_KEY_DOWN = 0x04;
+    private static final int CMD_KEY_UP = 0x05;
     private static final int CMD_PING = 0x7f;
 
     private final String bindHost;
     private final int port;
     private final TouchInjector injector = new TouchInjector();
+    private final KeyInjector keyInjector = new KeyInjector();
 
     private PhantomServer(String bindHost, int port) {
         this.bindHost = bindHost;
@@ -60,9 +67,11 @@ public final class PhantomServer {
                     System.out.println("phantom-server client connected");
                     runSession(client.getInputStream(), client.getOutputStream());
                     injector.cancelAll();
+                    keyInjector.releaseAll();
                     System.out.println("phantom-server client disconnected");
                 } catch (EOFException eof) {
                     injector.cancelAll();
+                    keyInjector.releaseAll();
                     System.out.println("phantom-server client closed");
                 }
             }
@@ -91,6 +100,16 @@ public final class PhantomServer {
                 case CMD_TOUCH_CANCEL:
                     injector.cancelAll();
                     break;
+                case CMD_KEY_DOWN: {
+                    int keycode = readUnsignedShortLe(rawIn);
+                    int repeatCount = readUnsignedShortLe(rawIn);
+                    int metaState = readUnsignedByte(rawIn);
+                    keyInjector.keyDown(keycode, repeatCount, metaState);
+                    break;
+                }
+                case CMD_KEY_UP:
+                    keyInjector.keyUp(readUnsignedShortLe(rawIn));
+                    break;
                 case CMD_PING:
                     out.write(CMD_PING);
                     out.flush();
@@ -107,6 +126,12 @@ public final class PhantomServer {
             throw new EOFException("unexpected end of stream");
         }
         return value & 0xff;
+    }
+
+    private static int readUnsignedShortLe(InputStream in) throws IOException {
+        byte[] bytes = new byte[2];
+        readFully(in, bytes);
+        return (bytes[0] & 0xff) | ((bytes[1] & 0xff) << 8);
     }
 
     private static int readIntLe(InputStream in) throws IOException {
@@ -298,6 +323,64 @@ public final class PhantomServer {
 
         private boolean isValidSlot(int slot) {
             return slot >= 0 && slot < MAX_SLOTS;
+        }
+    }
+
+    private static final class KeyInjector {
+        private final Map<Integer, Long> downTimes = new HashMap<Integer, Long>();
+
+        void keyDown(int keycode, int repeatCount, int metaState) throws Exception {
+            long now = SystemClock.uptimeMillis();
+            Long downTime = downTimes.get(keycode);
+            if (repeatCount == 0 || downTime == null) {
+                downTime = now;
+                downTimes.put(keycode, downTime);
+            }
+            KeyEvent event = new KeyEvent(
+                    downTime,
+                    now,
+                    KeyEvent.ACTION_DOWN,
+                    keycode,
+                    repeatCount,
+                    metaState,
+                    KeyCharacterMap.VIRTUAL_KEYBOARD,
+                    0,
+                    0,
+                    InputDevice.SOURCE_KEYBOARD
+            );
+            InputManagerFacade.inject(event);
+        }
+
+        void keyUp(int keycode) throws Exception {
+            long now = SystemClock.uptimeMillis();
+            Long downTime = downTimes.remove(keycode);
+            if (downTime == null) {
+                downTime = now;
+            }
+            KeyEvent event = new KeyEvent(
+                    downTime,
+                    now,
+                    KeyEvent.ACTION_UP,
+                    keycode,
+                    0,
+                    0,
+                    KeyCharacterMap.VIRTUAL_KEYBOARD,
+                    0,
+                    0,
+                    InputDevice.SOURCE_KEYBOARD
+            );
+            InputManagerFacade.inject(event);
+        }
+
+        void releaseAll() {
+            Integer[] held = downTimes.keySet().toArray(new Integer[0]);
+            for (Integer keycode : held) {
+                try {
+                    keyUp(keycode);
+                } catch (Exception ignored) {
+                }
+            }
+            downTimes.clear();
         }
     }
 

@@ -105,6 +105,13 @@ That means:
 - if a profile exists in the repo but does not appear in the GUI, rerun `./install.sh`
 - restarting the GUI reloads the current contents of `~/.config/phantom/profiles/`
 
+## Who Runs What
+
+- `sudo -E phantom --daemon` from the graphical session, or `phantom --daemon` after udev + group `input`
+- `phantom-gui` as your desktop user. Never `sudo phantom-gui`
+- CLI commands such as `phantom status` talk to the same user socket
+- AppImage is the GUI and a portable jar. Start Daemon from an AppImage FUSE mount is unsupported
+
 ## Quick Start
 
 1. Install Phantom into your user environment:
@@ -202,7 +209,7 @@ Important:
 Current product direction:
 
 - the current preview surface is still experimental and may be replaced later
-- the preferred long-term direction is an Android-side in-surface overlay and is tracked in [docs/ROADMAD.md](docs/ROADMAD.md)
+- the preferred long-term direction is an Android-side in-surface overlay and is tracked in [docs/ROADMAP.md](docs/ROADMAP.md)
 
 ## Tracing And Logging
 
@@ -233,15 +240,13 @@ What that means:
 - after that seed, Phantom owns the mouse and drives menu-touch from its internal cursor instead of relying on host click delivery
 - the seed path prefers Hyprland compositor geometry, then X11/XWayland helper mapping, then finally Phantom's internal cursor state
 - when Phantom owns a touchpad in menu-touch, it also provides its own tap-to-click and double-tap-hold drag behavior
-- `phantom status` shows:
+- `phantom status` shows `menu touch backend` and `mouse mode`
+- because Phantom now owns the mouse during capture, menu-touch no longer depends on a first host click being consumed for window activation
 
 Gameplay note:
 
 - for high-paced shooter aim, a real mouse is still the recommended hardware path
 - touchpad aim remains best-effort and should be treated as a fallback, not the premium experience
-  - `menu touch backend`
-  - `mouse mode`
-- because Phantom now owns the mouse during capture, menu-touch no longer depends on a first host click being consumed for window activation
 
 ## Aim
 
@@ -316,7 +321,7 @@ Read these in this order:
 7. [docs/TROUBLESHOOT.md](docs/TROUBLESHOOT.md)
 8. [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
 9. [docs/RELEASING.md](docs/RELEASING.md)
-10. [docs/ROADMAD.md](docs/ROADMAD.md)
+10. [docs/ROADMAP.md](docs/ROADMAP.md)
 
 ## Release Packages
 

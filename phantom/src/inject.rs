@@ -341,6 +341,10 @@ impl UinputDevice {
                         touch_state_dirty = false;
                     }
                 }
+                crate::engine::TouchCommand::KeyDown { .. }
+                | crate::engine::TouchCommand::KeyUp { .. } => {
+                    tracing::trace!("ignoring android key passthrough on uinput backend");
+                }
             }
         }
 
@@ -785,7 +789,8 @@ mod tests {
         dev.file.flush().unwrap();
         let bytes = std::fs::read(path).unwrap();
         let mut events = Vec::new();
-        for chunk in bytes.chunks_exact(std::mem::size_of::<InputEvent>()) {
+        let (chunks, _) = bytes.as_chunks::<{ std::mem::size_of::<InputEvent>() }>();
+        for chunk in chunks {
             let event = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<InputEvent>()) };
             events.push(event);
         }

@@ -46,6 +46,12 @@ install -Dm644 "$REPO_ROOT/contrib/phantom.service" \
     "$stage_root/usr/share/phantom/contrib/phantom.service"
 install -Dm644 "$REPO_ROOT/contrib/99-phantom.rules" \
     "$stage_root/usr/share/phantom/contrib/99-phantom.rules"
+install -Dm644 "$REPO_ROOT/contrib/99-phantom.rules" \
+    "$stage_root/usr/lib/udev/rules.d/99-phantom.rules"
+if [[ -f "$REPO_ROOT/contrib/phantom-user.service" ]]; then
+    install -Dm644 "$REPO_ROOT/contrib/phantom-user.service" \
+        "$stage_root/usr/lib/systemd/user/phantom.service"
+fi
 
 for profile in "$REPO_ROOT"/profiles/*.json; do
     install -Dm644 "$profile" \

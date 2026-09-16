@@ -10,3 +10,4 @@ Cargo.lock
 /dist/
 /.codex
 /dev/
+phantom-bugfixes

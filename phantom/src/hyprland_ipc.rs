@@ -7,7 +7,6 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::config;
 use crate::error::{PhantomError, Result};
 
 pub(crate) fn json<T: for<'de> Deserialize<'de>>(subject: &str) -> Result<T> {
@@ -15,19 +14,16 @@ pub(crate) fn json<T: for<'de> Deserialize<'de>>(subject: &str) -> Result<T> {
     Ok(serde_json::from_str(&response)?)
 }
 
-pub(crate) fn propagate_command_env(command: &mut Command, runtime_dir: &Path) {
+pub(crate) fn propagate_command_env(command: &mut Command) {
+    let runtime_dir = crate::session_env::preferred_runtime_dir();
+    command.env("XDG_RUNTIME_DIR", &runtime_dir);
     copy_env_if_present(command, "HYPRLAND_INSTANCE_SIGNATURE");
-    copy_env_if_present(command, "XDG_RUNTIME_DIR");
     copy_env_if_present(command, "DBUS_SESSION_BUS_ADDRESS");
     copy_env_if_present(command, "WAYLAND_DISPLAY");
     copy_env_if_present(command, "XDG_SESSION_TYPE");
 
-    if env::var_os("XDG_RUNTIME_DIR").is_none() && runtime_dir.is_dir() {
-        command.env("XDG_RUNTIME_DIR", runtime_dir);
-    }
-
     if env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
-        if let Some(signature) = infer_hyprland_instance(runtime_dir) {
+        if let Some(signature) = infer_hyprland_instance(&runtime_dir) {
             command.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
         }
     }
@@ -57,9 +53,7 @@ fn request_raw(command: &str) -> Result<String> {
 }
 
 fn socket_path() -> Result<PathBuf> {
-    let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", config::invoking_uid())));
+    let runtime_dir = crate::session_env::preferred_runtime_dir();
     let signature = env::var_os("HYPRLAND_INSTANCE_SIGNATURE")
         .map(|value| value.to_string_lossy().to_string())
         .or_else(|| infer_hyprland_instance(&runtime_dir))

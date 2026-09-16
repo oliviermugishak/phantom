@@ -41,7 +41,7 @@ compute_deb_depends() {
     fi
 
     printf '%s\n' \
-        "libasound2, libc6, libegl1, libgcc-s1, libgl1, libgtk-3-0, libstdc++6, libwayland-client0, libwayland-cursor0, libx11-6, libxcursor1, libxfixes3, libxi6, libxinerama1, libxkbcommon0, libxrandr2"
+        "libasound2t64 | libasound2, libc6, libegl1, libgcc-s1, libgl1, libgtk-3-0t64 | libgtk-3-0, libstdc++6, libwayland-client0, libwayland-cursor0, libx11-6, libxcursor1, libxfixes3, libxi6, libxinerama1, libxkbcommon0, libxrandr2"
 }
 
 stage_root="$(stage_root_dir)"
@@ -61,17 +61,36 @@ Section: utils
 Priority: optional
 Architecture: $(deb_arch)
 Maintainer: Phantom Maintainers <maintainers@phantom.invalid>
-Depends: ${depends}
-Homepage: https://github.com/oliviermugishak/phantom
-Description: Waydroid keyboard-and-mouse to Android multitouch mapper
- Phantom maps Linux keyboard and mouse input into Android touch gestures for
- Waydroid. This package ships the phantom daemon, the phantom-gui editor,
- the Android touch server jar, starter profiles, and packaging-time docs.
+	Depends: ${depends}
+	Recommends: waydroid
+	Homepage: https://github.com/oliviermugishak/phantom
+	Description: Waydroid keyboard-and-mouse to Android multitouch mapper
+	 Phantom maps Linux keyboard and mouse input into Android touch gestures for
+	 Waydroid. This package ships the phantom daemon, the phantom-gui editor,
+	 the Android touch server jar, starter profiles, and packaging-time docs.
+	EOF
+
+cat >"$package_root/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || true
+    udevadm trigger || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+exit 0
 EOF
+chmod 0755 "$package_root/DEBIAN/postinst"
 
 mkdir -p "$(release_dir)"
 deb_path="$(release_dir)/$(deb_asset_name)"
 rm -f "$deb_path"
-dpkg-deb --build "$package_root" "$deb_path" >/dev/null
+if dpkg-deb --help 2>&1 | grep -q -- '--root-owner-group'; then
+    dpkg-deb --root-owner-group --build "$package_root" "$deb_path" >/dev/null
+else
+    dpkg-deb --build "$package_root" "$deb_path" >/dev/null
+fi
 
 printf '%s\n' "$deb_path"

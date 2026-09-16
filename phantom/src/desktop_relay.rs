@@ -85,14 +85,29 @@ impl DesktopKeyboardRelay {
             return Ok(());
         };
 
+        self.write_event(EV_KEY, code, if pressed { 1 } else { 0 })?;
+        self.write_event(EV_SYN, SYN_REPORT, 0)?;
         if pressed {
             self.pressed_keys.insert(key);
         } else {
             self.pressed_keys.remove(&key);
         }
+        Ok(())
+    }
 
-        self.write_event(EV_KEY, code, if pressed { 1 } else { 0 })?;
-        self.write_event(EV_SYN, SYN_REPORT, 0)?;
+    pub fn resync_pressed(&mut self, desired: &HashSet<Key>) -> Result<()> {
+        let current: Vec<Key> = self.pressed_keys.iter().copied().collect();
+        for key in current {
+            if !desired.contains(&key) {
+                self.relay_key_event(key, false)?;
+            }
+        }
+        for key in desired {
+            if key.is_mouse() || self.pressed_keys.contains(key) {
+                continue;
+            }
+            self.relay_key_event(*key, true)?;
+        }
         Ok(())
     }
 

@@ -136,11 +136,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          python3 - <<'PY' >"$notes"
+          import pathlib, re, os
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          version = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          match = re.search(rf"^## {re.escape(version)}\b.*?(?=^## |\Z)", text, re.M | re.S)
+          print(match.group(0).strip() if match else f"Phantom {os.environ['GITHUB_REF_NAME']}")
+          PY
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/release/* --clobber
           else
             gh release create "$GITHUB_REF_NAME" dist/release/* \
               --verify-tag \
-              --generate-notes \
+              --notes-file "$notes" \
               --title "Phantom $GITHUB_REF_NAME"
           fi

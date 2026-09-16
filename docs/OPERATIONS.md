@@ -37,7 +37,19 @@ For raw low-level device tracing only when needed:
 sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
 ```
 
-If `sudo phantom` is not found after install, rerun `./install.sh`. The installer now places a sudo-visible `phantom` launcher in `/usr/local/bin` when possible.
+Recommended start from a graphical session:
+
+```bash
+sudo -E phantom --daemon
+```
+
+Then, as your desktop user:
+
+```bash
+phantom-gui
+```
+
+If `sudo phantom` is not found after install, rerun `./install.sh`. The installer now places a sudo-visible `phantom` launcher in `/usr/local/bin` when possible. Do not enable the system systemd unit unless you accept a missing overlay/session. After udev + group `input`, a user unit at `/usr/lib/systemd/user/phantom.service` is optional.
 
 If android auto-launch fails because `android.server_jar` points to an old
 source path, Phantom now falls back to the installed jar in
@@ -172,6 +184,7 @@ Runtime note:
 
 - entering capture puts Phantom into owned menu-touch mode by default
 - `F1` switches between gameplay aim and owned menu-touch
+- leaving capture now replays currently held keys to the desktop
 - it no longer destroys toggle-look state
 - `while_held` mouse buttons are resynced when mouse routing is turned back on
 - entering capture also re-establishes currently held keyboard-driven hold controls such as `tap`, `repeat_tap`, `joystick`, and hold-mode `layer_shift`

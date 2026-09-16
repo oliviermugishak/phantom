@@ -67,13 +67,13 @@ It does not yet provide:
 
 - a dedicated analog steering-wheel primitive
 
-## 5. Hotplug Rescan Is Not Implemented
+## 5. Hotplug Rescan Is Best-Effort
 
-Current limitation:
+Phantom now rescans `/dev/input` every couple of seconds and watches newly
+attached event devices.
 
-- Phantom does not dynamically rescan newly attached keyboards or mice after startup
-
-If devices change, restart the daemon.
+If a keyboard disappears mid-capture and grab cannot be re-established, restart
+the daemon.
 
 ## 6. Multi-Monitor And Rotation Handling Are Not Supported
 
@@ -97,7 +97,10 @@ The GUI loads:
 It does not live-read:
 
 - `./profiles/`
+- `/usr/share/phantom/profiles`
 
 That is intentional because the installed user library is the operational source of truth.
 
-Use `./install.sh` to seed new shipped profiles into the user directory.
+The GUI now copies missing shipped profiles into the user directory on startup,
+and Settings can repeat that seed. `./install.sh` still does the same copy for
+source installs.

@@ -133,6 +133,7 @@ That command:
 - creates `~/.config/phantom/config.toml` if missing
 - refreshes `android.server_jar` in the existing config when it still points at a source-tree `contrib/android-server/build/phantom-server.jar`
 - copies shipped profiles into `~/.config/phantom/profiles/` if those files do not already exist
+- installs a user desktop entry for `phantom-gui`
 
 Optional overwrite prompt:
 

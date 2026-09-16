@@ -80,7 +80,14 @@ That is deliberate:
 - repository profiles are shipped starter layouts
 - user profiles are the working library
 
-The supported sync path is `./install.sh`, which seeds missing profiles into the user library.
+The GUI now copies missing shipped profiles into that user library on startup,
+and Settings can repeat the seed. `./install.sh` still does the same copy for
+source installs. Packaged installs resolve shipped profiles from
+`/usr/share/phantom/profiles` or `../share/phantom/profiles` next to the binary.
+
+Start Daemon uses `sudo -E` so `SUDO_UID` stays available. AppImage mounts
+cannot launch the daemon from the FUSE path; use a packaged or `./install.sh`
+daemon instead.
 
 ## Runtime Coupling
 

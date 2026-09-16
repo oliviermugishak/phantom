@@ -1,3 +1,5 @@
+#![allow(float_literal_f32_fallback)]
+
 mod cursor_overlay;
 mod overlay;
 
@@ -352,12 +354,32 @@ impl PhantomGui {
             canvas_zoom: 1.0,
             canvas_pan: Vec2::ZERO,
         };
+        let seeded = config::seed_missing_user_profiles();
+        if seeded > 0 {
+            gui.set_banner(
+                format!(
+                    "Seeded {} shipped profile(s) into {}",
+                    seeded,
+                    config::profiles_dir().display()
+                ),
+                false,
+            );
+        }
         if let Some(path) = prefs.last_profile_path.filter(|path| path.exists()) {
             gui.load_profile(&path);
-            gui.set_banner(format!("Restored {}", path.display()), false);
+            if seeded == 0 {
+                gui.set_banner(format!("Restored {}", path.display()), false);
+            }
         } else if let Some(path) = config::default_profile_path().filter(|path| path.exists()) {
             gui.load_profile(&path);
-            gui.set_banner(format!("Loaded default {}", path.display()), false);
+            if seeded == 0 {
+                gui.set_banner(format!("Loaded default {}", path.display()), false);
+            }
+        } else if let Some(path) = available_profile_paths().into_iter().next() {
+            gui.load_profile(&path);
+            if seeded == 0 {
+                gui.set_banner(format!("Loaded {}", path.display()), false);
+            }
         }
         gui
     }
@@ -864,10 +886,10 @@ impl PhantomGui {
                     .small()
                     .color(Color32::from_gray(170)),
             );
-            let launch_note = if command_exists("pkexec") && !running_as_root() {
-                "Studio will prefer pkexec for daemon launch on systems that still need elevated input access."
+            let launch_note = if command_exists("sudo") && !config::running_as_root() {
+                "Studio prefers `sudo -E phantom --daemon` so the desktop session stays attached. Authenticate if prompted."
             } else {
-                "If daemon launch fails here, start `phantom --daemon` manually in a terminal and return to the studio."
+                "If daemon launch fails here, start `sudo -E phantom --daemon` manually in a terminal and return to the studio."
             };
             ui.label(
                 RichText::new(launch_note)
@@ -942,10 +964,28 @@ impl PhantomGui {
             ui.label(RichText::new("Profiles Directory").strong());
             let profiles = available_profile_paths();
             ui.label(format!("Discovered profiles: {}", profiles.len()));
+            if ui.button("Seed shipped profiles").clicked() {
+                let seeded = config::seed_missing_user_profiles();
+                if seeded > 0 {
+                    self.set_banner(
+                        format!(
+                            "Seeded {} shipped profile(s) into {}",
+                            seeded,
+                            config::profiles_dir().display()
+                        ),
+                        false,
+                    );
+                } else {
+                    self.set_banner(
+                        "No new shipped profiles to copy. The user library already has those filenames or no shipped library was found.",
+                        false,
+                    );
+                }
+            }
             if profiles.is_empty() {
                 ui.label(
                     RichText::new(
-                        "No profiles found in ~/.config/phantom/profiles yet. Run install.sh or save a profile into that directory.",
+                        "No profiles found in ~/.config/phantom/profiles yet. Seed shipped profiles above, or save a profile into that directory.",
                     )
                     .small()
                     .color(Color32::from_gray(170)),
@@ -1190,9 +1230,18 @@ impl PhantomGui {
             }
         };
 
-        let use_pkexec = !running_as_root() && command_exists("pkexec");
-        let mut command = if use_pkexec {
-            let mut command = Command::new("pkexec");
+        if is_fuse_path(&binary) {
+            self.set_banner(
+                "This GUI is running from an AppImage mount. Install Phantom or run `sudo -E phantom --daemon` from a packaged/binary install so the daemon can keep input grabs.",
+                true,
+            );
+            return;
+        }
+
+        let use_sudo = !config::running_as_root() && command_exists("sudo");
+        let mut command = if use_sudo {
+            let mut command = Command::new("sudo");
+            command.arg("-E");
             command.arg(&binary);
             command
         } else {
@@ -1209,10 +1258,10 @@ impl PhantomGui {
                 self.runtime.connected = false;
                 self.runtime.last_error = None;
                 self.runtime.last_checked = None;
-                if use_pkexec {
+                if use_sudo {
                     self.set_banner(
                         format!(
-                            "Daemon launch requested via pkexec. Authenticate if prompted. Log: {}",
+                            "Daemon launch requested via sudo -E so the desktop session stays attached. Authenticate if prompted. Log: {}",
                             log_path.display()
                         ),
                         false,
@@ -1301,7 +1350,6 @@ impl PhantomGui {
                 self.set_banner("Live profile pushed to daemon", false);
             }
             Ok(response) => {
-                self.runtime.connected = false;
                 self.runtime.last_error = response.error.clone();
                 self.set_banner(
                     response
@@ -1336,7 +1384,6 @@ impl PhantomGui {
                 let error = response
                     .error
                     .unwrap_or_else(|| "daemon request failed".into());
-                self.runtime.connected = false;
                 self.runtime.last_error = Some(error.clone());
                 self.set_banner(error, true);
             }
@@ -2522,13 +2569,26 @@ impl PhantomGui {
                         }
                         runtime_chip(
                             ui,
-                            matches!(self.runtime.mouse_mode.as_deref(), Some("aim")),
+                            self.runtime.connected
+                                && matches!(self.runtime.mouse_mode.as_deref(), Some("aim")),
                             "Aim",
                         );
-                        runtime_chip(ui, self.runtime.mouse_touch_active, "MenuTouch");
-                        runtime_chip(ui, self.runtime.keyboard_grabbed, "Keyboard");
-                        runtime_chip(ui, self.runtime.capture_active, "Capture");
-                        runtime_chip(ui, !self.runtime.paused, "Active");
+                        runtime_chip(
+                            ui,
+                            self.runtime.connected && self.runtime.mouse_touch_active,
+                            "MenuTouch",
+                        );
+                        runtime_chip(
+                            ui,
+                            self.runtime.connected && self.runtime.keyboard_grabbed,
+                            "Keyboard",
+                        );
+                        runtime_chip(
+                            ui,
+                            self.runtime.connected && self.runtime.capture_active,
+                            "Capture",
+                        );
+                        runtime_chip(ui, self.runtime.connected && !self.runtime.paused, "Active");
                         runtime_chip(ui, self.runtime.connected, "Daemon");
                     });
                 });
@@ -4055,8 +4115,9 @@ fn hotkey_label(value: Option<Key>) -> String {
     }
 }
 
-fn running_as_root() -> bool {
-    std::env::var("USER").ok().as_deref() == Some("root")
+fn is_fuse_path(path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    raw.contains("/tmp/.mount_") || raw.contains("/appimagetool") || raw.contains("/squashfs-root/")
 }
 
 fn command_exists(name: &str) -> bool {

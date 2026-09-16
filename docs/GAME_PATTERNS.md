@@ -358,3 +358,26 @@ Use a different control type instead of forcing one primitive to do everything:
 - use `toggle_tap` only when the game really wants a latched state
 
 This keeps profiles clean and behavior predictable.
+
+## 14. Tactics You Can Build Today
+
+You do not need a new node type for most extra gameplay tricks.
+
+| Want | Build it with |
+|---|---|
+| Double-tap dodge / vault | `macro` with two `down`/`up` pairs and a short delay |
+| Turbo fire | `repeat_tap` |
+| ADS look | `aim` `while_held` on `MouseRight` |
+| Sprint lock | `drag` from the stick center to the lock point |
+| Held sprint button | `tap` on the sprint button plus the movement `joystick` |
+| Vehicle / parachute remaps | `layer_shift` with `suspend_base` |
+| Scroll stance / zoom | `wheel` |
+| One-shot skill combo | `macro` `one_shot` |
+
+Still missing as first-class primitives, and therefore not profile-authoring problems:
+
+- analog steering wheel
+- flick-stick
+- accelerometer tilt
+
+See [ROADMAP.md](ROADMAP.md) for what should become a new node later versus what should stay a composition.

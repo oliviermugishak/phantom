@@ -1,5 +1,6 @@
 # Phantom configuration
-# `./install.sh` creates ~/.config/phantom/config.toml automatically on first install.
+# `./install.sh`, the GUI, and the daemon create ~/.config/phantom/config.toml
+# from this example if that file does not already exist.
 # The GUI discovers profiles from ~/.config/phantom/profiles/.
 
 # Log level: trace, debug, info, warn, error
@@ -44,6 +45,15 @@ container_log_path = "/data/local/tmp/phantom-server.log"
 
 [waydroid]
 work_dir = "/var/lib/waydroid"
+
+# Owned menu-touch pointer feel. Missing keys keep these defaults.
+[mouse_touch]
+accel_min_gain = 1.0
+accel_max_gain = 2.6
+accel_low_speed = 0.15
+accel_high_speed = 3.0
+accel_speed_smoothing = 0.35
+scroll_step = 0.06
 
 # Optional daemon-level hotkeys.
 # Use a known key name like "F1" or "MouseRight".

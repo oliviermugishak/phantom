@@ -224,8 +224,8 @@ Phantom has these important runtime states:
 
 - daemon running
 - capture active
-- mouse routed
-- keyboard routed
+- mouse routed (`aim` vs `menu_touch`)
+- keyboard grabbed
 - engine paused
 - active layers
 
@@ -234,8 +234,16 @@ These states are separated deliberately.
 Why:
 
 - capture determines whether gameplay input should flow at all
-- mouse routing determines whether mouse-originated events should reach the game
+- mouse routing determines whether the owned mouse is in gameplay aim or menu-touch
 - pause determines whether the engine should emit touch commands
+
+Kernel `EVIOCGRAB` is a separate ownership layer from those runtime modes:
+
+- the keyboard stays grabbed for the daemon lifetime so hotkeys stay exclusive
+- while capture is off, grabbed keyboard events are replayed to the desktop through the uinput `Phantom Desktop Keyboard`
+- the mouse is grabbed only while capture is active
+- `F1` / `grab-mouse` / `release-mouse` switch `aim` vs `menu_touch`; they do not ungrab the mouse
+- combo keyboard+mouse devices stay grabbed if either class still needs exclusivity
 
 This separation is what makes the system usable instead of brittle.
 

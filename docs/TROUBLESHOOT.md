@@ -54,6 +54,8 @@ Current behavior:
 
 - capture transitions now flush Phantom's desktop keyboard relay before ownership changes
 - entering capture rebuilds currently held keyboard-driven hold controls from the real pressed-key state
+- leaving capture replays currently held keyboard keys into the desktop relay
+- combo keyboard+mouse devices keep their kernel grab if the keyboard still needs exclusivity
 - edge-trigger controls such as `toggle_tap`, `drag`, and `macro` are not replayed automatically on capture entry
 
 If it still feels wrong:
@@ -167,6 +169,9 @@ Important:
 
 - this cursor overlay is separate from the `F10` debug preview
 - it exists only to visualize Phantom's owned menu-touch cursor while capture is active
+- the cursor overlay is currently Wayland layer-shell only; X11 sessions can still inject menu-touch without a visible owned cursor
+- GNOME does not provide wlr-layer-shell, so the owned cursor will not appear there even though menu-touch still injects
+- start the daemon with `sudo -E` from the graphical session or the overlay child cannot see Wayland/Xcursor
 
 ## Aim Does Not Work
 
@@ -243,7 +248,7 @@ Check:
 
 Expected:
 
-- `owned-hyprland-seeded+x11-seeded+virtual` means Phantom seeded the owned cursor from compositor-native Hyprland data
+- `owned-hyprland-seeded+virtual` means Phantom seeded the owned cursor from compositor-native Hyprland data
 - `owned-x11-seeded+virtual` means Phantom seeded the owned cursor from X11/XWayland helper data
 - `owned-virtual` means Phantom had no exact host seed and reused its internal cursor
 

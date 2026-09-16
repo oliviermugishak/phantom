@@ -40,6 +40,12 @@ The package staging script installs:
 - `usr/share/phantom/contrib/*`
 - `usr/share/doc/phantom/*`
 - `usr/share/licenses/phantom/LICENSE`
+- `usr/lib/udev/rules.d/99-phantom.rules`
+- `usr/lib/systemd/system/phantom.service`
+
+The GUI also seeds missing shipped profiles into `~/.config/phantom/profiles/`
+on first launch, so packaged installs no longer depend on `./install.sh` just
+to populate the Profiles menu.
 
 Important runtime detail:
 

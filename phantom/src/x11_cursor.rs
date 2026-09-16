@@ -1,11 +1,8 @@
 use std::env;
 use std::ffi::c_char;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use crate::config;
 use crate::error::{PhantomError, Result};
 use crate::mouse_touch::{CursorSeed, HostFrame};
 
@@ -43,6 +40,16 @@ unsafe extern "C" {
         border_width_return: *mut libc::c_uint,
         depth_return: *mut libc::c_uint,
     ) -> libc::c_int;
+    fn XTranslateCoordinates(
+        display: *mut Display,
+        src_w: Window,
+        dest_w: Window,
+        src_x: libc::c_int,
+        src_y: libc::c_int,
+        dest_x_return: *mut libc::c_int,
+        dest_y_return: *mut libc::c_int,
+        child_return: *mut Window,
+    ) -> Bool;
 }
 
 #[derive(Debug)]
@@ -54,10 +61,6 @@ pub struct X11CursorClient {
 
 impl X11CursorClient {
     pub fn spawn() -> Result<Self> {
-        let current_uid = unsafe { libc::getuid() };
-        let invoking_uid = config::invoking_uid();
-        let invoking_gid = config::invoking_gid();
-
         let binary = env::current_exe().map_err(|e| {
             PhantomError::Internal(format!(
                 "cannot locate phantom binary for x11 helper: {}",
@@ -72,25 +75,7 @@ impl X11CursorClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        let runtime_dir = PathBuf::from(format!("/run/user/{}", invoking_uid));
-        if current_uid == 0 && invoking_uid != current_uid {
-            command.uid(invoking_uid).gid(invoking_gid);
-            if let Some(home) = config::invoking_home_dir() {
-                command.env("HOME", &home);
-                if env::var_os("XAUTHORITY").is_none() {
-                    let xauthority = home.join(".Xauthority");
-                    if xauthority.is_file() {
-                        command.env("XAUTHORITY", xauthority);
-                    }
-                }
-            }
-            if let Ok(user) = env::var("SUDO_USER") {
-                command.env("USER", &user);
-                command.env("LOGNAME", user);
-            }
-            command.env("XDG_RUNTIME_DIR", &runtime_dir);
-        }
-        propagate_display_env(&mut command, &runtime_dir);
+        crate::session_env::apply_session_command_env(&mut command);
 
         let mut child = command.spawn().map_err(|e| {
             PhantomError::Internal(format!(
@@ -115,26 +100,34 @@ impl X11CursorClient {
         })
     }
 
-    pub(crate) fn query_seed(&mut self) -> Option<CursorSeed> {
-        if self.stdin.write_all(b"cursor\n").is_err() || self.stdin.flush().is_err() {
-            return None;
-        }
+    pub(crate) fn query_seed(&mut self) -> Result<Option<CursorSeed>> {
+        self.stdin.write_all(b"cursor\n").map_err(|err| {
+            PhantomError::Internal(format!("x11 cursor helper write failed: {}", err))
+        })?;
+        self.stdin.flush().map_err(|err| {
+            PhantomError::Internal(format!("x11 cursor helper flush failed: {}", err))
+        })?;
 
         let mut line = String::new();
-        if self.stdout.read_line(&mut line).ok()? == 0 {
-            return None;
+        let read = self.stdout.read_line(&mut line).map_err(|err| {
+            PhantomError::Internal(format!("x11 cursor helper read failed: {}", err))
+        })?;
+        if read == 0 {
+            return Err(PhantomError::Internal(
+                "x11 cursor helper closed stdout".into(),
+            ));
         }
 
         let mut parts = line.split_whitespace();
-        match parts.next()? {
-            "pos" => {
-                let x = parts.next()?.parse::<f64>().ok()?;
-                let y = parts.next()?.parse::<f64>().ok()?;
-                let left = parts.next()?.parse::<f64>().ok()?;
-                let top = parts.next()?.parse::<f64>().ok()?;
-                let width = parts.next()?.parse::<f64>().ok()?;
-                let height = parts.next()?.parse::<f64>().ok()?;
-                Some(CursorSeed {
+        match parts.next() {
+            Some("pos") => {
+                let x = parse_seed_part(parts.next(), "x")?;
+                let y = parse_seed_part(parts.next(), "y")?;
+                let left = parse_seed_part(parts.next(), "left")?;
+                let top = parse_seed_part(parts.next(), "top")?;
+                let width = parse_seed_part(parts.next(), "width")?;
+                let height = parse_seed_part(parts.next(), "height")?;
+                Ok(Some(CursorSeed {
                     x,
                     y,
                     frame: HostFrame {
@@ -143,9 +136,13 @@ impl X11CursorClient {
                         width,
                         height,
                     },
-                })
+                }))
             }
-            _ => None,
+            Some("none") => Ok(None),
+            other => {
+                tracing::warn!(reply = ?other, "x11 cursor helper returned an unexpected reply");
+                Ok(None)
+            }
         }
     }
 }
@@ -298,71 +295,50 @@ unsafe fn window_frame(display: *mut Display, window: Window) -> Option<HostFram
         return None;
     }
 
+    let mut dest_x = 0;
+    let mut dest_y = 0;
+    let mut child = 0;
+    if XTranslateCoordinates(
+        display,
+        window,
+        root_return,
+        0,
+        0,
+        &mut dest_x,
+        &mut dest_y,
+        &mut child,
+    ) == 0
+    {
+        dest_x = x;
+        dest_y = y;
+    }
+
     Some(HostFrame {
-        left: x as f64,
-        top: y as f64,
+        left: dest_x as f64,
+        top: dest_y as f64,
         width: width as f64,
         height: height as f64,
     })
 }
 
-fn propagate_display_env(command: &mut Command, runtime_dir: &Path) {
-    copy_env_if_present(command, "DISPLAY");
-    copy_env_if_present(command, "WAYLAND_DISPLAY");
-    copy_env_if_present(command, "WAYLAND_SOCKET");
-    copy_env_if_present(command, "XDG_SESSION_TYPE");
-    copy_env_if_present(command, "DBUS_SESSION_BUS_ADDRESS");
-
-    let has_x11 = env::var_os("DISPLAY").is_some();
-    if !has_x11 {
-        if PathBuf::from("/tmp/.X11-unix/X1").exists() {
-            command.env("DISPLAY", ":1");
-        } else if PathBuf::from("/tmp/.X11-unix/X0").exists() {
-            command.env("DISPLAY", ":0");
-        }
-    }
-
-    if env::var_os("XAUTHORITY").is_none() {
-        if let Some(home) = config::invoking_home_dir() {
-            let xauthority = home.join(".Xauthority");
-            if xauthority.is_file() {
-                command.env("XAUTHORITY", xauthority);
-            }
-        }
-        let runtime_xauthority = runtime_dir.join("Xauthority");
-        if runtime_xauthority.is_file() {
-            command.env("XAUTHORITY", runtime_xauthority);
-        }
-    }
-}
-
-fn copy_env_if_present(command: &mut Command, key: &str) {
-    if let Some(value) = env::var_os(key) {
-        command.env(key, value);
-    }
+fn parse_seed_part(value: Option<&str>, field: &str) -> Result<f64> {
+    value
+        .ok_or_else(|| PhantomError::Internal(format!("x11 seed missing {}", field)))?
+        .parse::<f64>()
+        .map_err(|_| PhantomError::Internal(format!("x11 seed has invalid {}", field)))
 }
 
 fn ensure_x11_env() {
+    let runtime_dir = crate::session_env::preferred_runtime_dir();
     if env::var_os("DISPLAY").is_none() {
-        if PathBuf::from("/tmp/.X11-unix/X1").exists() {
-            unsafe { env::set_var("DISPLAY", ":1") };
-        } else if PathBuf::from("/tmp/.X11-unix/X0").exists() {
-            unsafe { env::set_var("DISPLAY", ":0") };
+        if let Some(display) = crate::session_env::infer_display() {
+            unsafe { env::set_var("DISPLAY", display) };
         }
     }
 
     if env::var_os("XAUTHORITY").is_none() {
-        if let Some(home) = config::invoking_home_dir() {
-            let xauthority = home.join(".Xauthority");
-            if xauthority.is_file() {
-                unsafe { env::set_var("XAUTHORITY", xauthority) };
-                return;
-            }
-        }
-        let runtime_xauthority =
-            PathBuf::from(format!("/run/user/{}/Xauthority", config::invoking_uid()));
-        if runtime_xauthority.is_file() {
-            unsafe { env::set_var("XAUTHORITY", runtime_xauthority) };
+        if let Some(xauthority) = crate::session_env::infer_xauthority(&runtime_dir) {
+            unsafe { env::set_var("XAUTHORITY", xauthority) };
         }
     }
 }

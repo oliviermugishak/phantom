@@ -26,6 +26,12 @@ Expected:
 - the Android server jar rebuilds cleanly
 - the Android jar contains `classes.dex`
 
+Packaging check after a local tarball/deb build:
+
+```bash
+bash packaging/smoke-test.sh
+```
+
 ## 2. Profile Preflight
 
 Before live gameplay tests, audit the profile:

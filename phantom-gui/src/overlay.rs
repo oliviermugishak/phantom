@@ -609,7 +609,8 @@ fn draw_preview_spec(canvas: &mut [u8], width: u32, height: u32, spec: &PreviewS
 }
 
 fn clear_canvas(canvas: &mut [u8]) {
-    for chunk in canvas.chunks_exact_mut(4) {
+    let (chunks, _) = canvas.as_chunks_mut::<4>();
+    for chunk in chunks {
         chunk.copy_from_slice(&[0, 0, 0, 0]);
     }
 }

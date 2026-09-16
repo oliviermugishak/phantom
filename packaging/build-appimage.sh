@@ -50,6 +50,7 @@ linuxdeploy_args=(
     --desktop-file "$desktop_file"
     --icon-file "$icon_file"
     --executable "$appdir/usr/bin/phantom-gui"
+    --executable "$appdir/usr/bin/phantom"
 )
 
 if command -v linuxdeploy-plugin-gtk.sh >/dev/null 2>&1 || command -v linuxdeploy-plugin-gtk >/dev/null 2>&1; then
@@ -58,6 +59,7 @@ if command -v linuxdeploy-plugin-gtk.sh >/dev/null 2>&1 || command -v linuxdeplo
 fi
 
 "$linuxdeploy_bin" "${linuxdeploy_args[@]}"
+install -Dm755 "$REPO_ROOT/packaging/linux/AppRun" "$appdir/AppRun"
 rm -f "$output_path"
 "$appimagetool_bin" "$appdir" "$output_path"
 
