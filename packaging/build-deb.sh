@@ -61,28 +61,17 @@ Section: utils
 Priority: optional
 Architecture: $(deb_arch)
 Maintainer: Phantom Maintainers <maintainers@phantom.invalid>
-	Depends: ${depends}
-	Recommends: waydroid
-	Homepage: https://github.com/oliviermugishak/phantom
-	Description: Waydroid keyboard-and-mouse to Android multitouch mapper
-	 Phantom maps Linux keyboard and mouse input into Android touch gestures for
-	 Waydroid. This package ships the phantom daemon, the phantom-gui editor,
-	 the Android touch server jar, starter profiles, and packaging-time docs.
-	EOF
-
-cat >"$package_root/DEBIAN/postinst" <<'EOF'
-#!/bin/sh
-set -e
-if command -v udevadm >/dev/null 2>&1; then
-    udevadm control --reload-rules || true
-    udevadm trigger || true
-fi
-if command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database -q /usr/share/applications || true
-fi
-exit 0
+Depends: ${depends}
+Recommends: waydroid
+Homepage: https://github.com/oliviermugishak/phantom
+Description: Waydroid keyboard-and-mouse to Android multitouch mapper
+ Phantom maps Linux keyboard and mouse input into Android touch gestures for
+ Waydroid. This package ships the phantom daemon, the phantom-gui editor,
+ the Android touch server jar, starter profiles, and packaging-time docs.
 EOF
-chmod 0755 "$package_root/DEBIAN/postinst"
+
+install -m755 "$SCRIPT_DIR/debian/postinst" "$package_root/DEBIAN/postinst"
+install -m755 "$SCRIPT_DIR/debian/postrm" "$package_root/DEBIAN/postrm"
 
 mkdir -p "$(release_dir)"
 deb_path="$(release_dir)/$(deb_asset_name)"

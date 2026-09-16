@@ -117,7 +117,8 @@ The Android server:
 - accepts one client connection
 - maintains touch pointer state
 - reconstructs MotionEvents
-- injects them through `InputManager.injectInputEvent()`
+- reconstructs unused-key KeyEvents (`0x04` / `0x05`)
+- injects both through `InputManager.injectInputEvent()`
 
 It is deliberately small. It is not trying to re-implement profile logic inside Android.
 

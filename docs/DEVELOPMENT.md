@@ -17,7 +17,9 @@ Top-level structure:
 - `docs/`
   Product, runtime, profile, protocol, and maintainer docs
 - `contrib/android-server/`
-  Android-side `app_process` touch server
+  Android-side `app_process` touch and unused-key server
+- `packaging/`
+  Stage tree, tarball/deb/Arch/AppImage builders, smoke test, unpublished AUR recipe
 - `config.example.toml`
   Example runtime configuration
 
@@ -26,7 +28,9 @@ Important Rust files:
 - `phantom/src/main.rs`
   CLI entrypoint, daemon startup, runtime shortcut handling, event loop
 - `phantom/src/input.rs`
-  Device discovery, `evdev` capture, grab state, and event translation
+  Device discovery, `evdev` capture, grab state, hotplug rescan, and event translation
+- `phantom/src/session_env.rs`
+  Invoking-user runtime dir and Wayland/X11/Xcursor env for sudo-launched children
 - `phantom/src/engine.rs`
   Profile-driven state machine that turns input into abstract touch commands
 - `phantom/src/profile.rs`
@@ -46,13 +50,15 @@ Important GUI file:
 
 - `phantom-gui/src/main.rs`
   The editor currently lives in one main file. It owns canvas editing, bindings, runtime controls, and daemon polling.
+- `phantom-gui/src/cursor_overlay.rs`
+  Owned menu-touch cursor (Xcursor theme, idle hide, Wayland layer-shell)
 
 Important Android server files:
 
 - `contrib/android-server/build.sh`
   Java compile + dex build pipeline
 - `contrib/android-server/src/com/phantom/server/PhantomServer.java`
-  Android-side TCP server and input injection logic
+  Android-side TCP server, MotionEvent injection, and unused-key KeyEvent injection
 
 ## Full Rebuild From A Clean Machine
 
@@ -130,7 +136,15 @@ The built jar must contain `classes.dex`. A plain `.class` jar is not valid for 
 ### 5. Run The Test Suite
 
 ```bash
+cargo fmt --all
 cargo test --quiet
+cargo clippy --quiet --all-targets --all-features -- -D warnings
+```
+
+After changing packaging scripts:
+
+```bash
+bash packaging/smoke-test.sh
 ```
 
 ### 6. Install Runtime Config

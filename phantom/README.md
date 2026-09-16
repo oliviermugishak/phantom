@@ -21,7 +21,9 @@ Main surfaces:
 - `src/main.rs`
   CLI parsing, logging setup, daemon bootstrap, event loop, runtime hotkeys.
 - `src/input.rs`
-  Linux `evdev` discovery, classification, grab state, and input translation.
+  Linux `evdev` discovery, classification, grab state, hotplug rescan, and input translation.
+- `src/session_env.rs`
+  Invoking-user runtime dir and display env for sudo-launched overlay children.
 - `src/engine.rs`
   Pure profile state machine that turns `InputEvent` into `TouchCommand`.
 - `src/profile.rs`

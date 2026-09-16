@@ -147,6 +147,7 @@ Effect:
 Effect:
 
 - active touches are released
+- unused-key Android passthrough keys are released
 - engine stops producing new touch output
 
 ### `resume`

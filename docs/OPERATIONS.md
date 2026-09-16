@@ -1,55 +1,42 @@
 # Operations
 
-This is the day-to-day runtime guide for Phantom.
+Day-to-day use after install. First-time setup is in [INSTALL.md](INSTALL.md).
+When something is broken, start with [TROUBLESHOOT.md](TROUBLESHOOT.md).
 
-If the project is not installed yet, start with [INSTALL.md](INSTALL.md).
+## What are the four switches I actually control?
 
-## Runtime Model
+1. Is the daemon running?
+2. Is capture on?
+3. Is the owned mouse in aim or menu-touch?
+4. Is the engine paused?
 
-Phantom runtime behavior is easiest to reason about as four independent controls:
+They are independent so you can reload a profile without restarting, leave
+capture to use the desktop, or freeze touches without dropping grabs.
 
-1. daemon running
-2. capture enabled
-3. mouse routing enabled
-4. engine paused
+## How do I start a normal session?
 
-These are separate deliberately.
-
-Why:
-
-- the daemon can stay alive while profiles change
-- capture controls whether gameplay input should flow into the engine
-- mouse routing controls whether mouse-originated gameplay events should reach the game
-- pause freezes touch output without requiring a daemon restart
-
-## Recommended Startup
+From the graphical session:
 
 ```bash
 waydroid session start
 waydroid show-full-ui
 sudo waydroid status
-sudo phantom --trace --daemon
-```
-
-For raw low-level device tracing only when needed:
-
-```bash
-sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
-```
-
-Recommended start from a graphical session:
-
-```bash
 sudo -E phantom --daemon
 ```
 
-Then, as your desktop user:
+Then, as your desktop user, never with sudo:
 
 ```bash
 phantom-gui
 ```
 
-If `sudo phantom` is not found after install, rerun `./install.sh`. The installer now places a sudo-visible `phantom` launcher in `/usr/local/bin` when possible. Do not enable the system systemd unit unless you accept a missing overlay/session. After udev + group `input`, a user unit at `/usr/lib/systemd/user/phantom.service` is optional.
+Add `--trace` to the daemon when you need lifecycle logs. Use
+`PHANTOM_TRACE_DETAIL=1` only for raw evdev forensics.
+
+If `sudo phantom` is not found, rerun `./install.sh` so the
+`/usr/local/bin` wrapper exists. Do not `systemctl enable` the system unit.
+After udev + group `input`, `/usr/lib/systemd/user/phantom.service` is the
+optional systemd path.
 
 If android auto-launch fails because `android.server_jar` points to an old
 source path, Phantom now falls back to the installed jar in
@@ -116,8 +103,8 @@ Runtime actions available in the GUI:
 - enter capture
 - exit capture
 - toggle capture
-- grab mouse
-- release mouse
+- switch to aim
+- switch to menu-touch
 
 ## Profile Library Behavior
 
@@ -127,16 +114,11 @@ The GUI discovers profiles from:
 
 It does not read the repository `profiles/` directory directly.
 
-The supported sync flow is:
-
-1. keep shipped starter profiles in the repository `profiles/` directory
-2. seed missing ones into `~/.config/phantom/profiles/` through `./install.sh`
-3. let the GUI load and save against the user profile library
-
-Practical rule:
-
-- if a new shipped profile does not appear in the GUI, rerun `./install.sh`
-- if you want to refresh shipped examples or the generated config in place, use `./install.sh -o`
+Shipped starters live in the repo or in `/usr/share/phantom/profiles/`. The
+GUI copies missing files into the user library on startup, and Settings can
+repeat that seed. `./install.sh` does the same copy for source installs.
+`./install.sh -o` is the only path that can overwrite shipped filenames you
+already edited.
 
 ## Runtime Hotkeys
 
@@ -210,8 +192,10 @@ Backend behavior:
 - if no exact host seed is available, Phantom reuses its existing internal cursor position
 - after the initial seed, menu-touch uses the Phantom-owned cursor directly and no longer depends on desktop window activation semantics
 - while menu-touch is active, Phantom shows a dedicated cursor overlay instead of moving the desktop cursor
-- on Wayland sessions, that cursor overlay is provided through a layer-shell surface with input passthrough
-- on touchpads, Phantom now synthesizes tap-to-click and double-tap-hold drag locally because those gestures are no longer provided by the desktop once Phantom owns the mouse
+- on Wayland sessions that expose wlr-layer-shell, that cursor is drawn from the desktop Xcursor theme and hides after five seconds idle
+- GNOME and pure X11 still inject menu-touch but do not show that overlay
+- wheel performs a short vertical swipe; unused keys type into Android
+- on touchpads, Phantom synthesizes tap-to-click and double-tap-hold drag locally because those gestures are no longer provided by the desktop once Phantom owns the mouse
 
 ### `always_on`
 

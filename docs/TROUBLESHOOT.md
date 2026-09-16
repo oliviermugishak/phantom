@@ -1,354 +1,165 @@
 # Troubleshoot
 
-This document covers common operational problems and their direct fixes.
+These are operational failures, not missing product features. For "Phantom will
+never do X", see [EDGE_CASES.md](EDGE_CASES.md). For how a healthy session is
+supposed to look, see [OPERATIONS.md](OPERATIONS.md).
 
-For product boundaries and missing features, see [EDGE_CASES.md](EDGE_CASES.md).
+## Why is the GUI missing a profile that exists in the repo?
 
-## GUI Does Not Show A New Shipped Profile
+The GUI reads `~/.config/phantom/profiles/`, not `./profiles/`.
 
-Symptom:
+On first launch it copies missing shipped files into that directory. If it
+still looks empty, use Settings → "Seed shipped profiles", or rerun
+`./install.sh`. Neither path overwrites a profile you already edited.
 
-- a profile exists in the repository `profiles/` directory
-- it does not appear in `phantom-gui`
+Restart the GUI after seeding. It reloads the user library at startup.
 
-Cause:
+## Why does `F2` work but `F1`, `F8`, or `F10` do nothing?
 
-- the GUI reads `~/.config/phantom/profiles/`, not the repository directory
+The laptop top row is probably sending media keys. Enable Fn Lock so those
+keys emit real function-key events.
 
-Fix:
+`F2` often still works because some firmware always sends it as a function
+key. That pattern is a firmware issue, not a dead Phantom binding.
 
-```bash
-./install.sh
-phantom-gui
-```
+## Why are keys stuck after I toggle capture?
 
-Why:
+Capture transitions flush the desktop keyboard relay, then rebuild hold-style
+controls from the real pressed-key set when you enter capture. Leaving capture
+replays currently held keys back to the desktop.
 
-- `./install.sh` copies missing shipped profiles into the user profile library without overwriting existing user edits
+If something is still stuck:
 
-## `F2` Works But `F1`, `F8`, Or `F10` Do Not
+- confirm you are on a current build
+- check `phantom status` for `capture` and `mouse mode`
+- if a `SYN_DROPPED` warning happened just before it, rerun with
+  `PHANTOM_TRACE_DETAIL=1` and see whether that device is dropping events
+  repeatedly
 
-Symptom:
+Edge-trigger nodes (`toggle_tap`, `drag`, `macro`) are not replayed on capture
+entry. That is intentional.
 
-- shutdown works
-- capture or mouse-toggle hotkeys do not
-- overlay toggle does not work
+## Why does `F10` accept the hotkey but show nothing?
 
-Likely cause:
+`F10` is an experimental host preview, not an Android overlay. On Wayland it
+tries a compact layer-shell HUD; otherwise it falls back to a fullscreen
+window. Either path can be hidden or rejected by the compositor.
 
-- Fn Lock is off
+Read `~/.config/phantom/overlay.log`. If it says neither `WAYLAND_DISPLAY` nor
+`DISPLAY` is set, the daemon was not started from the graphical session with
+`sudo -E`.
 
-Fix:
+If the preview is unreliable on that desktop, treat it as unavailable. Do not
+play through it.
 
-- enable Fn Lock so the top row emits real `F1`, `F8`, `F9`, and `F10` function keys
-
-## Capture Toggle Leaves Keys Stuck Or Keyboard Input Feels Broken
-
-Symptoms:
-
-- after `F8` or `phantom enter-capture` / `phantom exit-capture`, some keys appear stuck
-- desktop input feels wrong until you restart the daemon
-- held movement keys do not rebuild cleanly when capture is turned on
-
-Current behavior:
-
-- capture transitions now flush Phantom's desktop keyboard relay before ownership changes
-- entering capture rebuilds currently held keyboard-driven hold controls from the real pressed-key state
-- leaving capture replays currently held keyboard keys into the desktop relay
-- combo keyboard+mouse devices keep their kernel grab if the keyboard still needs exclusivity
-- edge-trigger controls such as `toggle_tap`, `drag`, and `macro` are not replayed automatically on capture entry
-
-If it still feels wrong:
-
-- confirm you are running a current build
-- use `phantom status` to verify `capture` and `mouse mode`
-- if a problem happens right after a dropped-event warning, retest with `PHANTOM_TRACE_DETAIL=1` and inspect whether the affected device is producing repeated `SYN_DROPPED`
-
-## `F10` Works But No Overlay Appears
-
-Symptom:
-
-- the daemon accepts `F10`
-- no preview window appears
-
-Important:
-
-- the current `F10` preview is experimental
-- on Wayland, Phantom first tries a compact passthrough HUD
-- if that path cannot be used, it falls back to the older fullscreen preview window
-- it is not an Android in-surface overlay
-
-Checks:
-
-- inspect `~/.config/phantom/overlay.log`
-- verify the desktop session allows always-on-top fullscreen windows
-- if the log says `neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set`, the overlay child was launched without a usable desktop display environment
-
-If it still does not behave reliably:
-
-- treat the overlay as unavailable on that desktop session
-- use it only as a debug feature, not a gameplay feature
-
-## Waydroid Is Running But Phantom Still Cannot Connect
-
-Check:
+## Why can't Phantom connect when Waydroid looks running?
 
 ```bash
 sudo waydroid status
 ```
 
-Bad state:
+`Session: RUNNING` plus `Container: FROZEN` is the bad state. Open
+`waydroid show-full-ui` or the game itself so the container thaws.
 
-- `Session: RUNNING`
-- `Container: FROZEN`
+You want both session and container `RUNNING` before `phantom --daemon`.
 
-Good state:
-
-- `Session: RUNNING`
-- `Container: RUNNING`
-
-Fix:
-
-```bash
-waydroid show-full-ui
-```
-
-or open the target game first so the container wakes up fully.
-
-## Android Server Auto-Launch Times Out
-
-Check:
+## Why does Android auto-launch time out?
 
 ```bash
 sudo waydroid shell -- sh -c 'tail -n 100 /data/local/tmp/phantom-server.log'
 ```
 
-Common causes:
+Usual causes: Waydroid was down when Phantom started, the container is frozen,
+the jar path is wrong, or the jar is not a dex jar. The file must contain
+`classes.dex`.
 
-- Waydroid was not running before Phantom started
-- container is frozen
-- Android jar path is wrong
-- the jar is not a dex jar
+Packaged installs should resolve `/usr/lib/phantom/phantom-server.jar` or
+`../lib/phantom/` next to the binary without a source checkout.
 
-Verify the jar contains `classes.dex`.
+## Why do touches land in the wrong place?
 
-## Touches Land In The Wrong Place
+The profile screen and the daemon screen must match the real fullscreen
+Android surface. Phantom will not invent a transform.
 
-Cause:
+Compare `phantom status`, `phantom audit <profile>`, and
+`waydroid prop get persist.waydroid.width` / `height`. Fix the contract, then
+reload the profile.
 
-- screen contract mismatch
+## Why is there no owned cursor in menu-touch?
 
-Check:
+Clicks can still work. The sprite is a separate Wayland layer-shell overlay.
 
-- daemon screen in `phantom status`
-- profile screen in `phantom audit`
-- actual Waydroid surface size
+- Hyprland / Sway / niri / KDE: read `~/.config/phantom/cursor-overlay.log`
+- GNOME: no wlr-layer-shell, so no host cursor. This is a known limit.
+- X11: no cursor overlay. Injection still works.
+- any compositor: start the daemon with `sudo -E` from the graphical session
 
-Fix:
+`phantom status` should show `capture: true` and `mouse mode: menu_touch`.
+This overlay is not the `F10` preview.
 
-- align the profile and daemon screen contracts with the real fullscreen Android surface
+## Why doesn't aim move the camera?
 
-## Menu-Touch Cursor Does Not Appear
+Capture must be on, mouse mode must be `aim` (`F1`), and the loaded profile
+must contain an `aim` node. `F1` alone is not camera movement.
 
-Symptom:
+Start with `always_on` to prove the node, then switch to `while_held` or
+`toggle`. Use a real mouse for shooter work. Touchpad aim is derived from
+absolute pad coordinates and will always feel like a fallback.
 
-- capture is on
-- mouse mode is `menu_touch`
-- clicks may still work, but you do not see the owned cursor
+## Why did aim stop after I pressed `F1`?
 
-Checks:
+`F1` lifts the look finger and switches to menu-touch. Toggle-look stays
+armed. `while_held` is resynced from the real mouse-button state when you
+switch back to aim.
 
-- inspect `~/.config/phantom/cursor-overlay.log`
-- confirm `phantom status` shows:
-  - `capture: true`
-  - `mouse mode: menu_touch`
-- verify the desktop session allows small always-on-top transparent windows
-- on Wayland/Hyprland, the cursor overlay now expects layer-shell support rather than a normal transparent toplevel
+If it still feels wrong, check whether the profile is `toggle` or `while_held`,
+and whether the activation key is actually `MouseRight` (or whatever you bound).
 
-Important:
+## How do I navigate menus that ignore the desktop mouse?
 
-- this cursor overlay is separate from the `F10` debug preview
-- it exists only to visualize Phantom's owned menu-touch cursor while capture is active
-- the cursor overlay is currently Wayland layer-shell only; X11 sessions can still inject menu-touch without a visible owned cursor
-- GNOME does not provide wlr-layer-shell, so the owned cursor will not appear there even though menu-touch still injects
-- start the daemon with `sudo -E` from the graphical session or the overlay child cannot see Wayland/Xcursor
+Enter capture and stay in menu-touch. Left click is a tap. Drag while held is
+a drag. Wheel is a short swipe. Unused keys type into Android.
 
-## Aim Does Not Work
+`F1` is how you go back to gameplay aim.
 
-Check:
+## Why does menu-touch miss the visible cursor?
 
-- mouse routing is enabled
-- capture is enabled
-- `aim` anchor and reach are reasonable
-- `aim` activation mode matches the intended workflow
-- activation key is present if mode is `while_held` or `toggle`
-- the loaded profile actually contains an `aim` node
+Check `menu touch backend` in `phantom status`:
 
-Useful cases:
+- `owned-hyprland-seeded+virtual` — seeded from Hyprland
+- `owned-x11-seeded+virtual` — seeded from X11 / XWayland
+- `owned-virtual` — no host seed; Phantom reused its last internal point
 
-- start with `always_on` to prove the aim node itself is correct
-- then switch to `while_held` or `toggle`
+Enter capture while the host pointer is already over the Waydroid window.
+After that seed, Phantom drives its own cursor from raw mouse motion.
 
-Note:
+## Why do I need two clicks in a menu?
 
-- touchpads now work, but they may still feel less smooth than a real mouse because Phantom must derive relative motion from absolute touchpad coordinates
-- Phantom now suppresses fresh-contact touchpad jumps before motion reaches aim and keeps tiny single-step movement available for held drags and careful cursor movement
-- a real mouse is still the best path for the highest-end fast aim-heavy play, but touchpad behavior should now be less jumpy without adding tick-latency to aim
-- this is intentional: Phantom does not add extra smoothing to the real relative-mouse path, because that would trade aim feel for latency
-- if real-mouse aim feels jumpy, verify you are on the current build; Phantom
-  now handles relative mouse motion one evdev report at a time, with X/Y from
-  the same report kept together instead of being emitted as separate aim jumps
-- the current mouse path also damps tiny relative reports instead of applying the
-  same full scale to every movement, which improves precision without turning
-  large camera sweeps into a slow drag
-- that shaping is now per axis, so a fast vertical recoil pull should not
-  magnify tiny accidental left/right noise into a sideways camera snap
+If `mouse mode` is `aim`, you are not in menu-touch. Press `F1`.
 
-## Aim Stops After `F1` Mouse Toggle
+If you are already in menu-touch and still see a two-click pattern, that is
+usually the game UI, not Phantom waiting for window focus.
 
-Expected behavior now:
+## Why does a PUBG sprint-lock or runner swipe feel weak?
 
-- `F1` lifts the active aim finger
-- `toggle` aim stays enabled across the routing change
-- `while_held` aim is resynced from the real current mouse-button state when routing is re-enabled
+That is almost always the `drag` geometry, not the backend. Shorten
+`duration_ms` (often 70–100 ms) and move `end` to the exact on-screen target.
 
-If it still feels wrong:
+Temple Run tilt-to-collect is not a drag problem. Tilt is accelerometer
+input. Phantom does not inject sensors.
 
-- check whether the profile uses `toggle` or `while_held`
-- verify the activation key is a real mouse button such as `MouseRight`
-- test with a real mouse to separate touchpad-feel issues from routing-state issues
-- for touchpad play, keep the aim anchor in clear space; Phantom now re-arms aim
-  between touch contacts, but a real mouse is still the better hardware path
+## Why did a new profile load but the game ignore it?
 
-## Menus Need Touch Instead Of Raw Mouse
+Confirm `phantom status` shows that profile, the screen matches, and the
+in-game layout has not been moved since you authored the coordinates.
 
-Some games accept taps and drags in menus but ignore plain desktop mouse input.
+## Why does the desktop feel broken after I start the daemon?
 
-Use this workflow:
-
-- enter capture
-- stay in menu-touch mode instead of switching to gameplay aim
-- navigate with left click and drag
-
-Expected behavior:
-
-- left click becomes touch down / up
-- moving while held becomes drag
-- touchpad single-tap now synthesizes a left click in owned menu-touch
-- touchpad double-tap-and-hold now begins a held left click so drag can continue from the pad
-- `F1` switches back to gameplay aim when needed
-- on touchpads, the first contact on the pad should seed cleanly instead of jerking the owned cursor
-
-## Menu Touch Lands Away From The Visible Cursor
-
-Check:
-
-- `phantom status` while capture is active and mouse mode is `menu_touch`
-- look for `menu touch backend`
-
-Expected:
-
-- `owned-hyprland-seeded+virtual` means Phantom seeded the owned cursor from compositor-native Hyprland data
-- `owned-x11-seeded+virtual` means Phantom seeded the owned cursor from X11/XWayland helper data
-- `owned-virtual` means Phantom had no exact host seed and reused its internal cursor
-
-What it means:
-
-- Phantom only depends on the host cursor for the initial seed when menu-touch mode begins
-- after that seed, the owned Phantom cursor is moved from raw mouse motion while the mouse stays captured
-
-If you still see drift:
-
-- enter menu-touch while the visible host cursor is already over the area you want to start from
-- test from the same desktop session where Hyprland or `DISPLAY` helper data is available
-- use `phantom status` to verify the backend instead of assuming
-
-## Menu Touch Needs Two Clicks Before The Action Happens
-
-Check:
-
-- `phantom status` while capture is active and mouse mode is `menu_touch`
-- look for:
-  - `mouse mode`
-  - `menu touch backend`
-
-What it means:
-
-- `mouse mode: menu_touch`
-  - Phantom owns the mouse and should inject touch directly
-- `mouse mode: aim`
-  - clicks are being routed through gameplay aim semantics instead of menu touch
-
-Important:
-
-- this is separate from cursor accuracy
-- Phantom no longer relies on a first host click for activation in the main menu-touch path
-- if you still see a two-click pattern, the remaining issue is likely game-specific UI behavior rather than desktop focus preparation
-
-## PUBG Sprint-Lock Drag Does Not Feel Right
-
-Check:
-
-- drag `start`
-- drag `end`
-- `duration_ms`
-
-Fix:
-
-- lower `duration_ms` for a faster snap
-- adjust the drag end point to the exact sprint-lock point in your on-screen layout
-
-## Temple Run Or Subway Surfers Swipe Feels Weak
-
-Check:
-
-- `duration_ms`
-- swipe start point
-- swipe end point
-
-Fix:
-
-- use a short drag duration, usually around `70-100 ms`
-- move the swipe farther if the game wants a more deliberate gesture
-
-## Temple Run Tilt Does Not Work
-
-This is not a profile bug.
-
-Reason:
-
-- Phantom injects touch
-- tilt is accelerometer input
-
-Current status:
-
-- tilt is unsupported
-
-## New Profile Loads But The Game Still Ignores It
-
-Check:
-
-- the profile actually loaded in `phantom status`
-- the profile screen matches the daemon screen
-- the on-screen coordinates are from the same layout the game is currently using
-
-If a layout was moved in-game, the profile must be updated too.
-
-## Desktop Interaction Feels Broken After Starting The Daemon
-
-Check:
-
-- capture state
-- mouse routing state
-
-Use:
+You are probably still in capture. Leave it:
 
 ```bash
 phantom exit-capture
-phantom release-mouse
 ```
 
-Remember:
-
-- Phantom reserves daemon hotkeys
-- gameplay capture should be the state that routes gameplay, not your normal desktop workflow
+The daemon keeps the keyboard grabbed for hotkeys even with capture off, and
+relays typing to the desktop. Gameplay capture is not a desktop workflow.

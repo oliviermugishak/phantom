@@ -1,21 +1,21 @@
 # Install
 
-This is the clean-machine setup guide for Phantom.
+This is the clean-machine setup guide. If Phantom is already installed and you
+just need a daily session, go to [OPERATIONS.md](OPERATIONS.md).
 
-It covers:
+## Which install path should I use?
 
-- Rust
-- Android SDK tools
-- Linux input access
-- local install
-- release packages
-- config creation
-- shipped profile seeding
-- first startup
+- You develop or want the latest tree: clone the repo and run `./install.sh`.
+- You want a distro package: take the `.deb` or `.pkg.tar.zst` from GitHub
+  Releases. You do not need Rust or the Android SDK for that.
+- You want a portable tree: use the release tarball and put `bin/` on `PATH`.
+- You only want to look at the editor: the AppImage is enough. It cannot start
+  the privileged daemon from its FUSE mount.
 
-The recommended backend is:
+Every packaged layout already includes `phantom-server.jar`. The daemon finds
+it without a source checkout.
 
-- `android_socket`
+The recommended backend is `android_socket`.
 
 ## 1. Prerequisites
 
@@ -301,16 +301,10 @@ Expected:
 
 ## 12. If A New Shipped Profile Does Not Appear
 
-Do this:
+The GUI reads `~/.config/phantom/profiles/`. First launch already copies
+missing shipped files there. If one is still missing:
 
-```bash
-./install.sh
-phantom-gui
-```
+- Settings → "Seed shipped profiles", or
+- `./install.sh` for a source install
 
-Reason:
-
-- the GUI reads the user profile library
-- the installer seeds new shipped profiles into that directory if they are missing
-
-That is the supported sync model.
+Neither overwrites a profile you already edited. Restart the GUI afterward.

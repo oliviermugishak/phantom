@@ -16,14 +16,16 @@ The GUI reads the user profile library, not the repository directory directly.
 
 Phantom uses this model:
 
-- shipped profiles live in the repository
-- installed profiles live in `~/.config/phantom/profiles/`
-- `./install.sh` copies missing shipped profiles into the user profile library
-- rerunning `./install.sh` is the supported way to seed newly added shipped profiles
+- shipped profiles live in the repository and, after packaging, in
+  `/usr/share/phantom/profiles/` or `../share/phantom/profiles` next to the binary
+- the working library is `~/.config/phantom/profiles/`
+- the GUI copies missing shipped files into that library on startup
+- Settings can repeat the seed
+- `./install.sh` does the same copy for source installs and does not overwrite edits
 
 That means:
 
-- repository profiles are the seed library
+- shipped profiles are the seed library
 - user profiles are the active working library
 - `phantom-gui` discovers profiles from the user library at startup
 

@@ -41,11 +41,17 @@ The package staging script installs:
 - `usr/share/doc/phantom/*`
 - `usr/share/licenses/phantom/LICENSE`
 - `usr/lib/udev/rules.d/99-phantom.rules`
-- `usr/lib/systemd/system/phantom.service`
+- `usr/lib/systemd/user/phantom.service`
+- `usr/share/phantom/contrib/phantom.service` (system-unit example only)
 
-The GUI also seeds missing shipped profiles into `~/.config/phantom/profiles/`
-on first launch, so packaged installs no longer depend on `./install.sh` just
-to populate the Profiles menu.
+Do not enable the system unit as the product default. Daily use is
+`sudo -E phantom --daemon` from a graphical session, or the user unit after
+udev and group `input`.
+
+The GUI and daemon write `~/.config/phantom/config.toml` from the shipped
+example only if that file is missing. The GUI also seeds missing shipped
+profiles into `~/.config/phantom/profiles/` on first launch. Packaged
+installs do not need `./install.sh` for a first-run library.
 
 Important runtime detail:
 
@@ -111,13 +117,13 @@ They are not the same.
 
 The AUR hosts package recipes, not your built binaries directly.
 
-Typical path:
+The in-tree recipe is `packaging/aur/PKGBUILD` (`phantom-bin`). It is not
+published from this repository. After a GitHub release exists, fill the real
+tarball sha256, regenerate `.SRCINFO`, and push that recipe to the AUR by
+hand.
 
-1. publish the GitHub release assets
-2. adapt `packaging/arch/PKGBUILD.in` into an AUR package such as `phantom-bin`
-3. point its source URL at the GitHub release tarball
-4. generate `.SRCINFO`
-5. publish the AUR git repo
+`packaging/arch/PKGBUILD.in` is only for the GitHub `.pkg.tar.zst` asset. Do
+not confuse the two.
 
 ### Custom pacman repo
 
@@ -148,4 +154,14 @@ Android SDK setup uses `android-actions/setup-android@v4` with
 `packages: platform-tools`. Do not request the obsolete `tools` package;
 current `sdkmanager` no longer ships it.
 
-The release workflow reruns those checks before packaging and publishing.
+CI and release are separate workflows on purpose.
+
+- CI runs on pull requests and branch pushes. It does not run on `v*` tags.
+- Release runs only when you push a `v*` tag. It rebuilds, packages, and
+  publishes. It does not wait for the CI workflow.
+
+That means: push the commit, wait for CI to go green, then tag. Do not tag a
+commit whose branch CI has not passed.
+
+The release workflow reruns fmt/test/clippy/build before packaging so a tag
+cannot publish an untested tree even if someone skips that wait.
