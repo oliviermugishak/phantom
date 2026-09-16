@@ -141,4 +141,11 @@ The CI workflow validates:
 - `cargo build --release --quiet`
 - `./contrib/android-server/build.sh`
 
+The CI workflow also builds a tarball and Debian package and runs
+`packaging/smoke-test.sh`.
+
+Android SDK setup uses `android-actions/setup-android@v4` with
+`packages: platform-tools`. Do not request the obsolete `tools` package;
+current `sdkmanager` no longer ships it.
+
 The release workflow reruns those checks before packaging and publishing.
