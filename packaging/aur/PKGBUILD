@@ -1,0 +1,34 @@
+# Maintainer: Phantom Maintainers <maintainers@phantom.invalid>
+pkgname=phantom-bin
+pkgver=1.1.0
+pkgrel=1
+pkgdesc="Waydroid keyboard-and-mouse to Android multitouch mapper"
+arch=('x86_64')
+url="https://github.com/oliviermugishak/phantom"
+license=('MIT')
+depends=(
+  'alsa-lib'
+  'gcc-libs'
+  'glibc'
+  'gtk3'
+  'libglvnd'
+  'libx11'
+  'libxcursor'
+  'libxfixes'
+  'libxi'
+  'libxinerama'
+  'libxkbcommon'
+  'libxrandr'
+  'wayland'
+)
+optdepends=('waydroid: Android container runtime')
+provides=('phantom')
+conflicts=('phantom' 'phantom-git')
+source=("https://github.com/oliviermugishak/phantom/releases/download/v${pkgver}/phantom-v${pkgver}-linux-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "$srcdir/phantom-v${pkgver}-linux-x86_64"
+  install -dm755 "$pkgdir/usr"
+  cp -a bin lib share "$pkgdir/usr/"
+}

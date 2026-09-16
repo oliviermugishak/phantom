@@ -29,7 +29,8 @@ The Rust daemon and the Android server are intentionally split:
 - host side owns capture and profile evaluation
 - Android side owns MotionEvent injection
 
-The protocol only carries finalized touch commands.
+The protocol carries finalized touch commands and unused-key Android
+`KeyEvent`s. Profile evaluation stays on the host.
 
 That keeps the host/container boundary simple.
 
@@ -60,6 +61,21 @@ That keeps the host/container boundary simple.
 - byte `1`: slot `u8`
 
 Current server behavior treats cancel as a full gesture cancel for that slot.
+
+### `KEY_DOWN`
+
+- byte `0`: `0x04`
+- bytes `1..3`: Android keycode `u16` LE
+- bytes `3..5`: repeat count `u16` LE
+- byte `5`: meta state `u8` (`0x1` = shift)
+
+### `KEY_UP`
+
+- byte `0`: `0x05`
+- bytes `1..3`: Android keycode `u16` LE
+
+These frames are used only for keys that no loaded profile node binds.
+They are not a profile node type.
 
 ### `PING`
 
@@ -101,7 +117,8 @@ The Android server:
 - accepts one client connection
 - maintains touch pointer state
 - reconstructs MotionEvents
-- injects them through `InputManager.injectInputEvent()`
+- reconstructs unused-key KeyEvents (`0x04` / `0x05`)
+- injects both through `InputManager.injectInputEvent()`
 
 It is deliberately small. It is not trying to re-implement profile logic inside Android.
 

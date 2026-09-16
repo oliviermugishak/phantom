@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.1.0 — Native cursor, type-while-captured, packaging that ships
+
+### Type-while-captured
+
+- unused keys now inject Android `KeyEvent`s while capture is on
+- Enter, Backspace, Delete, and arrows repeat; Home and Meta are withheld
+- protocol adds `KEY_DOWN` `0x04` and `KEY_UP` `0x05`
+
+### Menu-touch / cursor
+
+- owned cursor loads the desktop Xcursor theme and hides after 5s idle
+- menu-touch wheel performs a short vertical swipe
+- relative menu-touch motion has optional adaptive gain
+- Hyprland host frame can refresh without snapping the owned cursor
+
+### Input ownership
+
+- combo keyboard+mouse devices no longer lose keyboard exclusivity when mouse grab is released
+- grab updates roll back on ioctl failure and skip disappeared devices
+- `SYN_DROPPED` recovery stays desynced until kernel key state can be reread
+- leaving capture replays currently held keys to the desktop relay
+- desktop relay bookkeeping now updates only after a successful uinput write
+
+### Wayland / helpers
+
+- cursor helpers no longer die when the pointer is not over a window
+- sudo/root session inference no longer clobbers the invoking user's `XDG_RUNTIME_DIR`
+- Hyprland seeding prefers Waydroid/Android windows and the largest matching client
+- X11 seeding translates window geometry to root coordinates
+- overlay and cursor state files are written atomically
+
+### GUI / packaging
+
+- missing config now defaults to `android_socket` with Android auto-launch
+- GUI seeds shipped profiles into the user library and can do so from Settings
+- Start Daemon uses `sudo -E` instead of `pkexec`, and refuses AppImage FUSE paths
+- failed IPC commands no longer look like a dead daemon
+- status chips stay inactive while disconnected
+- packages install udev rules and a systemd unit, Debian postinst reloads udev
+- AppImage keeps both `phantom` and `phantom-gui`, with `AppRun` able to launch the daemon
+- `./install.sh` installs a desktop entry
+
+### Docs
+
+- added [docs/ROADMAP.md](docs/ROADMAP.md)
+- documented the real grab/capture contract in architecture and IPC docs
+- documented current gameplay tactics that can be built from existing nodes
+
 ## 1.0.0 — First packaged release
 
 ### Aim / Camera

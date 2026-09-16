@@ -18,6 +18,8 @@ pub struct Config {
     pub android: AndroidConfig,
     #[serde(default)]
     pub waydroid: WaydroidConfig,
+    #[serde(default)]
+    pub mouse_touch: MouseTouchConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -52,8 +54,8 @@ pub struct RuntimeHotkeys {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TouchBackendKind {
-    #[default]
     Uinput,
+    #[default]
     AndroidSocket,
 }
 
@@ -86,6 +88,54 @@ pub struct WaydroidConfig {
     pub work_dir: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct MouseTouchConfig {
+    #[serde(default = "default_accel_min_gain")]
+    pub accel_min_gain: f64,
+    #[serde(default = "default_accel_max_gain")]
+    pub accel_max_gain: f64,
+    #[serde(default = "default_accel_low_speed")]
+    pub accel_low_speed: f64,
+    #[serde(default = "default_accel_high_speed")]
+    pub accel_high_speed: f64,
+    #[serde(default = "default_accel_speed_smoothing")]
+    pub accel_speed_smoothing: f64,
+    #[serde(default = "default_scroll_step")]
+    pub scroll_step: f64,
+}
+
+impl Default for MouseTouchConfig {
+    fn default() -> Self {
+        Self {
+            accel_min_gain: default_accel_min_gain(),
+            accel_max_gain: default_accel_max_gain(),
+            accel_low_speed: default_accel_low_speed(),
+            accel_high_speed: default_accel_high_speed(),
+            accel_speed_smoothing: default_accel_speed_smoothing(),
+            scroll_step: default_scroll_step(),
+        }
+    }
+}
+
+fn default_accel_min_gain() -> f64 {
+    1.0
+}
+fn default_accel_max_gain() -> f64 {
+    2.6
+}
+fn default_accel_low_speed() -> f64 {
+    0.15
+}
+fn default_accel_high_speed() -> f64 {
+    3.0
+}
+fn default_accel_speed_smoothing() -> f64 {
+    0.35
+}
+fn default_scroll_step() -> f64 {
+    0.06
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -95,6 +145,7 @@ impl Default for Config {
             runtime_hotkeys: RuntimeHotkeysConfig::default(),
             android: AndroidConfig::default(),
             waydroid: WaydroidConfig::default(),
+            mouse_touch: MouseTouchConfig::default(),
         }
     }
 }
@@ -103,7 +154,7 @@ impl Default for AndroidConfig {
     fn default() -> Self {
         Self {
             server_jar: None,
-            auto_launch: false,
+            auto_launch: true,
             server_class: default_android_server_class(),
             host: None,
             port: None,
@@ -179,6 +230,7 @@ pub fn config_path() -> PathBuf {
 }
 
 pub fn load_config() -> Config {
+    let _ = ensure_user_config();
     let path = config_path();
     if !path.exists() {
         tracing::info!("no config file at {}, using defaults", path.display());
@@ -244,17 +296,94 @@ pub fn resolved_runtime_hotkeys(config: &Config) -> RuntimeHotkeys {
 }
 
 pub fn socket_path() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .or_else(invoking_runtime_dir)
-        .or_else(dirs::runtime_dir)
-        .filter(|path| path.is_dir());
-
-    if let Some(runtime) = runtime {
+    let runtime = crate::session_env::preferred_runtime_dir();
+    if runtime.is_dir() {
         runtime.join("phantom.sock")
     } else {
         PathBuf::from(format!("/tmp/phantom-{}.sock", invoking_uid()))
     }
+}
+
+pub fn shipped_profile_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            dirs.push(parent.join("../share/phantom/profiles"));
+            dirs.push(parent.join("../../share/phantom/profiles"));
+        }
+    }
+    dirs.push(PathBuf::from("/usr/share/phantom/profiles"));
+    dirs.push(PathBuf::from("/usr/local/share/phantom/profiles"));
+    dirs.push(PathBuf::from("profiles"));
+    dirs
+}
+
+pub fn shipped_config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            paths.push(parent.join("../share/phantom/config.example.toml"));
+            paths.push(parent.join("../../share/phantom/config.example.toml"));
+        }
+    }
+    paths.push(PathBuf::from("/usr/share/phantom/config.example.toml"));
+    paths.push(PathBuf::from(
+        "/usr/local/share/phantom/config.example.toml",
+    ));
+    paths.push(PathBuf::from("config.example.toml"));
+    paths
+}
+
+pub fn ensure_user_config() -> bool {
+    let dest = config_path();
+    if dest.exists() {
+        return false;
+    }
+    if let Some(parent) = dest.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    for source in shipped_config_paths() {
+        if source.is_file() && std::fs::copy(&source, &dest).is_ok() {
+            tracing::info!("created user config from {}", source.display());
+            return true;
+        }
+    }
+    false
+}
+
+pub fn seed_missing_user_profiles() -> usize {
+    let dest = profiles_dir();
+    if std::fs::create_dir_all(&dest).is_err() {
+        return 0;
+    }
+
+    let mut seeded = 0;
+    for dir in shipped_profile_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut copied_from_this_dir = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") || !path.is_file() {
+                continue;
+            }
+            let target = dest.join(entry.file_name());
+            if target.exists() {
+                continue;
+            }
+            if std::fs::copy(&path, &target).is_ok() {
+                copied_from_this_dir += 1;
+                seeded += 1;
+            }
+        }
+        if copied_from_this_dir > 0 {
+            break;
+        }
+    }
+    seeded
 }
 
 pub fn default_profile_path() -> Option<PathBuf> {
@@ -273,6 +402,10 @@ pub fn invoking_uid() -> u32 {
         .unwrap_or_else(|| unsafe { libc::getuid() })
 }
 
+pub fn running_as_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
 pub fn invoking_gid() -> u32 {
     std::env::var("SUDO_GID")
         .ok()
@@ -284,11 +417,6 @@ fn invoking_config_base_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| invoking_home_dir().map(|home| home.join(".config")))
-}
-
-fn invoking_runtime_dir() -> Option<PathBuf> {
-    let path = PathBuf::from(format!("/run/user/{}", invoking_uid()));
-    path.is_dir().then_some(path)
 }
 
 pub fn invoking_home_dir() -> Option<PathBuf> {
@@ -379,6 +507,13 @@ fn has_duplicate_hotkeys(hotkeys: &RuntimeHotkeys) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_config_defaults_to_android_socket() {
+        let cfg = Config::default();
+        assert_eq!(cfg.touch_backend, TouchBackendKind::AndroidSocket);
+        assert!(cfg.android.auto_launch);
+    }
 
     #[test]
     fn runtime_hotkeys_default_to_current_bindings() {

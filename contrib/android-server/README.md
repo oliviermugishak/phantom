@@ -9,10 +9,12 @@ It is launched with:
 It receives:
 
 - touch frames from the host daemon over TCP
+- unused-key frames (`0x04` / `0x05`) for Android `KeyEvent`s
 
 It injects:
 
 - Android `MotionEvent`s through `InputManager.injectInputEvent()`
+- Android `KeyEvent`s for keys the loaded profile does not bind
 
 ## Why This Exists
 

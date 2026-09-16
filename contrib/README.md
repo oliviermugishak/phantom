@@ -11,7 +11,9 @@ Contents:
 - `99-phantom.rules`
   Example `udev` rules for input and `uinput` device access.
 - `phantom.service`
-  Example `systemd` service unit for the daemon.
+  Example **system** systemd unit. Do not enable it as the daily default.
+- `phantom-user.service`
+  Optional **user** systemd unit for people already in group `input`.
 - `waydroid/`
   Waydroid-specific integration assets such as the touchscreen IDC file.
 

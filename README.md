@@ -1,125 +1,98 @@
 # Phantom
 
-Phantom is a Linux keyboard-and-mouse to Android multitouch mapper for Waydroid.
+Phantom maps a Linux keyboard and mouse onto Android touch for fullscreen
+[Waydroid](https://waydro.id/). It is for people who want to play Android games
+from a desk without pretending the desktop pointer is a finger.
 
-It captures local `evdev` input on the host, maps that input through deterministic JSON profiles, and injects Android `MotionEvent`s inside the Waydroid container through an Android-side `app_process` server.
+The host captures `evdev` input, a JSON profile decides what those events mean,
+and an Android-side `app_process` server injects `MotionEvent`s (and, when
+capture is on, unused-key `KeyEvent`s) inside the container.
 
-Code hosting:
+- Source: https://github.com/oliviermugishak/phantom
+- Author: Olivier Mugisha K ([@oliviermugishak](https://github.com/oliviermugishak))
 
-- Source: `https://github.com/oliviermugishak/phantom.git`
+## What problem does this solve?
 
-Credits:
+Android games expect fingers. A Linux desktop gives you keys and a mouse.
+Phantom sits between them.
 
-- Olivier Mugisha K
-- GitHub: `https://github.com/oliviermugishak`
+It does **not** try to recognize UI, guess screen transforms, or inject
+accelerometer tilt. It does one job: turn explicit bindings into predictable
+touches on a known Android surface.
 
-## Current Architecture
+The recommended backend is `touch_backend = "android_socket"`. The older
+`uinput` path still exists as a fallback.
 
-The current recommended runtime path is:
+## What do I need before I start?
 
-- host-side `evdev` capture
-- host-side profile engine
-- Android-side touch injection through `InputManager.injectInputEvent()`
+- Linux, preferably a Wayland session
+- Waydroid, already able to show a fullscreen Android UI
+- access to `/dev/input/event*` (root via `sudo -E`, or your user in group `input`)
+- a known Waydroid screen size written into `~/.config/phantom/config.toml`
 
-That is exposed as:
+You only need `/dev/uinput` if you use the legacy `uinput` backend.
 
-- `touch_backend = "android_socket"`
+Hyprland, Sway, niri, and KDE are the compositors where the owned cursor overlay
+works. GNOME can still inject menu-touch, but it will not show that overlay.
+A real mouse is still the right hardware for shooter aim. Touchpad aim is
+best-effort.
 
-The older `uinput` path still exists, but it is now the fallback backend, not the main design center.
+## Who runs the daemon, and who runs the GUI?
 
-## What Phantom Supports
+These are two different processes. Mixing their privileges is the usual way
+people break a first install.
 
-Runtime features:
+| Process | Who starts it | Privilege |
+|---|---|---|
+| `phantom --daemon` | you, from the **graphical** session | `sudo -E`, or unprivileged after udev + group `input` |
+| `phantom-gui` | you, as the desktop user | never sudo |
+| `phantom status`, `load`, `enter-capture` | desktop user | talks to `$XDG_RUNTIME_DIR/phantom.sock` |
 
-- keyboard and mouse capture from Linux `evdev`
-- runtime capture on/off
-- runtime mouse routing on/off
-- live profile load and reload
-- GUI-driven `Push Live`
-- Android-side touch injection through `app_process`
-- `uinput` fallback backend
+`sudo -E` matters. Plain `sudo` or `pkexec` drops `WAYLAND_DISPLAY`,
+`XDG_RUNTIME_DIR`, and cursor-theme variables. Then the overlay cannot see the
+compositor and the owned cursor disappears.
 
-Profile primitives:
+Do not enable the system systemd unit as your daily driver. Waydroid is a user
+session. After udev is installed and you are in group `input`, the optional
+user unit at `/usr/lib/systemd/user/phantom.service` is the only systemd path
+that matches how Phantom actually works.
 
-- `tap`
-- `toggle_tap`
-- `joystick`
-- `drag`
-- `aim`
-- `repeat_tap`
-- `wheel`
-- `macro`
-- `layer_shift`
+AppImage is a GUI plus a portable jar. It cannot start the privileged daemon
+from its FUSE mount. Use a `.deb`, Arch package, tarball, or `./install.sh`
+for the daemon.
 
-Compatibility note:
+## How do I install it?
 
-- legacy `hold_tap` profile entries still load, but Phantom now treats them as standard `tap` nodes
-
-Important recent additions:
-
-- keyboard joysticks now briefly re-center before lifting on full release and
-  prefer the most recently pressed same-axis direction, which reduces movement
-  hesitation during fast re-engage and direction swaps
-- keyboard joysticks now use a stronger full-throw swipe model, swiping from
-  their configured center toward the screen edge instead of making a short local
-  nudge
-- `drag` now supports swipe-style games such as Temple Run and Subway Surfers
-- capture-on mouse navigation now defaults to owned menu-touch while gameplay aim is inactive
-- macros now support explicit run modes so a sequence can either cancel on key release or continue as a one-shot
-- GUI profile discovery now reads the real user profile library from `~/.config/phantom/profiles/`
-
-## Shipped Profile Library
-
-The repository ships starter profiles in [`profiles/`](profiles/):
-
-- `pubg.json`
-- `pubg-small.json`
-- `genshin.json`
-- `efootball-template.json`
-- `temple-run.json`
-- `subway-surfers.json`
-- `asphalt8.json`
-- `asphalt9.json`
-
-These are starter layouts, not universal final configs.
-
-## Profile Library And GUI Discovery
-
-There are two profile locations to understand:
-
-- repository profiles: `./profiles/*.json`
-- user profile library: `~/.config/phantom/profiles/*.json`
-
-The GUI loads profiles from the user library, not directly from the repository.
-
-`./install.sh` handles the sync:
-
-- it copies every shipped profile into `~/.config/phantom/profiles/` if that file does not already exist
-- it does not overwrite profiles you already edited
-- `./install.sh -o` can prompt to overwrite the current config and/or the currently shipped profile filenames
-- rerunning `./install.sh` is the supported way to seed newly added shipped profiles into an existing setup
-- rerunning `./install.sh` also rewrites `android.server_jar` to the installed jar if the existing config still points at a source-tree `contrib/android-server/build/phantom-server.jar`
-
-That means:
-
-- if a profile exists in the repo but does not appear in the GUI, rerun `./install.sh`
-- restarting the GUI reloads the current contents of `~/.config/phantom/profiles/`
-
-## Quick Start
-
-1. Install Phantom into your user environment:
+**From source**, after you have Rust and Android SDK command-line tools:
 
 ```bash
+git clone https://github.com/oliviermugishak/phantom.git
+cd phantom
 ./install.sh
 ```
 
-2. Edit `~/.config/phantom/config.toml` and set the real Waydroid screen size.
-   If `android.server_jar` is stale or omitted, Phantom now falls back to the
-   installed jar in `~/.local/share/phantom/android/`, then to
-   `../lib/phantom/` relative to the running binary, then to
-   `/usr/lib/phantom/`, and finally to a built jar in the current source tree.
+That puts `phantom` and `phantom-gui` in `~/.local/bin`, the Android jar in
+`~/.local/share/phantom/android/`, a sudo-visible launcher in `/usr/local/bin`
+when possible, and seeds missing profiles into `~/.config/phantom/profiles/`.
 
-3. Start Waydroid and make sure the container is not frozen:
+**From a GitHub Release**, pick the asset that matches how you install software:
+
+- Debian / Ubuntu: `phantom_<version>_amd64.deb`
+- Arch: `phantom-<version>-*.pkg.tar.zst`, or the in-tree AUR recipe `phantom-bin`
+- portable: `phantom-v<version>-linux-x86_64.tar.gz`
+- GUI tryout only: the AppImage
+
+Packaged installs already contain `phantom-server.jar`. You do not build it.
+The daemon finds it under `/usr/lib/phantom/` or `../lib/phantom/` next to the
+binary. The first GUI or daemon start writes `~/.config/phantom/config.toml`
+only if that file is missing, and copies shipped profiles into the user library
+the same way.
+
+Full setup, including udev and Android SDK, is in [docs/INSTALL.md](docs/INSTALL.md).
+
+## How do I start a session?
+
+1. Start Waydroid and open the UI:
 
 ```bash
 waydroid session start
@@ -127,269 +100,138 @@ waydroid show-full-ui
 sudo waydroid status
 ```
 
-Before starting Phantom, confirm:
+You want `Session: RUNNING` and `Container: RUNNING`. If the container is
+`FROZEN`, open the game first. A frozen container is the most common
+"Phantom cannot connect" report.
 
-- `Session: RUNNING`
-- `Container: RUNNING`
+2. Set `[screen]` in `~/.config/phantom/config.toml` to the real Waydroid
+   surface. `waydroid prop get persist.waydroid.width` and `...height` are the
+   usual source of truth.
 
-4. Start Phantom:
-
-```bash
-sudo phantom --trace --daemon
-```
-
-For deeper raw-device tracing only when needed:
+3. Start the daemon from the same graphical session:
 
 ```bash
-sudo env PHANTOM_TRACE_DETAIL=1 phantom --trace --daemon
+sudo -E phantom --daemon
 ```
 
-5. Verify status and load a profile:
+Add `--trace` when you need lifecycle logs. Use
+`PHANTOM_TRACE_DETAIL=1` only when you are chasing raw evdev bugs.
+
+4. In a normal user shell:
 
 ```bash
 phantom status
-phantom audit ~/.config/phantom/profiles/pubg.json
 phantom load ~/.config/phantom/profiles/pubg.json
-phantom enter-capture
-```
-
-6. Open the GUI:
-
-```bash
 phantom-gui
 ```
 
-## Runtime Hotkeys
+Push Live from the GUI, then enter capture.
 
-Default daemon hotkeys:
+## What do capture, aim, and menu-touch actually mean?
 
-- `F1` -> toggle mouse routing
-- `F8` -> toggle capture
-- `F9` -> toggle pause
-- `F10` -> toggle the experimental debug control preview
-- `F2` -> shutdown daemon
+They are independent on purpose.
 
-These are configured in:
+- **Daemon running** means the process is alive and holding the keyboard for
+  hotkeys. Capture can be off. Your desktop should still type, because Phantom
+  relays the keyboard through a virtual "Phantom Desktop Keyboard".
+- **Capture on** (`F8`) means gameplay input is owned. The mouse is grabbed.
+  You start in **menu-touch**: left click is a finger, drag is a drag, wheel is
+  a short swipe, and unused keys type into Android.
+- **Aim** (`F1`, while capture is on) means the owned mouse feeds the profile's
+  `aim` node. No `aim` node means `F1` will not magically look around.
+- **Pause** (`F9`) freezes touch output without tearing down grabs.
 
-- `~/.config/phantom/config.toml`
-- `[runtime_hotkeys]`
+`F10` is an experimental host-side preview of the current profile. It is not
+an in-game overlay and it is not for playing. `F2` shuts the daemon down.
 
-Important keyboard note:
+On many laptops the top row only emits real `F1`/`F8`/`F10` when Fn Lock is on.
+If `F2` works and the others do not, check that first.
 
-- on many laptops and compact keyboards, the top row only sends standard `F1`/`F8`/`F9`/`F10` events when Fn Lock is enabled
-- if `F2` works but `F1`, `F8`, or `F10` do not, check Fn Lock first
-- when capture is toggled, Phantom now flushes any stale desktop-relay key state before switching modes so the desktop does not keep phantom-held keys stuck down
+## Where do profiles live, and why is the GUI empty?
 
-## Overlay Preview
+There are two directories:
 
-Press `F10` while the daemon is running to show or hide the experimental debug control preview.
+- shipped starters in the repo or package: `profiles/` or `/usr/share/phantom/profiles/`
+- the library the GUI actually reads: `~/.config/phantom/profiles/`
 
-What it shows:
+The GUI never live-reads the repository. First launch, Settings → "Seed shipped
+profiles", or `./install.sh` copies missing files into the user library and
+does not overwrite edits.
 
-- button controls as soft circles with their bound key labels
-- joysticks as fixed movement centers
-- drag gestures as subtle swipe arrows
-- aim anchors as lightweight debug markers
+Shipped starters are layouts, not finished configs for every device:
 
-Important:
+`pubg.json`, `pubg-small.json`, `genshin.json`, `efootball-template.json`,
+`temple-run.json`, `subway-surfers.json`, `asphalt8.json`, `asphalt9.json`
 
-- on Wayland, Phantom now prefers a compositor-native passthrough HUD made of compact marker surfaces positioned over the current game/client frame
-- if that Wayland HUD path is unavailable, Phantom falls back to the older fullscreen preview window
-- it is still a debug surface, not an Android in-surface overlay
-- it is intended for brief previewing and debugging, not for normal gameplay
-- overlay launcher output is written to `~/.config/phantom/overlay.log`
+A profile is rejected if its `screen` does not match the daemon screen. That
+is intentional. Phantom will not guess a transform.
 
-Current product direction:
+How to author nodes is in [docs/PROFILES.md](docs/PROFILES.md). How to structure
+a shooter or a swipe runner is in [docs/GAME_PATTERNS.md](docs/GAME_PATTERNS.md).
 
-- the current preview surface is still experimental and may be replaced later
-- the preferred long-term direction is an Android-side in-surface overlay and is tracked in [docs/ROADMAD.md](docs/ROADMAD.md)
+## What can I bind, and what should I not expect?
 
-## Tracing And Logging
+Profile primitives: `tap`, `toggle_tap`, `joystick`, `drag`, `aim`,
+`repeat_tap`, `wheel`, `macro`, `layer_shift`. Legacy `hold_tap` and
+`mouse_camera` still load and are normalized.
 
-Normal guidance:
+Useful compositions you do not need a new node type for:
 
-- use `sudo phantom --daemon` for day-to-day runtime use
-- use `sudo phantom --trace --daemon` when you need lifecycle, translated input, engine, and injection logs
+- ADS look: `aim` `while_held` on `MouseRight`
+- sprint lock: `drag` from the stick center to the lock point
+- turbo fire: `repeat_tap`
+- vehicle remaps: `layer_shift` with `suspend_base`
 
-Detail mode:
+Phantom injects touch (and unused Android keys while captured). It does not
+inject tilt, gyro, or a dedicated analog steering wheel. If the game has no
+touch alternative for a sensor, that is outside this project.
 
-- `PHANTOM_TRACE_DETAIL=1` enables the raw/noisy per-device trace path
-- that includes raw evdev events, touchpad re-anchor suppression, and dropped-event detail
-- only use it when debugging low-level input behavior
+## Why does the owned cursor vanish, or land in the wrong place?
 
-## Menu Touch And Aim
+On Hyprland the overlay is a layer-shell arrow taken from your Xcursor theme.
+It hides after five seconds of no movement. GNOME has no wlr-layer-shell, so
+there is no host cursor there. X11 has no cursor overlay either. Injection
+still works.
 
-When capture is active and gameplay aim is inactive, Phantom now treats the host mouse as owned menu-touch navigation.
+If the overlay is missing on a compositor that should support it, start the
+daemon with `sudo -E` and read `~/.config/phantom/cursor-overlay.log`. If
+menu-touch hits the wrong place, enter capture while the host pointer is
+already over the Waydroid window, then check `phantom status` for
+`menu touch backend`.
 
-What that means:
+## Which command do I run for what?
 
-- left click becomes touch down / touch up
-- mouse motion while held becomes touch drag
-- this is the intended way to navigate menus in games that reject raw mouse input
-- Phantom shows a separate owned menu-touch cursor while this mode is active
-- on Wayland compositors such as Hyprland, that cursor is drawn through a dedicated layer-shell overlay with input passthrough
-- `F1` switches between gameplay aim and owned menu-touch
-- when Phantom enters menu-touch, it seeds the owned cursor from the current host cursor position when possible
-- after that seed, Phantom owns the mouse and drives menu-touch from its internal cursor instead of relying on host click delivery
-- the seed path prefers Hyprland compositor geometry, then X11/XWayland helper mapping, then finally Phantom's internal cursor state
-- when Phantom owns a touchpad in menu-touch, it also provides its own tap-to-click and double-tap-hold drag behavior
-- `phantom status` shows:
+```bash
+phantom --daemon          # start the mapper; use sudo -E from a desktop session
+phantom status            # capture, mouse mode, grab, menu-touch backend
+phantom load <profile>    # replace the live profile
+phantom enter-capture     # same as F8 on
+phantom exit-capture      # same as F8 off
+phantom toggle-mouse      # same as F1: aim <-> menu-touch
+phantom audit <profile>   # validate without loading
+phantom-gui               # editor and runtime controls
+```
 
-Gameplay note:
+`grab-mouse` / `release-mouse` are the older names for switching aim and
+menu-touch. They do not ungrab the physical mouse while capture is on.
 
-- for high-paced shooter aim, a real mouse is still the recommended hardware path
-- touchpad aim remains best-effort and should be treated as a fallback, not the premium experience
-  - `menu touch backend`
-  - `mouse mode`
-- because Phantom now owns the mouse during capture, menu-touch no longer depends on a first host click being consumed for window activation
+## Where should I read next?
 
-## Aim
-
-`aim` is Phantom's camera/look primitive. Older profiles may still use the legacy `mouse_camera` type, which Phantom accepts and normalizes on load.
-
-Important:
-
-- Phantom owns the physical mouse while capture is active and switches that owned mouse between `aim` and `menu_touch` modes
-- actual camera movement only happens if the loaded profile contains an `aim` node
-- when aim is inactive while capture stays on, Phantom stays in owned menu-touch UI navigation
-- touchpads are supported, but a real mouse will usually feel smoother for camera movement
-- real mouse deltas are fed to aim one evdev report at a time, with X/Y from the
-  same report handled together instead of as separate jumps
-- the real-mouse aim path now uses an immediate mouse-first response curve:
-  tiny motions are damped for precision while larger sweeps still turn fast,
-  without letting a fast vertical pull inflate tiny sideways noise
-- real mouse aim is now allowed a wider hidden-touch envelope than absolute
-  touchpad aim, which reduces re-centering during fast camera turns
-- large camera sweeps are no longer clipped by the old fixed aim
-  re-segmentation loop, and `while_held` re-engage starts from a fresh center
-  instead of resuming from a stale edge
-- `F1` now preserves toggle-look state and resyncs `while_held` mouse buttons when routing is restored
-- entering capture also resyncs currently held keyboard controls for hold-style nodes such as `tap`, `repeat_tap`, `joystick`, and hold-mode `layer_shift`
-- `phantom status` shows whether menu touch is active, which backend seeded the owned cursor, and which runtime mouse mode is active
-
-Supported activation modes:
-
-- `always_on`
-- `while_held`
-- `toggle`
-
-Typical use:
-
-- `always_on` for always-look-on games
-- `while_held` for ADS-style aim workflows
-- `toggle` for explicit look-mode switching
-
-## Swipe Games And Movement Sticks
-
-Phantom now supports:
-
-- visible movement sticks through immediate `joystick` drag engage
-- one-shot swipes and drags through `drag`
-
-That makes it viable for:
-
-- Temple Run
-- Subway Surfers
-- sprint-lock drags in games like PUBG Mobile
-
-## What Phantom Does Not Support
-
-Phantom currently injects touch, not sensors.
-
-That means:
-
-- accelerometer tilt is not supported
-- Temple Run-style tilt-to-collect-coins is not currently a Phantom feature
-
-If a game requires sensor input and has no touch alternative, that is a separate subsystem, not a profile tweak.
-
-## Documentation Map
-
-Read these in this order:
+Operator path:
 
 1. [docs/INSTALL.md](docs/INSTALL.md)
-2. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-3. [docs/OPERATIONS.md](docs/OPERATIONS.md)
-4. [docs/TESTING.md](docs/TESTING.md)
-5. [docs/PROFILES.md](docs/PROFILES.md)
-6. [docs/GAME_PATTERNS.md](docs/GAME_PATTERNS.md)
-7. [docs/TROUBLESHOOT.md](docs/TROUBLESHOOT.md)
-8. [docs/EDGE_CASES.md](docs/EDGE_CASES.md)
-9. [docs/RELEASING.md](docs/RELEASING.md)
-10. [docs/ROADMAD.md](docs/ROADMAD.md)
+2. [docs/OPERATIONS.md](docs/OPERATIONS.md)
+3. [docs/TROUBLESHOOT.md](docs/TROUBLESHOOT.md)
+4. [docs/PROFILES.md](docs/PROFILES.md)
+5. [docs/GAME_PATTERNS.md](docs/GAME_PATTERNS.md)
 
-## Release Packages
+Maintainer path:
 
-GitHub Releases now publish:
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/TESTING.md](docs/TESTING.md)
+- [docs/RELEASING.md](docs/RELEASING.md)
+- [docs/ROADMAP.md](docs/ROADMAP.md)
+- [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 
-- release tarballs with the real `phantom`, `phantom-gui`, `phantom-server.jar`,
-  profiles, desktop file, and docs
-- Debian packages
-- Arch packages
-- AppImage builds for the GUI path
-- `SHA256SUMS`
-
-Package installs resolve the Android server jar from `/usr/lib/phantom/` and
-from `../lib/phantom/` relative to the running binary, so packaged and
-portable release layouts no longer depend on a source checkout.
-
-Reference docs:
-
-- [docs/IPC.md](docs/IPC.md)
-- [docs/ANDROID_SOCKET_PROTOCOL.md](docs/ANDROID_SOCKET_PROTOCOL.md)
-- [docs/PROTOCOL.md](docs/PROTOCOL.md)
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
-- [contrib/android-server/README.md](contrib/android-server/README.md)
-
-Contribution docs:
-
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [AGENTS.md](AGENTS.md)
-
-Package docs:
-
-- [phantom/README.md](phantom/README.md)
-- [phantom-gui/README.md](phantom-gui/README.md)
-- [contrib/README.md](contrib/README.md)
-
-## Common Commands
-
-```bash
-phantom --daemon
-phantom --version
-phantom version
-phantom audit <profile.json>
-phantom status
-phantom load <profile.json>
-phantom reload
-phantom enter-capture
-phantom exit-capture
-phantom toggle-capture
-phantom grab-mouse
-phantom release-mouse
-phantom toggle-mouse
-phantom pause
-phantom resume
-phantom sensitivity <value>
-phantom list
-phantom shutdown
-phantom-gui
-phantom-gui --version
-```
-
-## Install Notes
-
-- `./install.sh` builds the workspace, installs `phantom` and `phantom-gui` into `~/.local/bin`, installs a sudo-visible `phantom` launcher into `/usr/local/bin` when possible, installs the Android server jar into `~/.local/share/phantom/android/`, creates `~/.config/phantom/config.toml` if missing, refreshes `android.server_jar` in the existing config when it still points at a source-tree jar, and seeds missing shipped profiles into `~/.config/phantom/profiles/`.
-- `./install.sh -o` interactively asks whether to overwrite `~/.config/phantom/config.toml` and whether to overwrite the currently shipped profile filenames in `~/.config/phantom/profiles/`.
-- `./install.sh -u` removes the installed binaries, the sudo-visible `phantom` launcher, and the Android server jar, but leaves your config and user profiles untouched.
-- rerunning `./install.sh` is safe for profile seeding because it only copies missing shipped profiles, and it only updates `android.server_jar` automatically when that field still points at a source-tree jar
-
-## Current Direction
-
-The project direction remains:
-
-- explicit screen contracts
-- explicit runtime state
-- deterministic profiles
-- Android-first injection
-- strong documentation and maintainability over opaque magic
+The project stays explicit: known screen, named runtime states, deterministic
+profiles, Android-first injection. Convenience never wins if it hides those.

@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -14,7 +15,7 @@ use crate::config;
 use crate::desktop_relay::DesktopKeyboardRelay;
 use crate::engine::{KeymapEngine, TouchCommand};
 use crate::error::{PhantomError, Result};
-use crate::input::{InputCapture, InputEvent};
+use crate::input::{InputCapture, InputEvent, Key};
 use crate::mouse_touch::MouseTouchEmulator;
 use crate::overlay::{CursorOverlay, OverlayPreview};
 use crate::profile::Profile;
@@ -108,6 +109,119 @@ struct MenuTouchStatusPayload {
     mouse_mode: MouseMode,
 }
 
+const PASSTHROUGH_REPEAT_DELAY: Duration = Duration::from_millis(500);
+const PASSTHROUGH_REPEAT_INTERVAL: Duration = Duration::from_millis(50);
+const ANDROID_META_SHIFT_ON: u8 = 0x1;
+
+#[derive(Debug, Clone)]
+struct HeldPassthroughKey {
+    keycode: u16,
+    pressed_at: Instant,
+    last_repeat_at: Instant,
+    repeat_count: u16,
+}
+
+#[derive(Debug, Default)]
+struct PassthroughKeyState {
+    held: HashMap<Key, HeldPassthroughKey>,
+    shift_down: bool,
+}
+
+impl PassthroughKeyState {
+    fn handle_event(&mut self, event: &InputEvent, engine: &KeymapEngine) -> Vec<TouchCommand> {
+        match event {
+            InputEvent::KeyPress(key) => {
+                if key.is_shift() {
+                    self.shift_down = true;
+                }
+                if engine.is_paused() || engine.binds_key(*key) {
+                    return Vec::new();
+                }
+                let Some(keycode) = key.android_keycode() else {
+                    return Vec::new();
+                };
+                if self.held.contains_key(key) {
+                    return Vec::new();
+                }
+                let now = Instant::now();
+                self.held.insert(
+                    *key,
+                    HeldPassthroughKey {
+                        keycode,
+                        pressed_at: now,
+                        last_repeat_at: now,
+                        repeat_count: 0,
+                    },
+                );
+                vec![TouchCommand::KeyDown {
+                    keycode,
+                    repeat_count: 0,
+                    meta_state: self.meta_state(),
+                }]
+            }
+            InputEvent::KeyRelease(key) => {
+                if key.is_shift() {
+                    self.shift_down = false;
+                }
+                self.held
+                    .remove(key)
+                    .map(|held| {
+                        vec![TouchCommand::KeyUp {
+                            keycode: held.keycode,
+                        }]
+                    })
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn tick(&mut self) -> Vec<TouchCommand> {
+        let now = Instant::now();
+        let mut cmds = Vec::new();
+        let meta_state = self.meta_state();
+        for (key, held) in self.held.iter_mut() {
+            if !key.android_passthrough_repeats() {
+                continue;
+            }
+            let due = if held.repeat_count == 0 {
+                held.pressed_at + PASSTHROUGH_REPEAT_DELAY
+            } else {
+                held.last_repeat_at + PASSTHROUGH_REPEAT_INTERVAL
+            };
+            if now < due {
+                continue;
+            }
+            held.repeat_count = held.repeat_count.saturating_add(1);
+            held.last_repeat_at = now;
+            cmds.push(TouchCommand::KeyDown {
+                keycode: held.keycode,
+                repeat_count: held.repeat_count,
+                meta_state,
+            });
+        }
+        cmds
+    }
+
+    fn meta_state(&self) -> u8 {
+        if self.shift_down {
+            ANDROID_META_SHIFT_ON
+        } else {
+            0
+        }
+    }
+
+    fn release_all(&mut self) -> Vec<TouchCommand> {
+        let held: Vec<HeldPassthroughKey> = self.held.drain().map(|(_, held)| held).collect();
+        self.shift_down = false;
+        held.into_iter()
+            .map(|held| TouchCommand::KeyUp {
+                keycode: held.keycode,
+            })
+            .collect()
+    }
+}
+
 pub struct DaemonState {
     pub engine: RwLock<KeymapEngine>,
     pub profile_path: RwLock<Option<PathBuf>>,
@@ -118,9 +232,11 @@ pub struct DaemonState {
     pub mouse_mode: Mutex<MouseMode>,
     pub overlay: Mutex<OverlayPreview>,
     pub cursor_overlay: Mutex<CursorOverlay>,
+    passthrough: Mutex<PassthroughKeyState>,
     pub screen_width: u32,
     pub screen_height: u32,
     pub capture_active: AtomicBool,
+    pub routing_generation: AtomicU64,
     pub shutdown_tx: broadcast::Sender<()>,
 }
 
@@ -144,9 +260,11 @@ impl DaemonState {
             mouse_mode: Mutex::new(MouseMode::MenuTouch),
             overlay: Mutex::new(OverlayPreview::new()),
             cursor_overlay: Mutex::new(CursorOverlay::new()),
+            passthrough: Mutex::new(PassthroughKeyState::default()),
             screen_width: width,
             screen_height: height,
             capture_active: AtomicBool::new(false),
+            routing_generation: AtomicU64::new(0),
             shutdown_tx,
         });
         (state, shutdown_rx)
@@ -401,6 +519,11 @@ async fn handle_request(request: IpcRequest, state: &Arc<DaemonState>) -> IpcRes
             if let Err(e) = apply_commands(state, &cmds) {
                 return error_response(e.to_string());
             }
+            if let Ok(passthrough) = release_passthrough_keys(state) {
+                if let Err(e) = apply_commands(state, &passthrough) {
+                    return error_response(e.to_string());
+                }
+            }
             let (mouse_grabbed, keyboard_grabbed) = match current_grab_state(state) {
                 Ok(state) => state,
                 Err(e) => return error_response(e.to_string()),
@@ -591,6 +714,7 @@ async fn load_profile_into_state(
         (paused, cmds)
     };
     apply_commands(state, &release_cmds)?;
+    apply_commands(state, &release_passthrough_keys(state)?)?;
 
     let mut new_engine = KeymapEngine::new(profile);
     if was_paused {
@@ -648,14 +772,23 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
     };
     apply_commands(state, &mouse_touch_cmds)?;
 
-    {
+    let (pressed_keyboard, pressed_mouse) = {
         let mut capture = lock_capture(state)?;
         // The daemon keeps the keyboard grabbed for its lifetime so runtime
         // hotkeys stay reliable even when gameplay capture is not active.
+        capture.refresh_pressed_keys();
         capture.set_grabbed_keyboard_only(true)?;
         capture.set_grabbed_mouse_only(active)?;
+        (
+            capture.current_pressed_keyboard_keys(),
+            capture.current_pressed_mouse_keys(),
+        )
+    };
+    if !active {
+        apply_commands(state, &release_passthrough_keys(state)?)?;
     }
     state.capture_active.store(active, Ordering::Release);
+    state.routing_generation.fetch_add(1, Ordering::AcqRel);
     if active {
         {
             let mut mouse_mode = lock_mouse_mode(state)?;
@@ -665,13 +798,6 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
             let mut mouse_touch = lock_mouse_touch(state)?;
             mouse_touch.seed_from_host_cursor();
         }
-        let (pressed_keyboard, pressed_mouse) = {
-            let capture = lock_capture(state)?;
-            (
-                capture.current_pressed_keyboard_keys(),
-                capture.current_pressed_mouse_keys(),
-            )
-        };
         let keyboard_cmds = {
             let mut engine = state.engine.write().await;
             if engine.is_paused() {
@@ -691,10 +817,14 @@ pub async fn set_capture_active(state: &Arc<DaemonState>, active: bool) -> Resul
         let engine = state.engine.read().await;
         if !engine.has_mouse_camera() {
             tracing::info!(
-                "capture enabled without an aim node in the loaded profile; grab the mouse only when the profile should steer the camera"
+                "capture enabled without an aim node in the loaded profile; keep the mouse in menu-touch until a profile with aim is loaded"
             );
         }
     } else {
+        {
+            let mut relay = lock_desktop_keyboard(state)?;
+            relay.resync_pressed(&pressed_keyboard)?;
+        }
         stop_cursor_overlay(state)?;
     }
     Ok(())
@@ -733,6 +863,7 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
 
     let pressed_mouse = {
         let mut capture = lock_capture(state)?;
+        capture.refresh_pressed_keys();
         capture.set_grabbed_mouse_only(true)?;
         capture.current_pressed_mouse_keys()
     };
@@ -741,12 +872,14 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
         let mut mouse_mode = lock_mouse_mode(state)?;
         *mouse_mode = target_mode;
     }
+    state.routing_generation.fetch_add(1, Ordering::AcqRel);
 
     let cmds = if routed {
         let mut engine = state.engine.write().await;
         engine.resync_mouse_buttons(&pressed_mouse)
     } else {
         let mut mouse_touch = lock_mouse_touch(state)?;
+        mouse_touch.seed_from_host_cursor();
         mouse_touch.resync_buttons(&pressed_mouse)
     };
     apply_commands(state, &cmds)?;
@@ -764,6 +897,25 @@ pub async fn set_mouse_routed(state: &Arc<DaemonState>, routed: bool) -> Result<
         }
     }
     Ok(())
+}
+
+pub fn process_passthrough_event(
+    state: &Arc<DaemonState>,
+    event: &InputEvent,
+    engine: &KeymapEngine,
+) -> Result<Vec<TouchCommand>> {
+    let mut passthrough = lock_passthrough(state)?;
+    Ok(passthrough.handle_event(event, engine))
+}
+
+pub fn tick_passthrough_keys(state: &Arc<DaemonState>) -> Result<Vec<TouchCommand>> {
+    let mut passthrough = lock_passthrough(state)?;
+    Ok(passthrough.tick())
+}
+
+pub fn release_passthrough_keys(state: &Arc<DaemonState>) -> Result<Vec<TouchCommand>> {
+    let mut passthrough = lock_passthrough(state)?;
+    Ok(passthrough.release_all())
 }
 
 pub fn apply_commands(state: &Arc<DaemonState>, cmds: &[TouchCommand]) -> Result<()> {
@@ -874,6 +1026,16 @@ pub fn lock_overlay(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, OverlayPr
         Ok(guard) => Ok(guard),
         Err(poisoned) => {
             tracing::warn!("overlay preview lock poisoned, recovering");
+            Ok(poisoned.into_inner())
+        }
+    }
+}
+
+fn lock_passthrough(state: &Arc<DaemonState>) -> Result<MutexGuard<'_, PassthroughKeyState>> {
+    match state.passthrough.lock() {
+        Ok(guard) => Ok(guard),
+        Err(poisoned) => {
+            tracing::warn!("passthrough key lock poisoned, recovering");
             Ok(poisoned.into_inner())
         }
     }

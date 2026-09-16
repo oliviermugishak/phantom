@@ -12,6 +12,7 @@ pub mod logging;
 pub mod mouse_touch;
 pub mod overlay;
 pub mod profile;
+pub mod session_env;
 pub mod touch;
 pub mod waydroid;
 pub mod x11_cursor;

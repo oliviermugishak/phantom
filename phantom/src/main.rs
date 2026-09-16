@@ -45,7 +45,7 @@ USAGE:
 
 KEYS (while daemon running, configurable in config.toml [runtime_hotkeys]):
     F2   Shutdown daemon (default)
-    F1   Toggle mouse grab (default)
+    F1   Toggle aim / menu-touch (default)
     F8   Toggle capture mode (default)
     F9   Toggle pause (default)
     F10  Toggle experimental debug control preview (default)
@@ -243,6 +243,13 @@ async fn run_daemon() -> Result<()> {
 
     let (state, mut shutdown_rx) =
         DaemonState::new(engine, touch, desktop_keyboard, capture, screen_w, screen_h);
+    {
+        let mut mouse_touch = ipc::lock_mouse_touch(&state)?;
+        mouse_touch.apply_feel(
+            phantom::mouse_touch::MouseTouchAccelConfig::from_config(&config.mouse_touch),
+            config.mouse_touch.scroll_step,
+        );
+    }
     if let Some(path) = default_profile_path {
         *state.profile_path.write().await = Some(path);
     }
@@ -285,6 +292,8 @@ async fn run_daemon() -> Result<()> {
     // the old frame-like 16 ms cadence, while still avoiding a 1 ms hot loop.
     let mut tick_interval = tokio::time::interval(Duration::from_millis(ENGINE_TICK_INTERVAL_MS));
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_frame_refresh = std::time::Instant::now();
+    let mut last_input_rescan = std::time::Instant::now();
 
     loop {
         if shutdown_flag.load(Ordering::Acquire) {
@@ -326,6 +335,7 @@ async fn run_daemon() -> Result<()> {
                         if input_events.is_empty() {
                             continue;
                         }
+                        let batch_generation = state.routing_generation.load(Ordering::Acquire);
                         if !input_events.is_empty() {
                             tracing::trace!(events = ?input_events, "translated input batch");
                         }
@@ -421,6 +431,9 @@ async fn run_daemon() -> Result<()> {
                             }
                         }
 
+                        if state.routing_generation.load(Ordering::Acquire) != batch_generation {
+                            continue;
+                        }
                         if !gameplay_events.is_empty() {
                             tracing::trace!(events = ?gameplay_events, "forwarding gameplay events to engine");
                             let mut engine = state.engine.write().await;
@@ -432,7 +445,21 @@ async fn run_daemon() -> Result<()> {
                                 }
                             };
                             for event in &gameplay_events {
+                                if state.routing_generation.load(Ordering::Acquire) != batch_generation {
+                                    break;
+                                }
                                 let cmds = engine.process(event);
+                                let cmds = if cmds.is_empty() {
+                                    match ipc::process_passthrough_event(&state, event, &engine) {
+                                        Ok(passthrough) => passthrough,
+                                        Err(e) => {
+                                            tracing::warn!("passthrough error: {}", e);
+                                            Vec::new()
+                                        }
+                                    }
+                                } else {
+                                    cmds
+                                };
                                 if cmds.is_empty() {
                                     continue;
                                 }
@@ -449,12 +476,35 @@ async fn run_daemon() -> Result<()> {
                 }
             }
             _ = tick_interval.tick() => {
+                if last_input_rescan.elapsed() >= Duration::from_secs(2) {
+                    last_input_rescan = std::time::Instant::now();
+                    if let Ok(mut capture) = ipc::lock_capture(&state) {
+                        if let Err(err) = capture.rescan_devices() {
+                            tracing::warn!("input hotplug rescan failed: {}", err);
+                        }
+                    }
+                }
                 if !state.capture_active.load(Ordering::Acquire) {
                     continue;
                 }
+                if last_frame_refresh.elapsed() >= Duration::from_millis(250)
+                    && matches!(ipc::current_mouse_mode(&state), Ok(MouseMode::MenuTouch))
+                {
+                    last_frame_refresh = std::time::Instant::now();
+                    if let Ok(mut mouse_touch) = ipc::lock_mouse_touch(&state) {
+                        if mouse_touch.refresh_host_frame() {
+                            drop(mouse_touch);
+                            let _ = ipc::sync_cursor_overlay(&state, true);
+                        }
+                    }
+                }
                 let mut engine = state.engine.write().await;
-                let cmds = engine.tick();
+                let mut cmds = engine.tick();
                 drop(engine);
+                match ipc::tick_passthrough_keys(&state) {
+                    Ok(passthrough) => cmds.extend(passthrough),
+                    Err(e) => tracing::warn!("passthrough tick error: {}", e),
+                }
                 if !cmds.is_empty() {
                     let mut dev = match ipc::lock_touch_device(&state) {
                         Ok(dev) => dev,
@@ -479,6 +529,9 @@ async fn run_daemon() -> Result<()> {
         drop(engine);
         let mut dev = ipc::lock_touch_device(&state)?;
         let _ = dev.apply_commands(&cmds);
+        if let Ok(passthrough) = ipc::release_passthrough_keys(&state) {
+            let _ = dev.apply_commands(&passthrough);
+        }
     }
 
     {

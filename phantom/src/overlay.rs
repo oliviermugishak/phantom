@@ -1,7 +1,6 @@
 use std::env;
 use std::fs;
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
 use serde::{Deserialize, Serialize};
@@ -109,7 +108,7 @@ impl OverlayPreview {
             profile: profile.clone(),
             frame,
         })?;
-        fs::write(&self.snapshot_path, snapshot)?;
+        crate::session_env::atomic_write(&self.snapshot_path, snapshot)?;
 
         let stdout_log = fs::OpenOptions::new()
             .create(true)
@@ -126,28 +125,7 @@ impl OverlayPreview {
             .stdout(Stdio::from(stdout_log))
             .stderr(Stdio::from(stderr_log));
 
-        let invoking_uid = config::invoking_uid();
-        let invoking_gid = config::invoking_gid();
-        let current_uid = unsafe { libc::getuid() };
-        if current_uid == 0 && invoking_uid != current_uid {
-            command.uid(invoking_uid).gid(invoking_gid);
-            let runtime_dir = PathBuf::from(format!("/run/user/{}", invoking_uid));
-            if let Some(home) = config::invoking_home_dir() {
-                command.env("HOME", &home);
-                if std::env::var_os("XAUTHORITY").is_none() {
-                    let xauthority = home.join(".Xauthority");
-                    if xauthority.is_file() {
-                        command.env("XAUTHORITY", xauthority);
-                    }
-                }
-            }
-            command.env("XDG_RUNTIME_DIR", &runtime_dir);
-            if let Ok(user) = std::env::var("SUDO_USER") {
-                command.env("USER", &user);
-                command.env("LOGNAME", user);
-            }
-            propagate_display_env(&mut command, &runtime_dir);
-        }
+        crate::session_env::apply_session_command_env(&mut command);
 
         tracing::info!(
             gui_binary = %gui_binary.display(),
@@ -258,28 +236,7 @@ impl CursorOverlay {
             .stdout(Stdio::from(stdout_log))
             .stderr(Stdio::from(stderr_log));
 
-        let invoking_uid = config::invoking_uid();
-        let invoking_gid = config::invoking_gid();
-        let current_uid = unsafe { libc::getuid() };
-        if current_uid == 0 && invoking_uid != current_uid {
-            command.uid(invoking_uid).gid(invoking_gid);
-            let runtime_dir = PathBuf::from(format!("/run/user/{}", invoking_uid));
-            if let Some(home) = config::invoking_home_dir() {
-                command.env("HOME", &home);
-                if std::env::var_os("XAUTHORITY").is_none() {
-                    let xauthority = home.join(".Xauthority");
-                    if xauthority.is_file() {
-                        command.env("XAUTHORITY", xauthority);
-                    }
-                }
-            }
-            command.env("XDG_RUNTIME_DIR", &runtime_dir);
-            if let Ok(user) = std::env::var("SUDO_USER") {
-                command.env("USER", &user);
-                command.env("LOGNAME", user);
-            }
-            propagate_display_env(&mut command, &runtime_dir);
-        }
+        crate::session_env::apply_session_command_env(&mut command);
 
         tracing::info!(
             gui_binary = %gui_binary.display(),
@@ -304,7 +261,7 @@ impl CursorOverlay {
             fs::create_dir_all(parent)?;
         }
         let snapshot = serde_json::to_vec(&state)?;
-        fs::write(&self.state_path, snapshot)?;
+        crate::session_env::atomic_write(&self.state_path, snapshot)?;
         Ok(())
     }
 
@@ -330,46 +287,23 @@ impl CursorOverlay {
     }
 }
 
-fn propagate_display_env(command: &mut Command, runtime_dir: &Path) {
-    copy_env_if_present(command, "DISPLAY");
-    copy_env_if_present(command, "WAYLAND_DISPLAY");
-    copy_env_if_present(command, "WAYLAND_SOCKET");
-    copy_env_if_present(command, "XDG_SESSION_TYPE");
-    copy_env_if_present(command, "DBUS_SESSION_BUS_ADDRESS");
-
-    let has_wayland =
-        env::var_os("WAYLAND_DISPLAY").is_some() || env::var_os("WAYLAND_SOCKET").is_some();
-    let has_x11 = env::var_os("DISPLAY").is_some();
-
-    if !has_wayland {
-        if runtime_dir.join("wayland-0").exists() {
-            command.env("WAYLAND_DISPLAY", "wayland-0");
-        } else if runtime_dir.join("wayland-1").exists() {
-            command.env("WAYLAND_DISPLAY", "wayland-1");
+fn find_gui_binary() -> Result<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("phantom-gui"));
         }
     }
-
-    if !has_x11 && PathBuf::from("/tmp/.X11-unix/X0").exists() {
-        command.env("DISPLAY", ":0");
-    }
-}
-
-fn copy_env_if_present(command: &mut Command, key: &str) {
-    if let Some(value) = env::var_os(key) {
-        command.env(key, value);
-    }
-}
-
-fn find_gui_binary() -> Result<PathBuf> {
-    let sibling = env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("phantom-gui")))
-        .filter(|path| path.is_file());
-    if let Some(path) = sibling {
-        return Ok(path);
-    }
-
     if let Some(path) = find_in_path("phantom-gui") {
+        candidates.push(path);
+    }
+    if let Some(home) = config::invoking_home_dir() {
+        candidates.push(home.join(".local/bin/phantom-gui"));
+    }
+    candidates.push(PathBuf::from("/usr/local/bin/phantom-gui"));
+    candidates.push(PathBuf::from("/usr/bin/phantom-gui"));
+
+    if let Some(path) = candidates.into_iter().find(|path| path.is_file()) {
         return Ok(path);
     }
 

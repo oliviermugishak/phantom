@@ -190,6 +190,131 @@ pub enum Key {
 }
 
 impl Key {
+    pub fn is_shift(self) -> bool {
+        matches!(self, Key::LeftShift | Key::RightShift)
+    }
+
+    pub fn android_passthrough_repeats(self) -> bool {
+        matches!(
+            self,
+            Key::Backspace
+                | Key::Delete
+                | Key::Enter
+                | Key::Up
+                | Key::Down
+                | Key::Left
+                | Key::Right
+        )
+    }
+
+    pub fn android_keycode(self) -> Option<u16> {
+        match self {
+            Key::A => Some(29),
+            Key::B => Some(30),
+            Key::C => Some(31),
+            Key::D => Some(32),
+            Key::E => Some(33),
+            Key::F => Some(34),
+            Key::G => Some(35),
+            Key::H => Some(36),
+            Key::I => Some(37),
+            Key::J => Some(38),
+            Key::K => Some(39),
+            Key::L => Some(40),
+            Key::M => Some(41),
+            Key::N => Some(42),
+            Key::O => Some(43),
+            Key::P => Some(44),
+            Key::Q => Some(45),
+            Key::R => Some(46),
+            Key::S => Some(47),
+            Key::T => Some(48),
+            Key::U => Some(49),
+            Key::V => Some(50),
+            Key::W => Some(51),
+            Key::X => Some(52),
+            Key::Y => Some(53),
+            Key::Z => Some(54),
+            Key::Key0 => Some(7),
+            Key::Key1 => Some(8),
+            Key::Key2 => Some(9),
+            Key::Key3 => Some(10),
+            Key::Key4 => Some(11),
+            Key::Key5 => Some(12),
+            Key::Key6 => Some(13),
+            Key::Key7 => Some(14),
+            Key::Key8 => Some(15),
+            Key::Key9 => Some(16),
+            Key::F1 => Some(131),
+            Key::F2 => Some(132),
+            Key::F3 => Some(133),
+            Key::F4 => Some(134),
+            Key::F5 => Some(135),
+            Key::F6 => Some(136),
+            Key::F7 => Some(137),
+            Key::F8 => Some(138),
+            Key::F9 => Some(139),
+            Key::F10 => Some(140),
+            Key::F11 => Some(141),
+            Key::F12 => Some(142),
+            Key::LeftCtrl => Some(113),
+            Key::RightCtrl => Some(114),
+            Key::LeftShift => Some(59),
+            Key::RightShift => Some(60),
+            Key::LeftAlt => Some(57),
+            Key::RightAlt => Some(58),
+            Key::Up => Some(19),
+            Key::Down => Some(20),
+            Key::Left => Some(21),
+            Key::Right => Some(22),
+            Key::End => Some(123),
+            Key::PageUp => Some(92),
+            Key::PageDown => Some(93),
+            Key::Space => Some(62),
+            Key::Enter => Some(66),
+            Key::Backspace => Some(67),
+            Key::Delete => Some(112),
+            Key::Insert => Some(124),
+            Key::Tab => Some(61),
+            Key::Esc => Some(111),
+            Key::Minus => Some(69),
+            Key::Equal => Some(70),
+            Key::LeftBrace => Some(71),
+            Key::RightBrace => Some(72),
+            Key::Semicolon => Some(74),
+            Key::Apostrophe => Some(75),
+            Key::Grave => Some(68),
+            Key::Backslash => Some(73),
+            Key::Comma => Some(55),
+            Key::Dot => Some(56),
+            Key::Slash => Some(76),
+            Key::CapsLock => Some(115),
+            Key::NumLock => Some(143),
+            Key::ScrollLock => Some(116),
+            Key::SysRq => Some(120),
+            Key::Pause => Some(121),
+            Key::KP0 => Some(144),
+            Key::KP1 => Some(145),
+            Key::KP2 => Some(146),
+            Key::KP3 => Some(147),
+            Key::KP4 => Some(148),
+            Key::KP5 => Some(149),
+            Key::KP6 => Some(150),
+            Key::KP7 => Some(151),
+            Key::KP8 => Some(152),
+            Key::KP9 => Some(153),
+            Key::Home | Key::LeftMeta | Key::RightMeta => None,
+            Key::MouseLeft
+            | Key::MouseRight
+            | Key::MouseMiddle
+            | Key::MouseBack
+            | Key::MouseForward
+            | Key::WheelUp
+            | Key::WheelDown
+            | Key::Unknown(_) => None,
+        }
+    }
+
     pub fn is_mouse(self) -> bool {
         matches!(
             self,
@@ -691,6 +816,63 @@ impl InputCapture {
         })
     }
 
+    pub fn rescan_devices(&mut self) -> Result<()> {
+        let known: HashSet<String> = self.devices.iter().map(|dev| dev.path.clone()).collect();
+        let entries = match fs::read_dir("/dev/input") {
+            Ok(entries) => entries,
+            Err(err) => {
+                tracing::warn!("input rescan failed: {}", err);
+                return Ok(());
+            }
+        };
+
+        let mut added = false;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let path_str = path.to_string_lossy().to_string();
+            if !path_str.contains("event") || known.contains(&path_str) {
+                continue;
+            }
+            match Self::probe_device_open(&path_str) {
+                Ok(Some(info)) => {
+                    let fd = info.fd();
+                    let mut event = libc::epoll_event {
+                        events: (libc::EPOLLIN | libc::EPOLLET) as u32,
+                        u64: fd as u64,
+                    };
+                    let ret = unsafe {
+                        libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut event)
+                    };
+                    if ret < 0 {
+                        tracing::warn!(
+                            "failed to watch new input device {}: {}",
+                            path_str,
+                            std::io::Error::last_os_error()
+                        );
+                        continue;
+                    }
+                    tracing::info!("hotplug watching: {} ({})", path_str, info.name);
+                    self.fd_to_index.insert(fd, self.devices.len());
+                    self.devices.push(info);
+                    added = true;
+                }
+                Ok(None) => {}
+                Err(err) => tracing::warn!("hotplug skipped {}: {}", path_str, err),
+            }
+        }
+
+        if added {
+            let keyboard = self.keyboard_grabbed;
+            let mouse = self.mouse_grabbed;
+            self.keyboard_grabbed = false;
+            self.mouse_grabbed = false;
+            if let Err(err) = self.apply_grab_policy(keyboard, mouse) {
+                tracing::warn!("failed to apply grab policy to hotplugged devices: {}", err);
+            }
+        }
+        Ok(())
+    }
+
     fn probe_device_open(path: &str) -> Result<Option<DeviceInfo>> {
         let file = OpenOptions::new()
             .read(true)
@@ -946,13 +1128,20 @@ impl InputCapture {
                 }
                 if event.code == SYN_REPORT && device.desynced {
                     pending_relative.remove(fd);
-                    device.desynced = false;
                     match Self::resync_key_state(device) {
-                        Ok(events) => result.extend(events),
+                        Ok(events) => {
+                            device.desynced = false;
+                            result.extend(events);
+                        }
                         Err(e) => {
-                            tracing::warn!("failed to resync key state for {}: {}", device.path, e)
+                            tracing::warn!(
+                                "failed to resync key state for {}: {}; keeping device desynced",
+                                device.path,
+                                e
+                            );
                         }
                     }
+                    continue;
                 }
                 if event.code == SYN_REPORT {
                     if let Some((dx, dy)) = pending_relative.remove(fd) {
@@ -1283,87 +1472,95 @@ impl InputCapture {
         pressed
     }
 
-    pub fn set_grabbed_all(&mut self, grabbed: bool) -> Result<()> {
-        let previous_keyboard = self.keyboard_grabbed;
-        let previous_mouse = self.mouse_grabbed;
-
-        // Keyboard and mouse grabs are tracked independently so the daemon can
-        // stay in capture while temporarily returning only the mouse to the
-        // desktop. Apply them in a defined order and restore on failure.
-        let result = if grabbed {
-            self.set_grabbed_keyboard_only(true)
-                .and_then(|_| self.set_grabbed_mouse_only(true))
-        } else {
-            self.set_grabbed_mouse_only(false)
-                .and_then(|_| self.set_grabbed_keyboard_only(false))
-        };
-
-        if let Err(err) = result {
-            if let Err(restore_err) = self.restore_grab_state(previous_keyboard, previous_mouse) {
+    pub fn refresh_pressed_keys(&mut self) {
+        for device in &mut self.devices {
+            if let Err(err) = Self::resync_key_state(device) {
                 tracing::warn!(
-                    "failed to restore grab state after error: original={}, restore={}",
-                    err,
-                    restore_err
+                    "failed to refresh kernel key state for {}: {}",
+                    device.path,
+                    err
                 );
             }
-            return Err(err);
         }
-        Ok(())
     }
 
-    /// Grab or release mouse devices. Keyboard state is unchanged.
+    pub fn set_grabbed_all(&mut self, grabbed: bool) -> Result<()> {
+        self.apply_grab_policy(grabbed, grabbed)
+    }
+
+    /// Grab or release mouse devices. Keyboard exclusivity is preserved on
+    /// combo keyboard/mouse fds.
     pub fn set_grabbed_mouse_only(&mut self, grabbed: bool) -> Result<()> {
-        if self.mouse_grabbed == grabbed {
-            return Ok(());
-        }
-
-        for dev in &self.devices {
-            if !dev.is_mouse {
-                continue;
-            }
-            let value = if grabbed { 1 } else { 0 };
-            if let Err(err) = unsafe { eviocgrab(dev.fd(), value) } {
-                return Err(PhantomError::IoctlFailed {
-                    operation: "EVIOCGRAB".into(),
-                    path: dev.path.clone(),
-                    reason: std::io::Error::from_raw_os_error(err as i32).to_string(),
-                });
-            }
-        }
-
-        self.mouse_grabbed = grabbed;
-        tracing::info!(
-            "mouse grab {}",
-            if grabbed { "enabled" } else { "disabled" }
-        );
-        Ok(())
+        self.apply_grab_policy(self.keyboard_grabbed, grabbed)
     }
 
-    /// Grab or release keyboard devices. Mouse state is unchanged.
+    /// Grab or release keyboard devices. Mouse exclusivity is preserved on
+    /// combo keyboard/mouse fds.
     pub fn set_grabbed_keyboard_only(&mut self, grabbed: bool) -> Result<()> {
-        if self.keyboard_grabbed == grabbed {
+        self.apply_grab_policy(grabbed, self.mouse_grabbed)
+    }
+
+    fn apply_grab_policy(&mut self, keyboard: bool, mouse: bool) -> Result<()> {
+        if self.keyboard_grabbed == keyboard && self.mouse_grabbed == mouse {
             return Ok(());
         }
 
-        for dev in &self.devices {
-            if !dev.is_keyboard {
+        let previous_keyboard = self.keyboard_grabbed;
+        let previous_mouse = self.mouse_grabbed;
+        let mut applied: Vec<(usize, bool)> = Vec::new();
+
+        for (index, dev) in self.devices.iter().enumerate() {
+            let want = device_should_be_grabbed(dev.is_keyboard, dev.is_mouse, keyboard, mouse);
+            let current = device_should_be_grabbed(
+                dev.is_keyboard,
+                dev.is_mouse,
+                previous_keyboard,
+                previous_mouse,
+            );
+            if want == current {
                 continue;
             }
-            let value = if grabbed { 1 } else { 0 };
+
+            let value = if want { 1 } else { 0 };
             if let Err(err) = unsafe { eviocgrab(dev.fd(), value) } {
+                let os_err = std::io::Error::from_raw_os_error(err as i32);
+                if matches!(
+                    os_err.raw_os_error(),
+                    Some(libc::ENODEV) | Some(libc::ENXIO) | Some(libc::ENOENT)
+                ) {
+                    tracing::warn!(
+                        path = %dev.path,
+                        "skipping grab update for disappeared input device"
+                    );
+                    continue;
+                }
+
+                for (prev_index, prev_grabbed) in applied.iter().rev() {
+                    let prev_value = if *prev_grabbed { 1 } else { 0 };
+                    let _ = unsafe { eviocgrab(self.devices[*prev_index].fd(), prev_value) };
+                }
                 return Err(PhantomError::IoctlFailed {
                     operation: "EVIOCGRAB".into(),
                     path: dev.path.clone(),
-                    reason: std::io::Error::from_raw_os_error(err as i32).to_string(),
+                    reason: os_err.to_string(),
                 });
             }
+            applied.push((index, current));
         }
 
-        self.keyboard_grabbed = grabbed;
-        tracing::info!(
-            "keyboard grab {}",
-            if grabbed { "enabled" } else { "disabled" }
-        );
+        let keyboard_changed = self.keyboard_grabbed != keyboard;
+        let mouse_changed = self.mouse_grabbed != mouse;
+        self.keyboard_grabbed = keyboard;
+        self.mouse_grabbed = mouse;
+        if keyboard_changed {
+            tracing::info!(
+                "keyboard grab {}",
+                if keyboard { "enabled" } else { "disabled" }
+            );
+        }
+        if mouse_changed {
+            tracing::info!("mouse grab {}", if mouse { "enabled" } else { "disabled" });
+        }
         Ok(())
     }
 
@@ -1379,22 +1576,15 @@ impl InputCapture {
         self.mouse_grabbed = false;
         self.keyboard_grabbed = false;
     }
+}
 
-    fn restore_grab_state(&mut self, keyboard: bool, mouse: bool) -> Result<()> {
-        if keyboard {
-            self.set_grabbed_keyboard_only(true)?;
-        } else {
-            self.set_grabbed_keyboard_only(false)?;
-        }
-
-        if mouse {
-            self.set_grabbed_mouse_only(true)?;
-        } else {
-            self.set_grabbed_mouse_only(false)?;
-        }
-
-        Ok(())
-    }
+fn device_should_be_grabbed(
+    is_keyboard: bool,
+    is_mouse: bool,
+    keyboard_grabbed: bool,
+    mouse_grabbed: bool,
+) -> bool {
+    (is_keyboard && keyboard_grabbed) || (is_mouse && mouse_grabbed)
 }
 
 impl Drop for InputCapture {
@@ -1513,6 +1703,20 @@ fn eviocgabs_request(axis: u16) -> libc::c_ulong {
 mod tests {
     use super::*;
     use std::os::unix::io::AsRawFd;
+
+    #[test]
+    fn android_keycode_maps_letters_and_withholds_system_keys() {
+        assert_eq!(Key::A.android_keycode(), Some(29));
+        assert_eq!(Key::Enter.android_keycode(), Some(66));
+        assert_eq!(Key::Esc.android_keycode(), Some(111));
+        assert_eq!(Key::Home.android_keycode(), None);
+        assert_eq!(Key::LeftMeta.android_keycode(), None);
+        assert_eq!(Key::MouseLeft.android_keycode(), None);
+        assert!(Key::Enter.android_passthrough_repeats());
+        assert!(Key::Backspace.android_passthrough_repeats());
+        assert!(!Key::A.android_passthrough_repeats());
+        assert!(Key::LeftShift.is_shift());
+    }
 
     #[test]
     fn ioctl_requests_match_kernel_headers_on_x86_64() {
@@ -2230,5 +2434,87 @@ mod tests {
             }
         ));
         assert!(matches!(release[1], InputEvent::KeyRelease(Key::MouseLeft)));
+    }
+
+    #[test]
+    fn combo_device_stays_grabbed_when_only_mouse_is_released() {
+        assert!(device_should_be_grabbed(true, true, true, false));
+        assert!(device_should_be_grabbed(true, false, true, false));
+        assert!(!device_should_be_grabbed(false, true, true, false));
+        assert!(device_should_be_grabbed(false, true, true, true));
+        assert!(!device_should_be_grabbed(true, true, false, false));
+    }
+
+    #[test]
+    fn syn_dropped_keeps_device_desynced_when_resync_fails() {
+        let file = File::open("/dev/null").unwrap();
+        let fd = file.as_raw_fd();
+        let mut capture = InputCapture {
+            devices: vec![DeviceInfo {
+                path: "/dev/null".into(),
+                name: "Test Keyboard".into(),
+                file,
+                is_keyboard: true,
+                is_mouse: false,
+                pointer_kind: PointerKind::None,
+                abs_x: None,
+                abs_y: None,
+                abs_range_x: None,
+                abs_range_y: None,
+                last_abs_position: None,
+                abs_dirty: false,
+                abs_contact_known: false,
+                abs_touching: false,
+                touch_contact_started_at: None,
+                touch_contact_moved: false,
+                touchpad_drag_hold: false,
+                touchpad_physical_button: false,
+                last_touchpad_tap_release_at: None,
+                pending_touchpad_tap_deadline: None,
+                pressed_keys: HashSet::new(),
+                desynced: false,
+            }],
+            fd_to_index: HashMap::from([(fd, 0)]),
+            epoll_fd: -1,
+            mouse_grabbed: false,
+            keyboard_grabbed: false,
+        };
+
+        let events = capture.process_events(&[
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                    type_: EV_SYN,
+                    code: SYN_DROPPED,
+                    value: 0,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 1,
+                    type_: EV_SYN,
+                    code: SYN_REPORT,
+                    value: 0,
+                },
+            ),
+            (
+                fd,
+                RawInputEvent {
+                    tv_sec: 0,
+                    tv_usec: 2,
+                    type_: EV_KEY,
+                    code: 30,
+                    value: 1,
+                },
+            ),
+        ]);
+
+        assert!(events.is_empty());
+        assert!(capture.devices[0].desynced);
+        assert!(capture.devices[0].pressed_keys.is_empty());
     }
 }

@@ -867,10 +867,7 @@ fn validate_node(node: &Node) -> Result<()> {
             }
         }
         Node::LayerShift {
-            key,
-            layer_name,
-            suspend_base: _,
-            ..
+            key, layer_name, ..
         } => {
             validate_key_name(key, &format!("nodes.{id}.key"))?;
             validate_layer_name(layer_name, &format!("nodes.{id}.layer_name"))?;

@@ -42,6 +42,7 @@ Host Linux
           │
           ▼
   TouchCommand stream
+  (touch plus unused-key KeyDown/KeyUp)
           │
           ├───────────────────────────────┐
           │                               │
@@ -60,7 +61,7 @@ Waydroid Android container
  contrib/android-server/src/com/phantom/server/PhantomServer.java
           │
           ▼
- MotionEvent construction
+ MotionEvent / KeyEvent construction
           │
           ▼
  InputManager.injectInputEvent()
@@ -180,8 +181,8 @@ Responsibilities:
 - stage the Android server jar into the container
 - launch `app_process`
 - maintain a TCP connection
-- encode and decode the touch protocol
-- reconstruct MotionEvents inside Android
+- encode and decode the touch and unused-key protocol
+- reconstruct MotionEvents and unused-key KeyEvents inside Android
 
 ### 3.7 `uinput` Backend
 
@@ -224,8 +225,8 @@ Phantom has these important runtime states:
 
 - daemon running
 - capture active
-- mouse routed
-- keyboard routed
+- mouse routed (`aim` vs `menu_touch`)
+- keyboard grabbed
 - engine paused
 - active layers
 
@@ -234,8 +235,16 @@ These states are separated deliberately.
 Why:
 
 - capture determines whether gameplay input should flow at all
-- mouse routing determines whether mouse-originated events should reach the game
+- mouse routing determines whether the owned mouse is in gameplay aim or menu-touch
 - pause determines whether the engine should emit touch commands
+
+Kernel `EVIOCGRAB` is a separate ownership layer from those runtime modes:
+
+- the keyboard stays grabbed for the daemon lifetime so hotkeys stay exclusive
+- while capture is off, grabbed keyboard events are replayed to the desktop through the uinput `Phantom Desktop Keyboard`
+- the mouse is grabbed only while capture is active
+- `F1` / `grab-mouse` / `release-mouse` switch `aim` vs `menu_touch`; they do not ungrab the mouse
+- combo keyboard+mouse devices stay grabbed if either class still needs exclusivity
 
 This separation is what makes the system usable instead of brittle.
 
@@ -248,6 +257,14 @@ It emits:
 - `TouchDown`
 - `TouchMove`
 - `TouchUp`
+- `Commit`
+- `KeyDown` / `KeyUp` (unused-key Android passthrough only)
+
+`KeyDown` / `KeyUp` are not profile nodes. The engine stays I/O-free and does
+not invent them. The daemon emits them after `process()` when capture is on,
+the engine is not paused, and `binds_key` says the profile does not own that
+key. The `android_socket` backend sends them as protocol `0x04` / `0x05`.
+The `uinput` backend ignores them.
 
 During runtime, Phantom now applies gameplay touch commands per translated input event instead of coalescing unrelated key transitions into one larger backend batch. That keeps release and re-engage boundaries explicit for controls like fixed joysticks. Joystick startup also uses an explicit commit boundary between `TouchDown` and the first `TouchMove` so visible sticks behave like a real drag rather than a teleported touch.
 
@@ -263,8 +280,8 @@ That abstraction is the key boundary in the codebase.
 
 Backends then decide how to realize those commands:
 
-- `android_socket` -> MotionEvents
-- `uinput` -> kernel MT events
+- `android_socket` -> MotionEvents and unused-key KeyEvents
+- `uinput` -> kernel MT events (keys ignored)
 
 Two important recent consequences of that abstraction:
 
@@ -394,12 +411,14 @@ But project decisions should be driven by the Android backend first.
 If you need to change:
 
 - input capture: `phantom/src/input.rs`
+- sudo/session env inference: `phantom/src/session_env.rs`
 - profile schema: `phantom/src/profile.rs`
 - control semantics: `phantom/src/engine.rs`
 - runtime commands: `phantom/src/ipc.rs` and `phantom/src/main.rs`
 - Android backend transport: `phantom/src/android_inject.rs`
 - Android launch behavior: `phantom/src/waydroid.rs`
 - GUI editing or runtime widgets: `phantom-gui/src/main.rs`
+- owned cursor overlay: `phantom-gui/src/cursor_overlay.rs`
 - Android container server behavior: `contrib/android-server/src/com/phantom/server/PhantomServer.java`
 
 ## 13. Operational Boundaries
@@ -410,7 +429,7 @@ The architecture explicitly does not solve:
 - sensor injection such as accelerometer tilt
 - monitor transforms
 - rotation transforms
-- hotplug rescans
+- complete hotplug (add is best-effort; a disappeared keyboard mid-capture may still need a restart)
 - generic automation workflows
 
 Those are outside the intended system boundary.

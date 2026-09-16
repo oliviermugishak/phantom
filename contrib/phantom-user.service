@@ -1,0 +1,16 @@
+[Unit]
+Description=Phantom daemon (user session)
+Documentation=https://github.com/oliviermugishak/phantom
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/phantom --daemon
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=phantom
+
+[Install]
+WantedBy=default.target

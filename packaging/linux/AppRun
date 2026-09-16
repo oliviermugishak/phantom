@@ -4,4 +4,15 @@ set -euo pipefail
 APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$APPDIR/usr/bin:$PATH"
 
-exec "$APPDIR/usr/bin/phantom-gui" "$@"
+case "${1:-}" in
+    phantom)
+        shift
+        exec "$APPDIR/usr/bin/phantom" "$@"
+        ;;
+    --daemon|status|audit|load|reload|enter-capture|exit-capture|toggle-capture|grab-mouse|release-mouse|toggle-mouse|pause|resume|sensitivity|list|shutdown|version)
+        exec "$APPDIR/usr/bin/phantom" "$@"
+        ;;
+    *)
+        exec "$APPDIR/usr/bin/phantom-gui" "$@"
+        ;;
+esac

@@ -23,10 +23,28 @@ const JOYSTICK_EDGE_GUARD: f64 = 0.002;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TouchCommand {
-    TouchDown { slot: u8, x: f64, y: f64 },
-    TouchMove { slot: u8, x: f64, y: f64 },
-    TouchUp { slot: u8 },
+    TouchDown {
+        slot: u8,
+        x: f64,
+        y: f64,
+    },
+    TouchMove {
+        slot: u8,
+        x: f64,
+        y: f64,
+    },
+    TouchUp {
+        slot: u8,
+    },
     Commit,
+    KeyDown {
+        keycode: u16,
+        repeat_count: u16,
+        meta_state: u8,
+    },
+    KeyUp {
+        keycode: u16,
+    },
 }
 
 #[derive(Debug)]
@@ -452,6 +470,10 @@ impl KeymapEngine {
 
     pub fn is_paused(&self) -> bool {
         self.paused
+    }
+
+    pub fn binds_key(&self, key: Key) -> bool {
+        self.key_bindings.contains_key(&key)
     }
 
     pub fn profile_name(&self) -> &str {
@@ -2114,6 +2136,19 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn binds_key_tracks_profile_bindings() {
+        let engine = KeymapEngine::new(test_profile());
+        assert!(engine.binds_key(Key::Space));
+        assert!(engine.binds_key(Key::W));
+        assert!(!engine.binds_key(Key::T));
+        let mut paused = KeymapEngine::new(test_profile());
+        let _ = paused.pause();
+        assert!(paused.binds_key(Key::Space));
+        assert!(paused.is_paused());
+        assert!(paused.process(&InputEvent::KeyPress(Key::T)).is_empty());
     }
 
     #[test]

@@ -13,6 +13,8 @@ const CMD_TOUCH_DOWN: u8 = 0x00;
 const CMD_TOUCH_MOVE: u8 = 0x01;
 const CMD_TOUCH_UP: u8 = 0x02;
 const CMD_TOUCH_CANCEL: u8 = 0x03;
+const CMD_KEY_DOWN: u8 = 0x04;
+const CMD_KEY_UP: u8 = 0x05;
 const CMD_PING: u8 = 0x7f;
 const AUTO_LAUNCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -162,6 +164,37 @@ impl AndroidInjector {
         })
     }
 
+    fn write_key_down_frame(
+        &mut self,
+        keycode: u16,
+        repeat_count: u16,
+        meta_state: u8,
+    ) -> Result<()> {
+        let frame = Self::key_down_frame(keycode, repeat_count, meta_state);
+        self.write_frame(&frame)
+    }
+
+    fn write_key_up_frame(&mut self, keycode: u16) -> Result<()> {
+        let frame = Self::key_up_frame(keycode);
+        self.write_frame(&frame)
+    }
+
+    fn key_down_frame(keycode: u16, repeat_count: u16, meta_state: u8) -> [u8; 6] {
+        let mut frame = [0u8; 6];
+        frame[0] = CMD_KEY_DOWN;
+        frame[1..3].copy_from_slice(&keycode.to_le_bytes());
+        frame[3..5].copy_from_slice(&repeat_count.to_le_bytes());
+        frame[5] = meta_state;
+        frame
+    }
+
+    fn key_up_frame(keycode: u16) -> [u8; 3] {
+        let mut frame = [0u8; 3];
+        frame[0] = CMD_KEY_UP;
+        frame[1..3].copy_from_slice(&keycode.to_le_bytes());
+        frame
+    }
+
     fn write_position_frame(&mut self, kind: u8, slot: u8, x: i32, y: i32) -> Result<()> {
         let frame = Self::position_frame(kind, slot, x, y);
         self.write_frame(&frame)
@@ -259,6 +292,12 @@ impl TouchDevice for AndroidInjector {
                 TouchCommand::TouchMove { slot, x, y } => self.touch_move_inner(*slot, *x, *y)?,
                 TouchCommand::TouchUp { slot } => self.touch_up_inner(*slot, false)?,
                 TouchCommand::Commit => {}
+                TouchCommand::KeyDown {
+                    keycode,
+                    repeat_count,
+                    meta_state,
+                } => self.write_key_down_frame(*keycode, *repeat_count, *meta_state)?,
+                TouchCommand::KeyUp { keycode } => self.write_key_up_frame(*keycode)?,
             }
         }
 
@@ -310,5 +349,20 @@ mod tests {
     fn scale_coords_rounds_to_nearest_pixel() {
         assert_eq!(scale_coords_to_screen(1920, 1080, 0.5, 0.5), (960, 540));
         assert_eq!(scale_coords_to_screen(1920, 1080, 0.001, 0.001), (2, 1));
+    }
+
+    #[test]
+    fn key_down_frame_is_little_endian() {
+        let frame = AndroidInjector::key_down_frame(66, 3, 0x1);
+        assert_eq!(frame[0], CMD_KEY_DOWN);
+        assert_eq!(u16::from_le_bytes(frame[1..3].try_into().unwrap()), 66);
+        assert_eq!(u16::from_le_bytes(frame[3..5].try_into().unwrap()), 3);
+        assert_eq!(frame[5], 0x1);
+    }
+
+    #[test]
+    fn key_up_frame_is_three_bytes() {
+        let frame = AndroidInjector::key_up_frame(67);
+        assert_eq!(frame, [CMD_KEY_UP, 67, 0]);
     }
 }

@@ -92,6 +92,9 @@ Responses can include:
 - `capture_active`
 - `mouse_grabbed`
 - `keyboard_grabbed`
+- `mouse_mode`
+- `mouse_touch_active`
+- `mouse_touch_backend`
 - `sensitivity`
 - `screen_width`
 - `screen_height`
@@ -106,35 +109,45 @@ The CLI and GUI do not need identical formatting, but they do rely on the same r
 Effect:
 
 - capture becomes active
-- input devices are grabbed for gameplay
+- the mouse is grabbed
+- the keyboard stays grabbed, as it already was for daemon hotkeys
+- runtime mouse mode starts in owned `menu_touch`
+- hold-style keyboard controls are rebuilt from the current physical key state
 
 ### `exit_capture`
 
 Effect:
 
-- active touches are released
+- active gameplay and menu-touch fingers are released
 - capture is disabled
-- device grabs are released
+- the mouse is ungrabbed
+- the keyboard stays grabbed
+- currently held keyboard keys are replayed to the desktop relay so typing does not go silent
 
 ### `grab_mouse`
 
 Effect:
 
-- mouse-originated gameplay events are forwarded into the engine
+- capture must already be enabled
+- the owned mouse switches to gameplay `aim`
+- the physical mouse stays grabbed
 
 ### `release_mouse`
 
 Effect:
 
-- active mouse-driven touches are released
-- future mouse-originated gameplay events are suppressed
-- capture may remain active
+- capture must already be enabled
+- active aim fingers are lifted
+- the owned mouse switches back to `menu_touch`
+- the host cursor is re-seeded when possible
+- the physical mouse stays grabbed
 
 ### `pause`
 
 Effect:
 
 - active touches are released
+- unused-key Android passthrough keys are released
 - engine stops producing new touch output
 
 ### `resume`

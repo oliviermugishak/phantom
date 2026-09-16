@@ -1,4 +1,7 @@
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use smithay_client_toolkit::{
@@ -27,6 +30,16 @@ use phantom::overlay::CursorOverlayState;
 const CURSOR_SURFACE_SIZE: u32 = 40;
 const CURSOR_HOTSPOT_X: i32 = 5;
 const CURSOR_HOTSPOT_Y: i32 = 4;
+const CURSOR_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone)]
+struct LoadedCursor {
+    width: u32,
+    height: u32,
+    hotspot_x: i32,
+    hotspot_y: i32,
+    pixels: Vec<u8>,
+}
 
 pub fn run_cursor_overlay(state_path: &Path) -> Result<()> {
     if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some()
@@ -59,6 +72,10 @@ fn run_wayland_cursor_overlay(state_path: &Path) -> Result<()> {
             screen_x: 0.0,
             screen_y: 0.0,
         }),
+        cached_cursor: load_system_cursor(),
+        last_moved: Instant::now(),
+        last_position: (0.0, 0.0),
+        last_pressed: false,
         overlays: Vec::new(),
         exit: false,
     };
@@ -106,13 +123,30 @@ struct CursorLayerApp {
     layer_shell: LayerShell,
     state_path: PathBuf,
     last_state: CursorOverlayState,
+    cached_cursor: Option<LoadedCursor>,
+    last_moved: Instant,
+    last_position: (f32, f32),
+    last_pressed: bool,
     overlays: Vec<OutputOverlay>,
     exit: bool,
 }
 
 impl CursorLayerApp {
+    fn surface_size(&self) -> u32 {
+        let theme_size = env::var("XCURSOR_SIZE")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(24);
+        self.cached_cursor
+            .as_ref()
+            .map(|cursor| cursor.width.max(cursor.height).max(theme_size))
+            .unwrap_or(CURSOR_SURFACE_SIZE)
+            .max(CURSOR_SURFACE_SIZE)
+    }
+
     fn create_overlays(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
         self.overlays.clear();
+        let surface_size = self.surface_size();
 
         let outputs: Vec<_> = self.output_state.outputs().collect();
         for output in outputs {
@@ -131,7 +165,7 @@ impl CursorLayerApp {
             layer.set_anchor(Anchor::TOP | Anchor::LEFT);
             layer.set_keyboard_interactivity(KeyboardInteractivity::None);
             layer.set_exclusive_zone(-1);
-            layer.set_size(CURSOR_SURFACE_SIZE, CURSOR_SURFACE_SIZE);
+            layer.set_size(surface_size, surface_size);
             layer.set_margin(0, 0, 0, 0);
 
             let region = self.compositor_state.wl_compositor().create_region(qh, ());
@@ -139,19 +173,16 @@ impl CursorLayerApp {
             region.destroy();
             layer.commit();
 
-            let pool = SlotPool::new(
-                (CURSOR_SURFACE_SIZE * CURSOR_SURFACE_SIZE * 4) as usize,
-                &self.shm,
-            )
-            .context("failed to create cursor overlay shm pool")?;
+            let pool = SlotPool::new((surface_size * surface_size * 4) as usize, &self.shm)
+                .context("failed to create cursor overlay shm pool")?;
 
             self.overlays.push(OutputOverlay {
                 output,
                 geometry,
                 layer,
                 pool,
-                width: CURSOR_SURFACE_SIZE,
-                height: CURSOR_SURFACE_SIZE,
+                width: surface_size,
+                height: surface_size,
                 configured: false,
             });
         }
@@ -167,6 +198,13 @@ impl CursorLayerApp {
 
     fn update_state(&mut self) {
         if let Some(state) = read_cursor_overlay_state(&self.state_path) {
+            if (state.screen_x, state.screen_y) != self.last_position
+                || state.pressed != self.last_pressed
+            {
+                self.last_moved = Instant::now();
+                self.last_position = (state.screen_x, state.screen_y);
+                self.last_pressed = state.pressed;
+            }
             self.last_state = state;
         }
     }
@@ -197,28 +235,28 @@ impl CursorLayerApp {
 
         let local_x = self.last_state.screen_x as i32 - overlay.geometry.logical_x;
         let local_y = self.last_state.screen_y as i32 - overlay.geometry.logical_y;
+        let idle = self.last_moved.elapsed() >= CURSOR_IDLE_TIMEOUT && !self.last_state.pressed;
         let on_output = self.last_state.visible
+            && !idle
             && local_x >= 0
             && local_y >= 0
             && local_x < overlay.geometry.logical_width
             && local_y < overlay.geometry.logical_height;
 
-        if on_output {
-            overlay.layer.set_margin(
-                (local_y - CURSOR_HOTSPOT_Y).max(0),
-                0,
-                0,
-                (local_x - CURSOR_HOTSPOT_X).max(0),
-            );
-        }
-
-        draw_canvas(
+        let (hot_x, hot_y) = draw_canvas(
             canvas,
             overlay.width,
             overlay.height,
             on_output,
             self.last_state.pressed,
+            self.cached_cursor.as_ref(),
         );
+
+        if on_output {
+            overlay
+                .layer
+                .set_margin((local_y - hot_y).max(0), 0, 0, (local_x - hot_x).max(0));
+        }
 
         overlay
             .layer
@@ -413,12 +451,97 @@ fn output_geometry(info: &OutputInfo) -> OutputGeometry {
     }
 }
 
-fn draw_canvas(canvas: &mut [u8], width: u32, height: u32, visible: bool, pressed: bool) {
-    for chunk in canvas.chunks_exact_mut(4) {
+fn load_system_cursor() -> Option<LoadedCursor> {
+    let theme = env::var("XCURSOR_THEME").unwrap_or_else(|_| "default".into());
+    let size = env::var("XCURSOR_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|size| *size > 0)
+        .unwrap_or(24);
+    let mut search = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        search.push(home.join(format!(".local/share/icons/{theme}/cursors")));
+        search.push(home.join(format!(".icons/{theme}/cursors")));
+    }
+    search.push(PathBuf::from(format!("/usr/share/icons/{theme}/cursors")));
+    search.push(PathBuf::from(format!(
+        "/usr/local/share/icons/{theme}/cursors"
+    )));
+    search.push(PathBuf::from("/usr/share/icons/default/cursors"));
+
+    for dir in search {
+        for name in ["left_ptr", "default", "arrow"] {
+            let path = dir.join(name);
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            let Some(images) = xcursor::parser::parse_xcursor(&bytes) else {
+                continue;
+            };
+            let best = images.into_iter().min_by_key(|image| {
+                (image.width as i32 - size as i32)
+                    .unsigned_abs()
+                    .saturating_add((image.height as i32 - size as i32).unsigned_abs())
+            })?;
+            if best.pixels_rgba.len()
+                < (best.width as usize).saturating_mul(best.height as usize) * 4
+            {
+                continue;
+            }
+            return Some(LoadedCursor {
+                width: best.width,
+                height: best.height,
+                hotspot_x: best.xhot as i32,
+                hotspot_y: best.yhot as i32,
+                pixels: best.pixels_rgba,
+            });
+        }
+    }
+    None
+}
+
+fn draw_canvas(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    visible: bool,
+    pressed: bool,
+    cursor: Option<&LoadedCursor>,
+) -> (i32, i32) {
+    let (chunks, _) = canvas.as_chunks_mut::<4>();
+    for chunk in chunks {
         chunk.copy_from_slice(&0u32.to_le_bytes());
     }
     if !visible {
-        return;
+        return cursor
+            .map(|cursor| (cursor.hotspot_x, cursor.hotspot_y))
+            .unwrap_or((CURSOR_HOTSPOT_X, CURSOR_HOTSPOT_Y));
+    }
+
+    if let Some(cursor) = cursor {
+        let copy_width = cursor.width.min(width);
+        let copy_height = cursor.height.min(height);
+        for y in 0..copy_height {
+            for x in 0..copy_width {
+                let src = ((y * cursor.width + x) * 4) as usize;
+                let dst = ((y * width + x) * 4) as usize;
+                let r = cursor.pixels[src];
+                let g = cursor.pixels[src + 1];
+                let b = cursor.pixels[src + 2];
+                let a = cursor.pixels[src + 3];
+                let (r, g, b) = if pressed {
+                    (
+                        r.saturating_sub(20),
+                        g.saturating_sub(20),
+                        b.saturating_sub(20),
+                    )
+                } else {
+                    (r, g, b)
+                };
+                canvas[dst..dst + 4].copy_from_slice(&[b, g, r, a]);
+            }
+        }
+        return (cursor.hotspot_x, cursor.hotspot_y);
     }
 
     let arrow = [
@@ -462,6 +585,7 @@ fn draw_canvas(canvas: &mut [u8], width: u32, height: u32, visible: bool, presse
             }
         }
     }
+    (CURSOR_HOTSPOT_X, CURSOR_HOTSPOT_Y)
 }
 
 fn translated_polygon(polygon: &[(f32, f32)], dx: f32, dy: f32) -> Vec<(f32, f32)> {

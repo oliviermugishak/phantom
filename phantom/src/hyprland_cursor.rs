@@ -1,12 +1,9 @@
 use std::env;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde::Deserialize;
 
-use crate::config;
 use crate::error::{PhantomError, Result};
 use crate::hyprland_ipc;
 use crate::mouse_touch::{CursorSeed, HostFrame};
@@ -36,14 +33,16 @@ struct HyprClient {
     mapped: Option<bool>,
     #[serde(default)]
     hidden: Option<bool>,
+    #[serde(default)]
+    class: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default, rename = "initialClass")]
+    initial_class: String,
 }
 
 impl HyprlandCursorClient {
     pub fn spawn() -> Result<Self> {
-        let current_uid = unsafe { libc::getuid() };
-        let invoking_uid = config::invoking_uid();
-        let invoking_gid = config::invoking_gid();
-
         let binary = env::current_exe().map_err(|e| {
             PhantomError::Internal(format!(
                 "cannot locate phantom binary for hyprland helper: {}",
@@ -58,19 +57,8 @@ impl HyprlandCursorClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        let runtime_dir = PathBuf::from(format!("/run/user/{}", invoking_uid));
-        if current_uid == 0 && invoking_uid != current_uid {
-            command.uid(invoking_uid).gid(invoking_gid);
-            if let Some(home) = config::invoking_home_dir() {
-                command.env("HOME", &home);
-            }
-            if let Ok(user) = env::var("SUDO_USER") {
-                command.env("USER", &user);
-                command.env("LOGNAME", user);
-            }
-            command.env("XDG_RUNTIME_DIR", &runtime_dir);
-        }
-        hyprland_ipc::propagate_command_env(&mut command, &runtime_dir);
+        crate::session_env::apply_session_command_env(&mut command);
+        hyprland_ipc::propagate_command_env(&mut command);
 
         let mut child = command.spawn().map_err(|e| {
             PhantomError::Internal(format!(
@@ -93,26 +81,34 @@ impl HyprlandCursorClient {
         })
     }
 
-    pub(crate) fn query_seed(&mut self) -> Option<CursorSeed> {
-        if self.stdin.write_all(b"cursor\n").is_err() || self.stdin.flush().is_err() {
-            return None;
-        }
+    pub(crate) fn query_seed(&mut self) -> Result<Option<CursorSeed>> {
+        self.stdin.write_all(b"cursor\n").map_err(|err| {
+            PhantomError::Internal(format!("hyprland cursor helper write failed: {}", err))
+        })?;
+        self.stdin.flush().map_err(|err| {
+            PhantomError::Internal(format!("hyprland cursor helper flush failed: {}", err))
+        })?;
 
         let mut line = String::new();
-        if self.stdout.read_line(&mut line).ok()? == 0 {
-            return None;
+        let read = self.stdout.read_line(&mut line).map_err(|err| {
+            PhantomError::Internal(format!("hyprland cursor helper read failed: {}", err))
+        })?;
+        if read == 0 {
+            return Err(PhantomError::Internal(
+                "hyprland cursor helper closed stdout".into(),
+            ));
         }
 
         let mut parts = line.split_whitespace();
-        match parts.next()? {
-            "pos" => {
-                let x = parts.next()?.parse::<f64>().ok()?;
-                let y = parts.next()?.parse::<f64>().ok()?;
-                let left = parts.next()?.parse::<f64>().ok()?;
-                let top = parts.next()?.parse::<f64>().ok()?;
-                let width = parts.next()?.parse::<f64>().ok()?;
-                let height = parts.next()?.parse::<f64>().ok()?;
-                Some(CursorSeed {
+        match parts.next() {
+            Some("pos") => {
+                let x = parse_seed_part(parts.next(), "x")?;
+                let y = parse_seed_part(parts.next(), "y")?;
+                let left = parse_seed_part(parts.next(), "left")?;
+                let top = parse_seed_part(parts.next(), "top")?;
+                let width = parse_seed_part(parts.next(), "width")?;
+                let height = parse_seed_part(parts.next(), "height")?;
+                Ok(Some(CursorSeed {
                     x,
                     y,
                     frame: HostFrame {
@@ -121,9 +117,53 @@ impl HyprlandCursorClient {
                         width,
                         height,
                     },
-                })
+                }))
             }
-            _ => None,
+            Some("none") => Ok(None),
+            other => {
+                tracing::warn!(reply = ?other, "hyprland cursor helper returned an unexpected reply");
+                Ok(None)
+            }
+        }
+    }
+
+    pub(crate) fn query_frame(&mut self) -> Result<Option<HostFrame>> {
+        self.stdin.write_all(b"frame\n").map_err(|err| {
+            PhantomError::Internal(format!("hyprland frame helper write failed: {}", err))
+        })?;
+        self.stdin.flush().map_err(|err| {
+            PhantomError::Internal(format!("hyprland frame helper flush failed: {}", err))
+        })?;
+
+        let mut line = String::new();
+        let read = self.stdout.read_line(&mut line).map_err(|err| {
+            PhantomError::Internal(format!("hyprland frame helper read failed: {}", err))
+        })?;
+        if read == 0 {
+            return Err(PhantomError::Internal(
+                "hyprland cursor helper closed stdout".into(),
+            ));
+        }
+
+        let mut parts = line.split_whitespace();
+        match parts.next() {
+            Some("frame") => {
+                let left = parse_seed_part(parts.next(), "left")?;
+                let top = parse_seed_part(parts.next(), "top")?;
+                let width = parse_seed_part(parts.next(), "width")?;
+                let height = parse_seed_part(parts.next(), "height")?;
+                Ok(Some(HostFrame {
+                    left,
+                    top,
+                    width,
+                    height,
+                }))
+            }
+            Some("none") => Ok(None),
+            other => {
+                tracing::warn!(reply = ?other, "hyprland frame helper returned an unexpected reply");
+                Ok(None)
+            }
         }
     }
 }
@@ -137,26 +177,63 @@ impl Drop for HyprlandCursorClient {
 
 pub fn run_helper_stdio() -> Result<()> {
     while let Some(line) = read_line()? {
-        if line.trim() != "cursor" {
-            continue;
-        }
-
-        if let Some(seed) = query_normalized_position()? {
-            println!(
-                "pos {} {} {} {} {} {}",
-                seed.x,
-                seed.y,
-                seed.frame.left,
-                seed.frame.top,
-                seed.frame.width,
-                seed.frame.height
-            );
-        } else {
-            println!("none");
+        match line.trim() {
+            "cursor" => match query_normalized_position() {
+                Ok(Some(seed)) => println!(
+                    "pos {} {} {} {} {} {}",
+                    seed.x,
+                    seed.y,
+                    seed.frame.left,
+                    seed.frame.top,
+                    seed.frame.width,
+                    seed.frame.height
+                ),
+                Ok(None) => println!("none"),
+                Err(err) => {
+                    eprintln!("hyprland cursor query failed: {}", err);
+                    println!("none");
+                }
+            },
+            "frame" => match query_waydroid_frame() {
+                Ok(Some(frame)) => println!(
+                    "frame {} {} {} {}",
+                    frame.left, frame.top, frame.width, frame.height
+                ),
+                Ok(None) => println!("none"),
+                Err(err) => {
+                    eprintln!("hyprland frame query failed: {}", err);
+                    println!("none");
+                }
+            },
+            _ => continue,
         }
         std::io::stdout().flush().ok();
     }
     Ok(())
+}
+
+fn query_waydroid_frame() -> Result<Option<HostFrame>> {
+    let clients = match hyprland_ipc::json::<Vec<HyprClient>>("clients") {
+        Ok(clients) => clients,
+        Err(err) => {
+            eprintln!("hyprland clients failed: {}", err);
+            return Ok(None);
+        }
+    };
+    let best = clients
+        .iter()
+        .filter(|client| client.mapped.unwrap_or(true))
+        .filter(|client| !client.hidden.unwrap_or(false))
+        .filter(|client| client_looks_like_waydroid(client))
+        .filter(|client| client.size[0] > 0 && client.size[1] > 0)
+        .max_by_key(|client| client.size[0].max(1) * client.size[1].max(1))
+        .map(|client| HostFrame {
+            left: client.at[0] as f64,
+            top: client.at[1] as f64,
+            width: client.size[0] as f64,
+            height: client.size[1] as f64,
+        });
+    Ok(best)
 }
 
 fn read_line() -> Result<Option<String>> {
@@ -170,28 +247,58 @@ fn read_line() -> Result<Option<String>> {
     Ok(Some(line))
 }
 
+fn parse_seed_part(value: Option<&str>, field: &str) -> Result<f64> {
+    value
+        .ok_or_else(|| PhantomError::Internal(format!("hyprland seed missing {}", field)))?
+        .parse::<f64>()
+        .map_err(|_| PhantomError::Internal(format!("hyprland seed has invalid {}", field)))
+}
+
 fn query_normalized_position() -> Result<Option<CursorSeed>> {
-    let cursor = hyprland_ipc::json::<HyprCursorPos>("cursorpos")?;
+    let cursor = match hyprland_ipc::json::<HyprCursorPos>("cursorpos") {
+        Ok(cursor) => cursor,
+        Err(err) => {
+            eprintln!("hyprland cursorpos failed: {}", err);
+            return Ok(None);
+        }
+    };
     if let Ok(active) = hyprland_ipc::json::<HyprClient>("activewindow") {
-        if let Some(position) = normalize_within_client(&cursor, &active) {
-            return Ok(Some(position));
+        if client_looks_like_waydroid(&active) {
+            if let Some(position) = normalize_within_client(&cursor, &active) {
+                return Ok(Some(position));
+            }
         }
     }
 
-    let clients = hyprland_ipc::json::<Vec<HyprClient>>("clients")?;
+    let clients = match hyprland_ipc::json::<Vec<HyprClient>>("clients") {
+        Ok(clients) => clients,
+        Err(err) => {
+            eprintln!("hyprland clients failed: {}", err);
+            return Ok(None);
+        }
+    };
     let best = clients
         .iter()
         .filter(|client| client.mapped.unwrap_or(true))
         .filter(|client| !client.hidden.unwrap_or(false))
         .filter_map(|client| {
             normalize_within_client(&cursor, client).map(|position| {
-                let area = (client.size[0].max(1) * client.size[1].max(1)) as i128;
-                (area, position)
+                (
+                    client_looks_like_waydroid(client),
+                    (client.size[0].max(1) * client.size[1].max(1)) as i128,
+                    position,
+                )
             })
         })
-        .min_by_key(|(area, _)| *area)
-        .map(|(_, position)| position);
+        .max_by_key(|(waydroid, area, _)| (*waydroid, *area))
+        .map(|(_, _, position)| position);
     Ok(best)
+}
+
+fn client_looks_like_waydroid(client: &HyprClient) -> bool {
+    let haystack =
+        format!("{} {} {}", client.class, client.title, client.initial_class).to_ascii_lowercase();
+    haystack.contains("waydroid") || haystack.contains("android")
 }
 
 fn normalize_within_client(cursor: &HyprCursorPos, client: &HyprClient) -> Option<CursorSeed> {

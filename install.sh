@@ -229,6 +229,7 @@ install_phantom() {
     done
 
     install_config
+    install_desktop_entry
 
     printf '\ninstalled:\n'
     printf '  %s\n' "$BIN_DIR/phantom"
@@ -249,8 +250,24 @@ install_phantom() {
     esac
 }
 
+install_desktop_entry() {
+    local apps_dir icons_dir desktop_path
+    apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    icons_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+    desktop_path="$apps_dir/phantom-gui.desktop"
+    install -d "$apps_dir" "$icons_dir"
+    sed "s|^Exec=phantom-gui$|Exec=$BIN_DIR/phantom-gui|" \
+        "$REPO_ROOT/packaging/linux/phantom-gui.desktop" >"$desktop_path"
+    chmod 644 "$desktop_path"
+    if [[ -f "$REPO_ROOT/packaging/linux/phantom.svg" ]]; then
+        install -m644 "$REPO_ROOT/packaging/linux/phantom.svg" "$icons_dir/phantom.svg"
+    fi
+    printf 'installed desktop entry: %s\n' "$desktop_path"
+}
+
 uninstall_phantom() {
     rm -f "$BIN_DIR/phantom" "$BIN_DIR/phantom-gui" "$BIN_DIR/phantom-studio" "$INSTALLED_JAR"
+    rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/phantom-gui.desktop"
     remove_system_phantom_wrapper
     rmdir "$ANDROID_DIR" 2>/dev/null || true
     rmdir "$DATA_DIR" 2>/dev/null || true
